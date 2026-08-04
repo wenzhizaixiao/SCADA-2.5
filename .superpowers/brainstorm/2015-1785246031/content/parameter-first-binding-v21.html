@@ -1,0 +1,943 @@
+<style>
+  .v14 {
+    --brand: #13a68e;
+    --brand-dark: #087868;
+    --brand-soft: #edf8f5;
+    --ink: #263740;
+    --muted: #71818a;
+    --line: #dce4e7;
+    --line-soft: #edf1f2;
+    --soft: #f7f9fa;
+    --warn: #d99023;
+    color: var(--ink);
+    font-family: "Microsoft YaHei", "PingFang SC", Arial, sans-serif;
+  }
+  .v14, .v14 * { box-sizing: border-box; }
+  .v14 h2, .v14 h3, .v14 h4, .v14 p { letter-spacing: 0; }
+  .v14 h2 { margin: 0 0 5px; font-size: 20px; }
+  .v14 .lead { margin: 0 0 15px; color: var(--muted); font-size: 12px; }
+  .v14 button, .v14 input { font-family: inherit; letter-spacing: 0; }
+  .icon { width: 17px; height: 17px; stroke-width: 1.8; }
+  .icon-sm { width: 14px; height: 14px; stroke-width: 1.8; }
+  .hidden { display: none !important; }
+  .design-notes { display: grid; grid-template-columns: repeat(3, 1fr); overflow: hidden; border: 1px solid var(--line); border-radius: 5px; background: var(--line); gap: 1px; }
+  .design-note { padding: 10px 12px; background: #fff; }
+  .design-note b { display: block; margin-bottom: 3px; font-size: 10px; }
+  .design-note span { display: block; color: var(--muted); font-size: 8px; line-height: 1.5; }
+  .section-head { display: flex; align-items: end; justify-content: space-between; gap: 18px; margin: 20px 0 8px; }
+  .section-head h3 { margin: 0; font-size: 15px; }
+  .section-head p { margin: 0; color: var(--muted); font-size: 9px; }
+
+  .source-app { overflow: hidden; border: 1px solid #cad5da; border-radius: 5px; background: #fff; box-shadow: 0 9px 24px rgba(34,52,62,.07); }
+  .source-header { display: flex; align-items: center; height: 54px; padding: 0 13px; border-bottom: 1px solid var(--line); }
+  .source-back, .plain-icon { display: grid; place-items: center; width: 29px; height: 29px; border: 1px solid var(--line); border-radius: 3px; background: #fff; color: #62747d; }
+  .source-title { margin-left: 9px; }
+  .source-title b { display: block; font-size: 13px; }
+  .source-title span { display: block; margin-top: 3px; color: var(--muted); font-size: 7px; }
+  .source-status { display: flex; align-items: center; gap: 14px; margin-left: auto; color: #657780; font-size: 8px; }
+  .source-status strong { color: var(--brand-dark); }
+  .new-source { display: flex; align-items: center; gap: 5px; height: 30px; margin-left: 14px; padding: 0 10px; border: 1px solid var(--brand); border-radius: 3px; background: var(--brand); color: #fff; font-size: 8px; }
+  .source-workbench { display: grid; grid-template-columns: 205px minmax(0, 1fr); height: 535px; }
+  .source-sidebar { min-width: 0; border-right: 1px solid var(--line); background: #fafbfb; }
+  .source-sidebar-head { display: flex; align-items: center; gap: 5px; height: 42px; padding: 7px 8px; border-bottom: 1px solid var(--line); }
+  .source-search { display: flex; align-items: center; gap: 5px; min-width: 0; flex: 1; height: 27px; padding: 0 7px; border: 1px solid var(--line); border-radius: 3px; background: #fff; color: #8a979d; font-size: 7px; }
+  .source-sidebar-label { display: flex; align-items: center; justify-content: space-between; padding: 9px 10px 5px; color: #697b84; font-size: 7px; font-weight: 700; }
+  .source-item { display: grid; grid-template-columns: 35px minmax(0,1fr) 8px; align-items: center; width: 100%; min-height: 52px; padding: 5px 9px; border: 0; border-left: 3px solid transparent; border-bottom: 1px solid var(--line-soft); background: transparent; color: var(--ink); cursor: pointer; text-align: left; }
+  .source-item:hover { background: #f1f6f5; }
+  .source-item.active { border-left-color: var(--brand); background: var(--brand-soft); }
+  .protocol-icon { display: grid; place-items: center; width: 28px; height: 28px; border: 1px solid #ccd8dc; border-radius: 3px; background: #fff; color: #526974; font-size: 6px; font-weight: 800; }
+  .source-item b { display: block; overflow: hidden; font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
+  .source-item small { display: block; overflow: hidden; margin-top: 3px; color: var(--muted); font-size: 6px; text-overflow: ellipsis; white-space: nowrap; }
+  .status-dot { width: 7px; height: 7px; border-radius: 50%; background: #20a780; }
+  .status-dot.warn { background: var(--warn); }
+
+  .source-center { min-width: 0; background: #fff; }
+  .source-selected { display: flex; align-items: center; height: 55px; padding: 0 13px; border-bottom: 1px solid var(--line); }
+  .selected-protocol { display: grid; place-items: center; width: 34px; height: 28px; margin-right: 8px; border: 1px solid #9ccdc4; border-radius: 3px; background: var(--brand-soft); color: var(--brand-dark); font-size: 7px; font-weight: 800; }
+  .selected-copy b { display: block; font-size: 11px; }
+  .selected-copy span { display: block; margin-top: 3px; color: var(--muted); font-size: 7px; }
+  .selected-health { display: flex; align-items: center; gap: 5px; margin-left: auto; color: #168264; font-size: 7px; }
+  .selected-actions { display: flex; gap: 6px; margin-left: 12px; }
+  .source-more { display: grid; place-items: center; width: 29px; height: 29px; border: 1px solid #cbd6db; border-radius: 3px; background: #fff; color: #647680; }
+  .source-tabs { display: flex; height: 37px; padding: 0 12px; border-bottom: 1px solid var(--line); }
+  .source-tab { position: relative; min-width: 78px; border: 0; background: #fff; color: #687982; cursor: pointer; font-size: 8px; }
+  .source-tab.active { color: #263b44; font-weight: 700; }
+  .source-tab.active::after { content: ""; position: absolute; left: 12px; right: 12px; bottom: -1px; height: 2px; background: var(--brand); }
+  .source-detail { height: calc(100% - 92px); overflow: auto; }
+  .config-form { padding: 12px 14px 9px; }
+  .config-section-title { margin: 0 0 8px; font-size: 9px; }
+  .config-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 10px; }
+  .config-field.full { grid-column: 1 / -1; }
+  .config-field label { display: block; margin-bottom: 4px; color: #62747d; font-size: 7px; }
+  .config-value { display: flex; align-items: center; justify-content: space-between; min-height: 31px; padding: 6px 8px; border: 1px solid #ced9de; border-radius: 3px; background: #fff; color: #354b56; font-size: 8px; }
+  .config-value.code { font-family: Consolas, monospace; }
+  .config-value.multiline { min-height: 47px; align-items: flex-start; white-space: pre-line; line-height: 1.5; }
+  .advanced-toggle { display: flex; align-items: center; width: 100%; height: 33px; margin-top: 9px; padding: 0 9px; border: 1px solid var(--line); border-radius: 3px; background: var(--soft); color: #60737d; cursor: pointer; font-size: 8px; text-align: left; }
+  .advanced-toggle span { margin-left: auto; color: var(--muted); font-size: 7px; }
+  .advanced-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 8px; border: 1px solid var(--line); border-top: 0; }
+  .config-actions { display: flex; justify-content: flex-end; gap: 6px; margin-top: 11px; }
+  .secondary, .primary { min-height: 29px; padding: 0 10px; border: 1px solid #cbd6db; border-radius: 3px; background: #fff; color: #526772; font-size: 8px; }
+  .primary { border-color: var(--brand); background: var(--brand); color: #fff; }
+  .test-strip { display: flex; align-items: center; gap: 6px; min-height: 34px; margin: 0 14px 10px; padding: 0 9px; border-left: 3px solid var(--brand); background: var(--brand-soft); color: #527069; font-size: 7px; }
+  .test-strip strong { color: #168264; }
+  .test-strip span:last-child { margin-left: auto; color: var(--muted); }
+  .response-panel { margin: 0 14px 12px; overflow: hidden; border: 1px solid var(--line); border-radius: 3px; }
+  .response-head { display: flex; align-items: center; height: 31px; padding: 0 8px; border-bottom: 1px solid var(--line); background: var(--soft); }
+  .response-head b { font-size: 8px; }
+  .response-head span { margin-left: 7px; color: var(--muted); font-size: 6px; }
+  .response-head button { margin-left: auto; border: 0; background: transparent; color: var(--brand-dark); font-size: 7px; }
+  .response-body { display: grid; grid-template-columns: minmax(0, 1fr) 235px; min-height: 95px; }
+  .response-raw { padding: 8px; background: #27343c; color: #dfece9; font: 7px/1.55 Consolas, monospace; white-space: pre-wrap; }
+  .response-points { border-left: 1px solid var(--line); }
+
+  .debug-panel { min-width: 0; border-left: 1px solid var(--line); background: #fafbfb; }
+  .debug-head { display: flex; align-items: center; height: 43px; padding: 0 11px; border-bottom: 1px solid var(--line); background: #fff; }
+  .debug-head b { font-size: 9px; }
+  .debug-head span { margin-left: auto; color: var(--muted); font-size: 6px; }
+  .debug-body { height: calc(100% - 43px); overflow: auto; padding: 10px; }
+  .health-line { display: flex; align-items: center; gap: 6px; padding-bottom: 9px; border-bottom: 1px solid var(--line); font-size: 8px; }
+  .health-line strong { color: #168264; }
+  .health-line span:last-child { margin-left: auto; color: var(--muted); font-size: 6px; }
+  .debug-label { display: flex; justify-content: space-between; margin: 11px 0 5px; color: #647680; font-size: 7px; }
+  .raw-sample { min-height: 82px; padding: 8px; border-radius: 3px; background: #27343c; color: #dfece9; font: 7px/1.55 Consolas, monospace; white-space: pre-wrap; }
+  .point-list { overflow: hidden; border: 1px solid var(--line); border-radius: 3px; background: #fff; }
+  .point-row { display: grid; grid-template-columns: minmax(0,1fr) 55px; min-height: 30px; align-items: center; padding: 0 7px; border-top: 1px solid var(--line-soft); font-size: 7px; }
+  .point-row:first-child { border-top: 0; background: var(--soft); color: var(--muted); }
+  .point-row b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .point-row span:last-child { text-align: right; }
+  .table-toolbar { display: flex; align-items: center; gap: 6px; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+  .table-search { min-width: 0; flex: 1; height: 28px; padding: 7px; border: 1px solid var(--line); border-radius: 3px; color: var(--muted); font-size: 7px; }
+  .data-table { margin: 0 12px; overflow: hidden; border: 1px solid var(--line); border-radius: 3px; }
+  .data-row { display: grid; grid-template-columns: minmax(120px,1fr) 70px 58px 70px; align-items: center; min-height: 34px; padding: 0 8px; border-top: 1px solid var(--line-soft); font-size: 7px; }
+  .data-row:first-child { border-top: 0; background: var(--soft); color: var(--muted); }
+  .run-log { display: grid; grid-template-columns: 65px 58px 1fr; min-height: 38px; align-items: center; margin: 0 12px; border-bottom: 1px solid var(--line-soft); font-size: 7px; }
+  .run-log .ok { color: #168264; }
+  .metric-grid { display: grid; grid-template-columns: 1fr 1fr; overflow: hidden; border: 1px solid var(--line); border-radius: 3px; background: var(--line); gap: 1px; }
+  .metric { padding: 8px; background: #fff; }
+  .metric span { display: block; color: var(--muted); font-size: 6px; }
+  .metric b { display: block; margin-top: 4px; font-size: 10px; }
+
+  .editor { overflow: hidden; border: 1px solid #cad5da; border-radius: 5px; background: #fff; box-shadow: 0 9px 24px rgba(34,52,62,.07); }
+  .editor-toolbar { display: flex; align-items: stretch; height: 54px; border-bottom: 1px solid var(--line); }
+  .brand { display: flex; align-items: center; gap: 7px; width: 150px; padding: 0 11px; font-size: 10px; font-weight: 700; }
+  .brand-mark { width: 22px; height: 22px; border: 4px solid #1bb49d; transform: rotate(45deg); }
+  .tools { display: flex; }
+  .tool { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; min-width: 48px; border: 0; border-left: 1px solid var(--line-soft); background: #fff; color: #596c76; font-size: 7px; }
+  .tool.active { background: var(--brand-soft); color: var(--brand-dark); }
+  .toolbar-space { flex: 1; }
+  .preview { align-self: center; display: flex; align-items: center; gap: 5px; height: 30px; margin: 0 10px; padding: 0 11px; border: 0; background: #168eea; color: #fff; font-size: 8px; }
+  .editor-body { display: grid; grid-template-columns: 150px minmax(330px,1fr) 255px; height: 565px; }
+  .library { border-right: 1px solid var(--line); }
+  .library-tabs { display: grid; grid-template-columns: repeat(3,1fr); height: 40px; border-bottom: 1px solid var(--line); }
+  .library-tabs span { display: grid; place-items: center; color: #6b7d86; font-size: 8px; }
+  .library-tabs .active { border-bottom: 2px solid var(--brand); color: var(--brand-dark); }
+  .library-search { margin: 8px; padding: 7px; border: 1px solid var(--line); color: #97a3a9; font-size: 7px; }
+  .library-title { padding: 8px 9px; font-size: 8px; font-weight: 700; }
+  .library-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; padding: 0 8px; }
+  .library-item { display: grid; place-items: center; height: 55px; border: 1px solid var(--line-soft); color: #72828b; font-size: 7px; }
+  .canvas { position: relative; overflow: hidden; background-color: #f2f4f5; background-image: linear-gradient(#dfe5e7 1px,transparent 1px),linear-gradient(90deg,#dfe5e7 1px,transparent 1px); background-size: 18px 18px; }
+  .fan { position: absolute; left: 34%; top: 33%; display: grid; place-items: center; width: 115px; height: 115px; border: 4px solid #dd9328; border-radius: 50%; background: #fffaf1; }
+  .fan::before, .fan::after, .fan-blade { content: ""; position: absolute; width: 17px; height: 43px; border-radius: 50% 50% 18% 18%; background: #dfb46f; transform-origin: 50% 43px; }
+  .fan::before { transform: translateY(-31px); }
+  .fan::after { transform: rotate(120deg) translateY(-31px); }
+  .fan-blade { transform: rotate(240deg) translateY(-31px); }
+  .fan-hub { z-index: 2; width: 16px; height: 16px; border-radius: 50%; background: #d0881f; }
+  .fan-label { position: absolute; left: calc(34% + 20px); top: calc(33% + 125px); padding: 4px 7px; background: #128e79; color: #fff; font-size: 7px; }
+  .right-panel-demo { min-width: 0; border-left: 1px solid var(--line); background: #fff; }
+  .right-tabs-demo { display: grid; grid-template-columns: repeat(4,1fr); height: 44px; padding: 0 6px; border-bottom: 1px solid var(--line); }
+  .right-tabs-demo button { position: relative; border: 0; background: #fff; color: #657680; cursor: pointer; font-size: 9px; }
+  .right-tabs-demo button.active { color: #253841; font-weight: 700; }
+  .right-tabs-demo button.active::after { content: ""; position: absolute; left: 10px; right: 10px; bottom: -1px; height: 2px; background: var(--brand); }
+  .tab-badge { display: inline-grid; place-items: center; min-width: 14px; height: 14px; border-radius: 7px; background: #e8efef; color: #5e727b; font-size: 6px; }
+  .right-pane { height: calc(100% - 44px); overflow: auto; }
+  #right-communication { overflow: hidden; }
+  .comm-list-view, .comm-detail-view, .comm-picker-view { height: 100%; overflow: auto; }
+  .node-head { display: flex; align-items: center; min-height: 58px; padding: 10px 13px; border-bottom: 1px solid var(--line); }
+  .node-icon { display: grid; place-items: center; width: 30px; height: 30px; margin-right: 8px; border: 1px solid #79beb3; border-radius: 50%; background: var(--brand-soft); color: var(--brand-dark); }
+  .node-head b { display: block; font-size: 9px; }
+  .node-head small { display: block; margin-top: 3px; color: var(--muted); font-size: 6px; }
+  .node-health { margin-left: auto; color: #168264; font-size: 6px; }
+  .comm-summary { display: flex; align-items: center; height: 28px; padding: 0 12px; border-bottom: 1px solid var(--line); color: #657780; font-size: 7px; }
+  .comm-summary span:last-child { margin-left: auto; color: #168264; }
+  .comm-section-title { display: flex; justify-content: space-between; padding: 10px 12px 5px; color: #516670; font-size: 8px; font-weight: 700; }
+  .comm-section-title span { color: var(--muted); font-size: 6px; font-weight: 400; }
+  .comm-row { width: 100%; min-height: 72px; padding: 8px 12px; border: 0; border-bottom: 1px solid var(--line-soft); background: #fff; color: var(--ink); cursor: pointer; text-align: left; }
+  .comm-row:hover { background: #f8fbfa; }
+  .comm-relation { display: grid; grid-template-columns: auto 11px minmax(0,1fr) auto; align-items: center; gap: 3px; min-width: 0; }
+  .comm-relation.property-only { grid-template-columns: minmax(0,1fr) auto auto; }
+  .comm-relation b { overflow: hidden; font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
+  .comm-arrow { color: var(--brand); font-size: 9px; font-weight: 700; text-align: center; }
+  .comm-point-name { overflow: hidden; color: #405862; font: 7px Consolas, monospace; text-overflow: ellipsis; white-space: nowrap; }
+  .comm-unbound { color: #8a979d; font-size: 6px; }
+  .comm-edit { color: var(--brand-dark); font-size: 6px; font-weight: 700; white-space: nowrap; }
+  .comm-evidence { display: grid; grid-template-columns: minmax(0,1fr) 9px minmax(0,1fr); align-items: center; gap: 3px; min-width: 0; margin-top: 6px; color: #5e717a; font-size: 6px; }
+  .comm-evidence.property-evidence { grid-template-columns: auto minmax(0,1fr); }
+  .property-evidence .comm-result { justify-self: end; }
+  .comm-transform, .comm-final { display: grid; grid-template-columns: auto minmax(0,1fr); align-items: center; gap: 3px; min-width: 0; }
+  .evidence-label { color: #8a979d; font-size: 5px; }
+  .comm-transform > span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .comm-result { display: inline-flex; align-items: center; gap: 3px; min-width: 0; max-width: 100%; color: #334c56; font-weight: 700; white-space: nowrap; }
+  .result-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .result-swatch { display: inline-block; width: 10px; height: 10px; border: 1px solid rgba(0,0,0,.15); border-radius: 2px; }
+  .comm-meta { overflow: hidden; margin-top: 5px; color: #8a979d; font-size: 6px; text-overflow: ellipsis; white-space: nowrap; }
+  .source-tag { flex: 0 0 auto; padding: 2px 5px; border-radius: 2px; background: #eff3f4; color: #647680; font-size: 6px; }
+  .source-tag.point { background: var(--brand-soft); color: var(--brand-dark); }
+  .detail-head { display: flex; align-items: center; height: 45px; padding: 0 10px; border-bottom: 1px solid var(--line); }
+  .detail-back { display: grid; place-items: center; width: 27px; height: 27px; margin-right: 7px; border: 0; background: #fff; color: #60737d; }
+  .detail-head b { font-size: 9px; }
+  .detail-head small { overflow: hidden; margin-left: auto; color: var(--muted); font-size: 6px; text-overflow: ellipsis; white-space: nowrap; }
+  .detail-body { padding: 10px 12px 12px; }
+  .detail-label { margin: 0 0 6px; color: #647680; font-size: 7px; }
+  .mode-switch { display: grid; grid-template-columns: 1fr 1fr; margin-bottom: 11px; overflow: hidden; border: 1px solid var(--line); border-radius: 3px; }
+  .source-choice { height: 31px; border: 0; border-left: 1px solid var(--line); background: #fff; color: #657780; font-size: 7px; }
+  .source-choice:first-child { border-left: 0; }
+  .source-choice.active { background: var(--brand-soft); color: var(--brand-dark); font-weight: 700; }
+  .point-selector { display: grid; grid-template-columns: 16px minmax(0,1fr) 14px; align-items: center; width: 100%; min-height: 46px; margin-bottom: 5px; padding: 5px 8px; border: 1px solid #9ccdc4; border-radius: 3px; background: #fff; color: #344b56; cursor: pointer; text-align: left; }
+  .point-selector span { min-width: 0; }
+  .point-selector b { display: block; overflow: hidden; font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
+  .point-selector small { display: block; overflow: hidden; margin-top: 3px; color: var(--muted); font-size: 6px; text-overflow: ellipsis; white-space: nowrap; }
+  .connection-meta { display: grid; grid-template-columns: 34px minmax(0,1fr) auto; align-items: center; min-height: 42px; margin-bottom: 10px; padding: 6px 7px; border: 1px solid var(--line); border-radius: 3px; background: var(--soft); }
+  .connection-protocol { display: grid; place-items: center; width: 29px; height: 22px; border: 1px solid #b9d9d3; border-radius: 2px; background: #fff; color: var(--brand-dark); font-size: 5px; font-weight: 800; }
+  .connection-meta b { display: block; overflow: hidden; font-size: 7px; text-overflow: ellipsis; white-space: nowrap; }
+  .connection-meta small { display: block; margin-top: 3px; color: var(--muted); font-size: 6px; }
+  .connection-meta em { color: #168264; font-size: 6px; font-style: normal; }
+  .value-preview { margin-bottom: 10px; overflow: hidden; border: 1px solid var(--line); border-radius: 3px; }
+  .preview-row { display: flex; align-items: center; min-height: 31px; padding: 0 8px; border-top: 1px solid var(--line-soft); font-size: 7px; }
+  .preview-row:first-child { border-top: 0; }
+  .preview-row span { color: var(--muted); }
+  .preview-row b { display: inline-flex; align-items: center; gap: 4px; min-width: 0; max-width: 65%; margin-left: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .conversion-card { margin-bottom: 10px; overflow: hidden; border: 1px solid var(--line); border-radius: 3px; background: #fff; }
+  .conversion-head { display: flex; align-items: center; min-height: 28px; padding: 0 7px; background: var(--soft); color: #60737d; font-size: 6px; }
+  .conversion-head b { color: #344b56; font-size: 7px; }
+  .conversion-head span { margin-left: auto; }
+  .mapping-row { display: grid; grid-template-columns: minmax(0,1fr) 12px minmax(0,1fr); align-items: center; min-height: 27px; padding: 0 7px; border-top: 1px solid var(--line-soft); font-size: 6px; }
+  .mapping-row span:nth-child(2) { color: var(--brand); text-align: center; }
+  .mapping-row b { display: inline-flex; align-items: center; justify-content: flex-end; gap: 3px; overflow: hidden; color: #3b515c; text-overflow: ellipsis; white-space: nowrap; }
+  .property-value-card { display: flex; align-items: center; min-height: 42px; margin-bottom: 10px; padding: 0 8px; border: 1px solid var(--line); border-radius: 3px; background: var(--soft); color: #60737d; font-size: 7px; }
+  .property-value-card b { display: inline-flex; align-items: center; gap: 4px; min-width: 0; max-width: 65%; margin-left: auto; overflow: hidden; color: #344b56; text-overflow: ellipsis; white-space: nowrap; }
+  .apply-binding { width: 100%; height: 32px; margin-top: 10px; border: 1px solid var(--brand); border-radius: 3px; background: var(--brand); color: #fff; font-size: 8px; }
+  .picker-body { padding: 9px 9px 14px; }
+  .picker-search { display: grid; grid-template-columns: 15px minmax(0,1fr); align-items: center; gap: 5px; height: 31px; padding: 0 7px; border: 1px solid var(--line); border-radius: 3px; color: #8a979e; }
+  .picker-search input { min-width: 0; border: 0; outline: 0; color: #405862; font-size: 7px; }
+  .picker-group { margin-top: 10px; }
+  .picker-group-title { display: flex; align-items: center; gap: 5px; padding: 0 4px 5px; color: #516670; font-size: 7px; font-weight: 700; }
+  .picker-group-title span:last-child { margin-left: auto; color: #168264; font-size: 6px; font-weight: 400; }
+  .picker-point { display: grid; grid-template-columns: 8px minmax(0,1fr) 14px; align-items: start; width: 100%; min-height: 56px; padding: 7px 6px; border: 0; border-top: 1px solid var(--line-soft); background: #fff; color: #344b56; cursor: pointer; text-align: left; }
+  .picker-point:hover, .picker-point.selected { background: var(--brand-soft); }
+  .picker-point .status-dot { width: 6px; height: 6px; margin-top: 3px; }
+  .picker-point b { display: block; overflow: hidden; font-size: 7px; text-overflow: ellipsis; white-space: nowrap; }
+  .picker-point code { display: block; overflow: hidden; margin-top: 3px; color: #526974; font: 6px Consolas, monospace; text-overflow: ellipsis; white-space: nowrap; }
+  .picker-point small { display: block; overflow: hidden; margin-top: 3px; color: var(--muted); font-size: 6px; text-overflow: ellipsis; white-space: nowrap; }
+  .picker-check { color: var(--brand); }
+  .picker-empty { padding: 28px 8px; color: var(--muted); font-size: 7px; text-align: center; }
+
+  /* 通信栏保持正式产品的 255px 宽度；一条关系贯穿候选、确认与结果。 */
+  .binding-usage-path { display: flex; align-items: center; gap: 7px; min-height: 38px; margin: 0 0 8px; padding: 7px 10px; border: 1px solid var(--line); background: #fff; color: #61737c; font-size: 8px; }
+  .binding-usage-path b { flex: 0 0 auto; color: #334b55; font-size: 9px; }
+  .binding-usage-path span { white-space: nowrap; }
+  .binding-usage-path i { color: #9aa7ac; font-style: normal; }
+  #right-communication { position: relative; overflow: hidden; }
+  .comm-view { width: 100%; height: 100%; min-width: 0; overflow: auto; }
+  .comm-picker-view { display: grid; grid-template-rows: 51px minmax(0,1fr) auto; overflow: hidden; }
+  .comm-overview { padding: 8px 11px; border-bottom: 1px solid var(--line); background: #f7faf9; }
+  .comm-overview-top { display: flex; align-items: center; justify-content: space-between; color: #516670; font-size: 7px; font-weight: 700; }
+  .comm-overview-top span:last-child { color: var(--brand-dark); font-size: 6px; }
+  .comm-overview p { margin: 5px 0 0; color: #71818a; font-size: 6px; line-height: 1.55; }
+  .property-group-title { display: flex; align-items: center; justify-content: space-between; min-height: 28px; padding: 7px 11px 4px; background: #fafbfb; color: #536871; font-size: 7px; font-weight: 700; }
+  .property-group-title span:last-child { color: #89969c; font-size: 6px; font-weight: 400; }
+  .property-binding-row { display: block; width: 100%; min-width: 0; padding: 8px 10px 9px; border: 0; border-bottom: 1px solid var(--line-soft); background: #fff; color: var(--ink); cursor: pointer; text-align: left; }
+  .property-binding-row:hover, .property-binding-row:focus-visible, .property-binding-row.is-updated { outline: 0; background: var(--brand-soft); }
+  .property-row-head { display: grid; grid-template-columns: 18px minmax(0,1fr) auto 12px; align-items: center; gap: 5px; min-width: 0; }
+  .property-kind-icon { display: grid; place-items: center; width: 18px; height: 18px; color: #657981; }
+  .property-copy { min-width: 0; }
+  .property-copy b, .property-copy small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .property-copy b { font-size: 8px; }
+  .property-copy small { margin-top: 3px; color: #819097; font-size: 6px; }
+  .binding-status { display: inline-flex; align-items: center; height: 17px; padding: 0 5px; border: 1px solid #d3dddf; border-radius: 2px; color: #7d8c93; font-size: 6px; white-space: nowrap; }
+  .binding-status.is-bound { border-color: #9ccdc4; background: var(--brand-soft); color: var(--brand-dark); }
+  .row-chevron { width: 11px; height: 11px; color: #8a989e; }
+  .unbound-action { display: flex; align-items: center; justify-content: space-between; margin: 7px 0 0 23px; color: #829198; font-size: 6px; }
+  .unbound-action strong { color: var(--brand-dark); font-weight: 700; }
+  .bound-details { margin: 7px 0 0 23px; padding-left: 7px; border-left: 2px solid #8bc8bd; }
+  .bound-relation-line { display: grid; grid-template-columns: minmax(0,.8fr) 10px minmax(0,1.2fr) auto; align-items: start; gap: 4px; min-width: 0; }
+  .bound-relation-property { overflow: hidden; padding-top: 1px; color: #334c56; font-size: 7px; text-overflow: ellipsis; white-space: nowrap; }
+  .bound-arrow { color: var(--brand); font-size: 9px; font-weight: 700; line-height: 1; text-align: center; }
+  .bound-point-copy { min-width: 0; }
+  .bound-point-copy b, .bound-point-copy code { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .bound-point-copy b { color: #405862; font-size: 7px; }
+  .bound-point-copy code { margin-top: 2px; color: #7a8990; font: 6px Consolas, monospace; }
+  .unbind-button { min-width: 30px; height: 22px; padding: 0 4px; border: 0; background: transparent; color: #b55151; cursor: pointer; font-size: 6px; }
+  .bound-value-line { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); gap: 5px; margin-top: 6px; }
+  .bound-metric { min-width: 0; color: #7a8a91; font-size: 5px; }
+  .bound-metric strong, .bound-metric .comm-result { display: flex; min-width: 0; margin-top: 2px; overflow: hidden; color: #405862; font-size: 7px; text-overflow: ellipsis; white-space: nowrap; }
+  .bound-metric.runtime strong, .bound-metric.runtime .comm-result { color: var(--brand-dark); font-weight: 700; }
+  .binding-rule-note { display: flex; align-items: center; gap: 4px; margin-top: 6px; color: #75878e; font-size: 5px; }
+  .binding-rule-note .icon-sm { width: 10px; height: 10px; color: var(--brand); }
+  .comm-list-footer { display: flex; align-items: center; justify-content: space-between; min-height: 40px; padding: 7px 11px; border-top: 1px solid var(--line); color: #829198; font-size: 6px; }
+  .advanced-rules-link { padding: 3px 0; border: 0; background: transparent; color: var(--brand-dark); cursor: pointer; font-size: 6px; text-decoration: underline; text-underline-offset: 2px; }
+
+  .binding-head { display: flex; align-items: center; min-width: 0; height: 51px; padding: 0 9px; border-bottom: 1px solid var(--line); background: #fff; }
+  .binding-head-back { display: grid; place-items: center; flex: 0 0 auto; width: 27px; height: 27px; margin-right: 6px; border: 0; background: #fff; color: #60737d; cursor: pointer; }
+  .binding-head-copy { min-width: 0; }
+  .binding-head-copy b, .binding-head-copy small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .binding-head-copy b { font-size: 9px; }
+  .binding-head-copy small { margin-top: 2px; color: var(--muted); font-size: 6px; }
+  .picker-body { min-height: 0; overflow: auto; padding: 7px 9px 10px; background: #fafbfb; }
+  .picker-search { display: grid; grid-template-columns: 15px minmax(0,1fr); align-items: center; gap: 5px; height: 31px; margin: 0; padding: 0 7px; border: 1px solid var(--line); border-radius: 3px; background: #fff; color: #8a979e; }
+  .picker-search input { min-width: 0; border: 0; outline: 0; color: #405862; font-size: 7px; }
+  .point-group-title { display: flex; align-items: center; justify-content: space-between; padding: 11px 4px 5px; color: #526771; font-size: 7px; font-weight: 700; }
+  .point-group-title span:last-child { color: #168264; font-size: 6px; font-weight: 400; }
+  .point-option { display: grid; grid-template-columns: 8px minmax(0,1fr) 14px; align-items: start; gap: 5px; width: 100%; min-width: 0; min-height: 61px; padding: 7px 6px; border: 0; border-top: 1px solid var(--line-soft); background: #fff; color: #405761; cursor: pointer; text-align: left; }
+  .point-option:hover, .point-option:focus-visible { outline: 0; background: #f7faf9; }
+  .point-option.is-selected { box-shadow: inset 3px 0 var(--brand); background: var(--brand-soft); }
+  .point-option-content { min-width: 0; }
+  .point-relation-preview { display: grid; grid-template-columns: auto 12px minmax(0,1fr); align-items: start; gap: 3px; min-width: 0; color: #334c56; font-size: 7px; line-height: 1.45; }
+  .point-relation-preview b { min-width: 0; overflow-wrap: anywhere; }
+  .point-relation-arrow { color: var(--brand); font-size: 9px; font-weight: 700; line-height: 1.1; text-align: center; }
+  .point-option-meta { display: flex; flex-wrap: wrap; gap: 2px 6px; min-width: 0; margin-top: 4px; color: var(--muted); font-size: 5px; line-height: 1.45; }
+  .point-option-meta code { color: #526974; font: 5px Consolas, monospace; overflow-wrap: anywhere; }
+  .point-option-state { display: grid; place-items: center; width: 14px; height: 14px; color: #98a5aa; }
+  .point-option.is-selected .point-option-state { color: var(--brand-dark); }
+  .picker-empty { padding: 28px 8px; color: var(--muted); font-size: 7px; text-align: center; }
+  .picker-confirm { position: relative; z-index: 2; padding: 8px 9px 9px; border-top: 1px solid #cbd9dc; background: #fff; box-shadow: 0 -4px 12px rgba(34,52,62,.06); }
+  .binding-relation-card { min-width: 0; padding: 7px; border: 1px solid #a9cec7; border-radius: 3px; background: #fff; }
+  .picker-confirm-title { display: flex; align-items: center; justify-content: space-between; gap: 5px; color: #344c56; font-size: 7px; font-weight: 700; }
+  .picker-confirm-title span { color: #7e8d94; font-size: 5px; font-weight: 400; white-space: nowrap; }
+  .confirm-relation { display: grid; grid-template-columns: minmax(0,.8fr) 14px minmax(0,1.2fr); align-items: start; gap: 4px; min-width: 0; margin-top: 7px; padding: 7px 0; border-top: 1px solid var(--line-soft); border-bottom: 1px solid var(--line-soft); }
+  .confirm-relation-side { min-width: 0; }
+  .confirm-relation-side small { display: block; color: #809097; font-size: 5px; }
+  .confirm-relation-side b, .confirm-relation-side code { display: block; min-width: 0; margin-top: 3px; color: #344c56; font-size: 7px; line-height: 1.35; overflow-wrap: anywhere; }
+  .confirm-relation-side code { color: #60737d; font: 5px Consolas, monospace; }
+  .confirm-relation-side .pending-value { color: #9aa6ab; font-weight: 400; }
+  .confirm-relation-arrow { color: var(--brand); font-size: 12px; font-weight: 700; line-height: 2.2; text-align: center; }
+  .confirm-relation-meta { display: flex; flex-wrap: wrap; gap: 2px 7px; min-width: 0; padding-top: 6px; color: #7c8d94; font-size: 5px; line-height: 1.45; }
+  .confirm-relation-meta b { color: #405862; font-size: 5px; }
+  .confirm-binding-button { display: flex; align-items: center; justify-content: center; gap: 5px; width: 100%; min-height: 29px; margin-top: 7px; border: 1px solid var(--brand); border-radius: 3px; background: var(--brand); color: #fff; cursor: pointer; font-size: 7px; font-weight: 700; }
+  .confirm-binding-button:disabled { border-color: #d7dfe1; background: #e7ecee; color: #98a4aa; cursor: not-allowed; }
+  .picker-confirm-hint { margin: 5px 0 0; color: #7c8d94; font-size: 5px; line-height: 1.45; text-align: center; }
+  .binding-toast { position: absolute; z-index: 5; left: 9px; right: 9px; top: 8px; display: flex; align-items: center; min-height: 34px; padding: 6px 8px; border: 1px solid #8bc8bd; border-radius: 3px; background: #f0fbf8; color: #32675c; box-shadow: 0 4px 12px rgba(28,73,64,.12); font-size: 6px; line-height: 1.45; }
+  .panel-title { margin: 0; padding: 13px 14px 8px; border-top: 1px solid var(--line-soft); font-size: 10px; }
+  .demo-field { display: flex; align-items: center; justify-content: space-between; min-height: 40px; padding: 5px 14px; color: #717b83; font-size: 8px; }
+  .demo-control { width: 125px; min-height: 29px; padding: 7px; border: 1px solid var(--line); color: #3e535e; text-align: right; }
+  .layout-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; padding: 12px; }
+  .layout-actions button { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 5px; height: 62px; border: 1px solid var(--line); background: #fff; color: #60717a; font-size: 7px; }
+  .structure-row { display: flex; align-items: center; gap: 7px; width: 100%; height: 40px; padding: 0 12px; border: 0; border-bottom: 1px solid var(--line-soft); background: #fff; color: #52646d; font-size: 8px; text-align: left; }
+  .structure-row.active { background: var(--brand-soft); color: var(--brand-dark); }
+  .structure-row span { overflow: hidden; flex: 1; text-overflow: ellipsis; white-space: nowrap; }
+
+  /* 方案二十一：属性参数与通信参数同源，通信只保留“选参数、连数据”两步。 */
+  .property-parameter-pane { padding-bottom: 10px; }
+  .property-param-section { border-top: 1px solid var(--line-soft); }
+  .property-param-title { min-height: 31px; margin: 0; padding: 10px 12px 5px; background: #fafbfb; color: #536871; font-size: 8px; }
+  .property-param-row { display: grid; grid-template-columns: minmax(0,1fr) minmax(78px,112px); align-items: center; gap: 7px; min-height: 42px; padding: 6px 12px; border-top: 1px solid var(--line-soft); color: #62747d; font-size: 7px; }
+  .property-param-row:first-of-type { border-top: 0; }
+  .property-param-row b { overflow: hidden; color: #3c505a; font-size: 8px; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
+  .property-param-value { display: flex; align-items: center; justify-content: flex-end; gap: 5px; min-height: 27px; padding: 5px 7px; border: 1px solid var(--line); background: #fff; color: #405862; font-size: 7px; text-align: right; }
+  .property-param-value .result-swatch { flex: 0 0 auto; }
+
+  .parameter-overview { padding: 8px 11px; border-bottom: 1px solid var(--line); background: #f7faf9; }
+  .parameter-overview strong { display: block; color: #344c56; font-size: 8px; }
+  .parameter-overview span { display: block; margin-top: 4px; color: #71818a; font-size: 6px; line-height: 1.45; }
+  .parameter-binding-row { display: block; width: 100%; min-width: 0; padding: 8px 10px; border: 0; border-bottom: 1px solid var(--line-soft); background: #fff; color: var(--ink); cursor: pointer; text-align: left; }
+  .parameter-binding-row:hover, .parameter-binding-row:focus-visible, .parameter-binding-row.is-updated { outline: 0; background: var(--brand-soft); }
+  .parameter-row-main { display: grid; grid-template-columns: 18px minmax(0,1fr) auto; align-items: center; gap: 6px; width: 100%; min-width: 0; padding: 0; border: 0; background: transparent; color: inherit; cursor: pointer; font-family: inherit; text-align: left; }
+  .parameter-row-copy { min-width: 0; }
+  .parameter-row-copy b, .parameter-row-copy small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .parameter-row-copy b { font-size: 8px; }
+  .parameter-row-copy small { margin-top: 3px; color: #819097; font-size: 6px; }
+  .bind-data-button, .replace-data-button, .disconnect-data-button, .connect-point-button { display: inline-flex; align-items: center; justify-content: center; gap: 3px; min-height: 24px; padding: 0 7px; border: 1px solid #83c4b9; border-radius: 3px; background: #fff; color: var(--brand-dark); cursor: pointer; font-size: 6px; font-weight: 700; white-space: nowrap; }
+  .bind-data-button:hover, .replace-data-button:hover, .connect-point-button:hover { border-color: var(--brand); background: var(--brand); color: #fff; }
+  .bound-parameter-details { margin: 7px 0 0 24px; padding: 7px; border-left: 2px solid var(--brand); background: #f8fbfa; }
+  .bound-parameter-relation { display: flex; align-items: center; gap: 4px; min-width: 0; color: #344c56; font-size: 7px; }
+  .bound-parameter-relation b { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .bound-parameter-relation span { flex: 0 0 auto; color: var(--brand); font-size: 9px; font-weight: 700; }
+  .bound-parameter-meta { display: flex; flex-wrap: wrap; gap: 3px 7px; margin-top: 5px; color: #71818a; font-size: 5px; line-height: 1.45; }
+  .bound-parameter-meta code { max-width: 100%; overflow-wrap: anywhere; color: #526974; font: 5px Consolas, monospace; }
+  .bound-parameter-meta strong { color: var(--brand-dark); font-size: 6px; }
+  .bound-parameter-actions { display: flex; justify-content: flex-end; gap: 5px; margin-top: 6px; }
+  .replace-data-button, .disconnect-data-button { min-height: 21px; padding: 0 6px; }
+  .disconnect-data-button { border-color: #e0c8c8; color: #a84d4d; }
+  .disconnect-data-button:hover { border-color: #c66a6a; background: #fff5f5; }
+
+  .comm-picker-view { grid-template-rows: 51px 42px minmax(0,1fr); }
+  .point-picker-toolbar { display: grid; grid-template-columns: minmax(0,1fr) 69px; align-items: center; gap: 6px; padding: 6px 9px; border-bottom: 1px solid var(--line); background: #fafbfb; }
+  .point-picker-toolbar .picker-search { height: 29px; }
+  .protocol-filter { min-width: 0; height: 29px; padding: 0 5px; border: 1px solid var(--line); border-radius: 3px; outline: 0; background: #fff; color: #526974; font-size: 6px; }
+  .point-picker-toolbar + .picker-body { padding-top: 0; }
+  .dynamic-point-row { display: grid; grid-template-columns: 8px minmax(0,1fr) auto; align-items: center; gap: 6px; width: 100%; min-width: 0; min-height: 61px; padding: 7px 5px; border-top: 1px solid var(--line-soft); background: #fff; }
+  .dynamic-point-row:hover { background: #f7faf9; }
+  .dynamic-point-row .status-dot { width: 6px; height: 6px; }
+  .dynamic-point-copy { min-width: 0; }
+  .dynamic-point-copy b, .dynamic-point-copy code { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .dynamic-point-copy b { color: #344c56; font-size: 7px; }
+  .dynamic-point-copy code { margin-top: 3px; color: #526974; font: 5px Consolas, monospace; }
+  .dynamic-point-meta { display: flex; flex-wrap: wrap; gap: 2px 6px; margin-top: 4px; color: #7a8a91; font-size: 5px; line-height: 1.35; }
+  .dynamic-point-meta strong { color: var(--brand-dark); font-size: 6px; }
+  .connect-point-button { min-width: 39px; min-height: 26px; padding: 0 6px; }
+  .connect-point-button.is-current { border-color: #d5dfe1; background: #edf2f3; color: #77878e; cursor: default; }
+  .parameter-list-footer { min-height: 37px; padding: 8px 11px; border-top: 1px solid var(--line); color: #819097; font-size: 6px; line-height: 1.5; }
+  .parameter-binding-row.is-selecting { position: sticky; z-index: 3; top: 0; border-left: 3px solid var(--brand); padding-left: 7px; background: var(--brand-soft); box-shadow: 0 3px 8px rgba(34,52,62,.08); }
+  .inline-point-picker { border-bottom: 1px solid #c8d9d6; background: #f7faf9; }
+  .inline-picker-head { display: flex; align-items: center; min-height: 32px; padding: 6px 9px; color: #405862; }
+  .inline-picker-head b { font-size: 8px; }
+  .inline-picker-head span { margin-left: 5px; color: #809097; font-size: 6px; }
+  .inline-picker-close { display: grid; place-items: center; width: 22px; height: 22px; margin-left: auto; border: 0; background: transparent; color: #71818a; cursor: pointer; }
+  .inline-picker-tools { display: grid; grid-template-columns: minmax(0,1fr) 67px; gap: 5px; padding: 0 8px 7px; }
+  .inline-picker-tools .picker-search { height: 29px; background: #fff; }
+  .inline-point-results { max-height: 251px; overflow: auto; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); background: #fff; }
+  .dynamic-point-row { border: 0; border-top: 1px solid var(--line-soft); cursor: pointer; text-align: left; }
+  .dynamic-point-row:first-child { border-top: 0; }
+  .dynamic-point-row:focus-visible { outline: 2px solid #83c4b9; outline-offset: -2px; }
+  .dynamic-point-row.is-selected { box-shadow: inset 3px 0 var(--brand); background: var(--brand-soft); }
+  .dynamic-point-state { display: grid; place-items: center; width: 18px; height: 18px; border: 1px solid #aab9bf; border-radius: 50%; color: transparent; }
+  .dynamic-point-row.is-selected .dynamic-point-state { border-color: var(--brand); background: var(--brand); color: #fff; }
+  .dynamic-point-state .icon-sm { width: 11px; height: 11px; }
+  .inline-connect-confirm { display: grid; grid-template-columns: minmax(0,1fr) auto; align-items: center; gap: 7px; padding: 8px; background: #fff; }
+  .inline-connect-confirm b { color: #344c56; font-size: 7px; font-weight: 600; line-height: 1.45; }
+  .establish-connection-button { display: inline-flex; align-items: center; justify-content: center; gap: 3px; min-height: 27px; padding: 0 8px; border: 1px solid var(--brand); border-radius: 3px; background: var(--brand); color: #fff; cursor: pointer; font-size: 6px; font-weight: 700; white-space: nowrap; }
+  .compact-comm-summary { display: flex; align-items: center; min-height: 29px; padding: 0 11px; border-bottom: 1px solid var(--line); background: #fafbfb; color: #71818a; font-size: 6px; }
+  .compact-comm-summary b { color: #405862; font-size: 7px; }
+  .compact-comm-summary span { margin-left: auto; color: var(--brand-dark); }
+
+  .decision { display: flex; align-items: center; gap: 14px; margin-top: 18px; padding: 11px; border: 1px solid #bfd9d3; border-radius: 5px; background: var(--brand-soft); }
+  .decision-copy { min-width: 300px; }
+  .decision-copy b { display: block; font-size: 10px; }
+  .decision-copy span { display: block; margin-top: 3px; color: #55726b; font-size: 7px; }
+  .decision .options { flex: 1; }
+  @media (max-width: 1120px) {
+    .source-workbench { grid-template-columns: 185px minmax(0,1fr); }
+    .editor-body { grid-template-columns: 130px minmax(300px,1fr) 255px; }
+  }
+</style>
+
+<div class="v14">
+  <h2>方案二十一：先选参数，再连接动态数据</h2>
+  <p class="lead">选中组件后，“通信”展示与“属性”完全一致的参数；选中一个参数，再手动选择动态数据并建立连接。</p>
+  <div class="design-notes">
+    <div class="design-note"><b>入口保持不变</b><span>继续从顶部工具栏“数据源”进入全局配置，不放入组件面板。</span></div>
+    <div class="design-note"><b>参数与属性一致</b><span>属性页和通信页共用同一份参数定义，名称和当前值不会出现偏差。</span></div>
+    <div class="design-note"><b>两步手动连接</b><span>先点组件参数，再选动态数据；只有点击“建立连接”后关系才会生效。</span></div>
+  </div>
+
+  <div class="section-head"><h3>1. 数据源管理：一个页面完成选择、编辑和测试</h3><p>默认只显示常用字段，高级连接参数折叠</p></div>
+  <section class="source-app">
+    <header class="source-header"><button class="source-back" title="返回图纸"><i data-lucide="arrow-left" class="icon-sm"></i></button><div class="source-title"><b>数据源</b><span>工作空间统一连接</span></div><div class="source-status"><span><strong>5 / 6</strong> 在线</span><span><strong>1,426</strong> 个点位</span></div><button class="new-source"><i data-lucide="plus" class="icon-sm"></i>新建连接</button></header>
+    <div class="source-workbench">
+      <aside class="source-sidebar">
+        <div class="source-sidebar-head"><div class="source-search"><i data-lucide="search" class="icon-sm"></i><span>搜索连接</span></div><button class="plain-icon" title="筛选"><i data-lucide="list-filter" class="icon-sm"></i></button></div>
+        <div class="source-sidebar-label"><span>全部连接</span><span>6</span></div>
+        <button class="source-item active" data-source="mqtt" onclick="selectSource('mqtt',this)"><span class="protocol-icon">MQTT</span><span><b>车间设备</b><small>mqtt://10.20.1.18:1883</small></span><i class="status-dot"></i></button>
+        <button class="source-item" data-source="http" onclick="selectSource('http',this)"><span class="protocol-icon">HTTP</span><span><b>能源接口</b><small>每 1 秒拉取</small></span><i class="status-dot"></i></button>
+        <button class="source-item" data-source="mysql" onclick="selectSource('mysql',this)"><span class="protocol-icon">MYSQL</span><span><b>生产报表</b><small>增量查询</small></span><i class="status-dot"></i></button>
+        <button class="source-item" data-source="mssql" onclick="selectSource('mssql',this)"><span class="protocol-icon">SQL</span><span><b>质检数据库</b><small>Change Tracking</small></span><i class="status-dot"></i></button>
+        <button class="source-item" data-source="redis" onclick="selectSource('redis',this)"><span class="protocol-icon">REDIS</span><span><b>实时告警</b><small>Streams</small></span><i class="status-dot"></i></button>
+        <button class="source-item" data-source="socket" onclick="selectSource('socket',this)"><span class="protocol-icon">WS</span><span><b>PLC 网关</b><small>TCP Socket</small></span><i class="status-dot warn"></i></button>
+      </aside>
+      <main class="source-center">
+        <header class="source-selected"><span class="selected-protocol" id="selected-protocol">MQTT</span><div class="selected-copy"><b id="selected-source-name">车间设备</b><span id="selected-source-desc">设备遥测 · 286 个点位</span></div><span class="selected-health"><i class="status-dot"></i><span id="selected-health">连接在线 · 数据正常</span></span><div class="selected-actions"><button class="secondary">测试连接</button><button class="primary">保存</button><button class="source-more" title="更多操作"><i data-lucide="ellipsis" class="icon-sm"></i></button></div></header>
+        <nav class="source-tabs"><button class="source-tab active" data-manager-tab="config" onclick="selectManagerTab('config',this)">连接配置</button><button class="source-tab" data-manager-tab="points" onclick="selectManagerTab('points',this)">数据点位</button></nav>
+        <div class="source-detail" id="source-detail"></div>
+      </main>
+    </div>
+  </section>
+
+  <div class="section-head"><h3>2. 数据使用：选择参数，连接动态数据</h3><p>参数列表内展开点位选择，始终保留当前组件上下文</p></div>
+  <div class="binding-usage-path"><b>实际操作</b><span>选中组件</span><i>→</i><span>通信</span><i>→</i><span>选择参数</span><i>→</i><span>选择动态数据</span><i>→</i><span>建立连接</span></div>
+  <section class="editor">
+    <header class="editor-toolbar"><div class="brand"><span class="brand-mark"></span><span>苔岑2D绘图</span></div><div class="tools"><button class="tool"><i data-lucide="folder-open" class="icon"></i>打开</button><button class="tool"><i data-lucide="save" class="icon"></i>保存</button><button class="tool active"><i data-lucide="mouse-pointer-2" class="icon"></i>选择</button><button class="tool"><i data-lucide="pencil" class="icon"></i>铅笔</button><button class="tool"><i data-lucide="database-zap" class="icon"></i>数据源</button></div><div class="toolbar-space"></div><button class="preview"><i data-lucide="play" class="icon-sm"></i>预览</button></header>
+    <div class="editor-body">
+      <aside class="library"><div class="library-tabs"><span>图纸</span><span class="active">组件</span><span>我的</span></div><div class="library-search">搜索组件</div><div class="library-title">工业设备</div><div class="library-grid"><div class="library-item"><i data-lucide="fan" class="icon"></i>风机</div><div class="library-item"><i data-lucide="gauge" class="icon"></i>仪表</div><div class="library-item"><i data-lucide="circle-dot" class="icon"></i>信号灯</div><div class="library-item"><i data-lucide="workflow" class="icon"></i>管道</div></div></aside>
+      <main class="canvas"><div class="fan"><span class="fan-blade"></span><span class="fan-hub"></span></div><span class="fan-label">风机 01</span></main>
+      <aside class="right-panel-demo">
+        <nav class="right-tabs-demo"><button onclick="showRightTab('property',this)">属性</button><button class="active" onclick="showRightTab('communication',this)">通信 <span class="tab-badge" id="comm-binding-count">0</span></button><button onclick="showRightTab('layout',this)">布局</button><button onclick="showRightTab('structure',this)">结构</button></nav>
+        <div class="right-pane hidden" id="right-property"><div class="node-head"><span class="node-icon"><i data-lucide="fan" class="icon-sm"></i></span><div><b>风机 01</b><small>工业设备</small></div></div><h4 class="panel-title">基础属性</h4><div class="demo-field"><span>X</span><div class="demo-control">320</div></div><div class="demo-field"><span>Y</span><div class="demo-control">240</div></div><div class="demo-field"><span>宽度</span><div class="demo-control">160</div></div><div class="demo-field"><span>高度</span><div class="demo-control">160</div></div><div class="property-parameter-pane" id="property-parameter-pane"></div></div>
+        <div class="right-pane" id="right-communication">
+          <div class="comm-view comm-list-view" id="comm-list-view"></div>
+          <div class="binding-toast hidden" id="binding-toast" role="status"></div>
+        </div>
+        <div class="right-pane hidden" id="right-layout"><h4 class="panel-title">画布布局</h4><div class="layout-actions"><button><i data-lucide="align-center-horizontal" class="icon"></i>水平居中</button><button><i data-lucide="align-center-vertical" class="icon"></i>垂直居中</button><button><i data-lucide="bring-to-front" class="icon"></i>置于顶层</button><button><i data-lucide="zoom-in" class="icon"></i>适应画布</button></div></div>
+        <div class="right-pane hidden" id="right-structure"><h4 class="panel-title">图层结构（4）</h4><button class="structure-row active"><i data-lucide="fan" class="icon-sm"></i><span>风机 01</span><small>4</small></button><button class="structure-row"><i data-lucide="workflow" class="icon-sm"></i><span>主管道</span><small>3</small></button><button class="structure-row"><i data-lucide="gauge" class="icon-sm"></i><span>压力表</span><small>2</small></button><button class="structure-row"><i data-lucide="type" class="icon-sm"></i><span>设备标题</span><small>1</small></button></div>
+      </aside>
+    </div>
+  </section>
+
+  <div class="decision"><div class="decision-copy"><b>参数列表内直接连接动态数据</b><span>点参数 → 在参数下方选动态数据 → 核对一句连接说明 → 点击“建立连接”；选择候选本身不会提交。</span></div><div class="options"><div class="option" data-choice="v21-approved" onclick="toggleSelect(this)"><div class="letter">A</div><div class="content"><h3>操作足够简单</h3><p>按此交互进入正式功能设计。</p></div></div><div class="option" data-choice="v21-adjust" onclick="toggleSelect(this)"><div class="letter">B</div><div class="content"><h3>参数或点位仍需调整</h3><p>指出需要保留或减少的信息。</p></div></div></div></div>
+</div>
+
+<script src="https://unpkg.com/lucide@0.468.0/dist/umd/lucide.min.js"></script>
+<script>
+  var sourceConfigs = {
+    mqtt: { protocol:'MQTT', name:'车间设备', desc:'设备遥测 · 286 个点位', health:'连接在线 · 数据正常', fields:[['Broker 地址','mqtt://10.20.1.18:1883','full code'],['Client ID','tc2d-gateway-line1','code'],['凭据','factory-readonly · 已保存',''],['Keep Alive','60 秒',''],['订阅 Topic','factory/line1/+/status  QoS 1\nfactory/line1/+/telemetry  QoS 0','full multiline']], sample:'{"device":"motor01","rpm":1480,\n "running":true,"alarm":"warning"}', points:[['motor01.rpm','1480'],['motor01.running','true'],['motor01.alarm','warning']], metrics:[['消息','1,240/s'],['延迟','18ms'],['解析失败','0'],['重连','0']] },
+    http: { protocol:'HTTP', name:'能源接口', desc:'定时拉取 · 58 个点位', health:'HTTP 200 · 数据正常', fields:[['请求地址','https://energy-gateway/api/v1/realtime','full code'],['方法 / 周期','GET / 1 秒',''],['鉴权','Bearer Token · 已保存',''],['超时','3 秒',''],['数据路径','$.data.devices[*]','full code']], sample:'{"data":{"power":386.2,\n "today":18342.7,"quality":"good"}}', points:[['energy.power','386.2'],['energy.today','18342.7'],['energy.quality','good']], metrics:[['请求','1/s'],['延迟','42ms'],['错误','0'],['响应','18KB']] },
+    mysql: { protocol:'MYSQL', name:'生产报表', desc:'增量查询 · 412 个点位', health:'连接池正常 · 数据正常', fields:[['后台连接','mysql-prod-read','full code'],['数据库','production','code'],['查询模板','device_snapshot_by_updated_at',''],['轮询周期','1 秒',''],['增量字段','updated_at','full code']], sample:'[{"device":"M01","output":12640,\n "updated_at":"14:32:16"}]', points:[['production.M01.output','12640'],['production.M01.target','13200'],['production.M01.state','run']], metrics:[['查询','1/s'],['P95','31ms'],['读取','356/s'],['慢查询','0']] },
+    mssql: { protocol:'SQL', name:'质检数据库', desc:'Change Tracking · 236 个点位', health:'连接在线 · 数据正常', fields:[['后台连接','mssql-quality-read','full code'],['数据库','Quality','code'],['查询模板','quality_result_changes',''],['轮询周期','500 ms',''],['表 / 视图','dbo.v_LineQuality','full code']], sample:'[{"line":"line1","pass_rate":98.72,\n "sample_count":642}]', points:[['quality.line1.passRate','98.72'],['quality.line1.samples','642'],['quality.line1.state','good']], metrics:[['查询','2/s'],['P95','46ms'],['延迟','83ms'],['死锁','0']] },
+    redis: { protocol:'REDIS', name:'实时告警', desc:'Streams · 128 个点位', health:'节点在线 · 数据正常', fields:[['后台连接','redis-alarm-read','full code'],['Database','2',''],['采集模式','Streams',''],['Stream Key','alarm:events','code'],['Consumer Group','tc2d-runtime','full code']], sample:'{"id":"ALM-0182","device":"motor01",\n "level":"warning","active":true}', points:[['alarm.latest.level','warning'],['alarm.motor01.active','true'],['alarm.latest.id','ALM-0182']], metrics:[['消息','86/s'],['P95','9ms'],['Lag','0'],['Pending','0']] },
+    socket: { protocol:'WS', name:'PLC 网关', desc:'TCP Socket · 306 个点位', health:'重连中 · 暂无数据', fields:[['后台网关','socket-plc-line1','full code'],['Host / Port','10.20.2.30:9001','code'],['报文边界','长度前缀 · 4 字节',''],['心跳','PING\\r\\n · 30 秒',''],['实时网关','wss://runtime-gateway/ws','full code']], sample:'00 00 00 28 7B 22 70 6C 63 22 ...\n{"plc":"L1","state":"run"}', points:[['plc.line1.state','run'],['plc.line1.count','12640'],['plc.line1.quality','offline']], metrics:[['接收','0/s'],['重连','4'],['队列','0'],['格式错误','0']] }
+  };
+  var currentSourceKey = 'mqtt';
+  var currentManagerTab = 'config';
+  function selectSource(key, button) {
+    currentSourceKey = key;
+    currentManagerTab = 'config';
+    document.querySelectorAll('.source-item').forEach(function(item){ item.classList.toggle('active', item === button); });
+    document.querySelectorAll('.source-tab').forEach(function(tab){ tab.classList.toggle('active', tab.dataset.managerTab === 'config'); });
+    renderSource();
+  }
+  function selectManagerTab(tab, button) {
+    currentManagerTab = tab;
+    document.querySelectorAll('.source-tab').forEach(function(item){ item.classList.toggle('active', item === button); });
+    renderSource();
+  }
+  function toggleAdvanced() { document.getElementById('advanced-fields').classList.toggle('hidden'); }
+  function renderSource() {
+    var data = sourceConfigs[currentSourceKey];
+    document.getElementById('selected-protocol').textContent = data.protocol;
+    document.getElementById('selected-source-name').textContent = data.name;
+    document.getElementById('selected-source-desc').textContent = data.desc;
+    document.getElementById('selected-health').textContent = data.health;
+    var detail = document.getElementById('source-detail');
+    var pointRows = '<div class="point-row"><span>解析点位</span><span>当前值</span></div>' + data.points.map(function(point){ return '<div class="point-row"><b>' + point[0] + '</b><span>' + point[1] + '</span></div>'; }).join('');
+    if (currentManagerTab === 'config') {
+      var fields = data.fields.map(function(field){ return '<div class="config-field ' + (field[2].indexOf('full') >= 0 ? 'full' : '') + '"><label>' + field[0] + '</label><div class="config-value ' + field[2].replace('full','') + '">' + field[1] + '</div></div>'; }).join('');
+      detail.innerHTML = '<div class="config-form"><h4 class="config-section-title">常用配置</h4><div class="config-grid">' + fields + '</div><button class="advanced-toggle" onclick="toggleAdvanced()"><i data-lucide="sliders-horizontal" class="icon-sm"></i>&nbsp; 高级配置 <span>默认值 · 连接池、重试、证书等 ›</span></button><div class="advanced-fields hidden" id="advanced-fields"><div class="config-field"><label>失败重试</label><div class="config-value">3 次</div></div><div class="config-field"><label>数据超时</label><div class="config-value">10 秒</div></div></div></div><div class="test-strip"><i class="status-dot"></i><strong>测试成功</strong><span>' + data.health + '</span><span>18ms · 刚刚</span></div><div class="response-panel"><div class="response-head"><b>最近响应</b><span>14:32:16 · 已解析 ' + data.points.length + ' 个示例点位</span><button>查看全部点位 ›</button></div><div class="response-body"><div class="response-raw">' + data.sample + '</div><div class="response-points"><div class="point-list">' + pointRows + '</div></div></div></div>';
+    } else {
+      var rows = '<div class="data-row"><span>点位</span><span>当前值</span><span>质量</span><span>更新时间</span></div>' + data.points.map(function(point){ return '<div class="data-row"><b>' + point[0] + '</b><span>' + point[1] + '</span><span style="color:#168264">正常</span><span>刚刚</span></div>'; }).join('');
+      detail.innerHTML = '<div class="table-toolbar"><div class="table-search">搜索点位名称或来源路径</div><button class="secondary">获取样例</button><button class="primary">添加点位</button></div><div class="test-strip"><i class="status-dot"></i><strong>' + data.desc.match(/\d+/)[0] + ' 个点位</strong><span>全部数据正常</span><span>刚刚更新</span></div><div class="data-table">' + rows + '</div>';
+    }
+    if (window.lucide) window.lucide.createIcons();
+  }
+  var pointCatalog = [
+    { id:'motor01.alarm', name:'电机告警状态', group:'生产一线 / 风机 01', type:'string', value:'warning', source:'车间设备', protocol:'MQTT', status:'在线' },
+    { id:'motor01.running', name:'电机运行状态', group:'生产一线 / 风机 01', type:'boolean', value:'true', source:'车间设备', protocol:'MQTT', status:'在线' },
+    { id:'motor01.rpm', name:'电机当前转速', group:'生产一线 / 风机 01', type:'number', value:'1480', source:'车间设备', protocol:'MQTT', status:'在线' },
+    { id:'motor01.temperature', name:'轴承温度', group:'生产一线 / 风机 01', type:'number', value:'86.2', source:'车间设备', protocol:'MQTT', status:'在线' },
+    { id:'motor01.loadRatio', name:'电机负载率', group:'生产一线 / 风机 01', type:'number', value:'62', source:'车间设备', protocol:'MQTT', status:'在线' },
+    { id:'energy.power', name:'产线当前功率', group:'能源中心 / 实时指标', type:'number', value:'386.2', source:'能源接口', protocol:'HTTP', status:'在线' },
+    { id:'quality.line1.passRate', name:'一线合格率', group:'质量中心 / 生产一线', type:'number', value:'98.72', source:'质检数据库', protocol:'SQL', status:'在线' },
+    { id:'alarm.latest.level', name:'最新告警等级', group:'告警中心 / 实时告警', type:'string', value:'warning', source:'实时告警', protocol:'REDIS', status:'在线' }
+  ];
+
+  var commData = {
+    fill:{ title:'填充颜色', section:'外观与样式', propertyValue:'#19a68f', targetType:'color', bound:false, pointId:'', ruleType:'direct' },
+    stroke:{ title:'边框颜色', section:'外观与样式', propertyValue:'#087868', targetType:'color', bound:false, pointId:'', ruleType:'direct' },
+    opacity:{ title:'透明度', section:'外观与样式', propertyValue:'100%', targetType:'percent', bound:false, pointId:'', ruleType:'direct' },
+    playing:{ title:'播放动画', section:'内容与动效', propertyValue:'关闭', targetType:'boolean', bound:false, pointId:'', ruleType:'direct' },
+    duration:{ title:'动画周期', section:'内容与动效', propertyValue:'1.5 秒', targetType:'duration', bound:false, pointId:'', ruleType:'direct' },
+    text:{ title:'显示文字', section:'内容与动效', propertyValue:'风机 01', targetType:'text', bound:false, pointId:'', ruleType:'direct' }
+  };
+
+  var bindingState = {
+    mode:'new',
+    originalKey:'',
+    step:1,
+    draft:null,
+    propertyQuery:'',
+    pointQuery:'',
+    justUpdatedKey:'',
+    selectedPropertyId:'',
+    selectedPointId:'',
+    toastTimer:null
+  };
+
+  function escapeHtml(value) {
+    return String(value == null ? '' : value).replace(/[&<>"']/g, function(character) {
+      return { '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[character];
+    });
+  }
+
+  function findCatalogPoint(pointId) {
+    return pointCatalog.find(function(point){ return point.id === pointId; }) || null;
+  }
+
+  function isColorValue(value) {
+    return /^#[0-9a-f]{6}$/i.test(String(value));
+  }
+
+  function resultMarkup(value) {
+    var safeValue = escapeHtml(value);
+    var swatch = isColorValue(value) ? '<i class="result-swatch" style="background:' + safeValue + '"></i>' : '';
+    return '<span class="comm-result">' + swatch + '<span class="result-text" title="' + safeValue + '">' + safeValue + '</span></span>';
+  }
+
+  function cloneMapping(mapping) {
+    return (mapping || []).map(function(item){ return [String(item[0]), String(item[1])]; });
+  }
+
+  function defaultRuleType(data) {
+    if (!data) return 'direct';
+    if (data.targetType === 'color') return 'mapping';
+    if (data.targetType === 'boolean') return 'boolean';
+    if (data.targetType === 'duration') return 'formula';
+    if (data.targetType === 'percent') return 'range';
+    if (data.targetType === 'text') return 'template';
+    return 'direct';
+  }
+
+  function createDraft(propertyKey) {
+    var data = commData[propertyKey];
+    if (!data) {
+      return { propertyKey:'', pointId:'', ruleType:'direct', mapping:[], formula:'1332 / value', template:'{value}', min:'0', max:'100', trueValue:'开启', falseValue:'关闭' };
+    }
+    return {
+      propertyKey:propertyKey,
+      pointId:data.pointId || '',
+      ruleType:data.ruleType || defaultRuleType(data),
+      mapping:cloneMapping(data.mapping),
+      formula:data.formula || '1332 / value',
+      template:data.template || '{value}',
+      min:String(data.min == null ? 0 : data.min),
+      max:String(data.max == null ? 100 : data.max),
+      trueValue:data.trueValue || '开启',
+      falseValue:data.falseValue || '关闭'
+    };
+  }
+
+  function getRuleOptions(data) {
+    var options = [['direct','直接使用点位值']];
+    if (!data) return options;
+    if (data.targetType === 'color') options.unshift(['mapping','值映射']);
+    if (data.targetType === 'boolean') options.unshift(['boolean','布尔映射']);
+    if (data.targetType === 'duration') options.unshift(['formula','数值公式']);
+    if (data.targetType === 'percent') options.unshift(['range','范围限制']);
+    if (data.targetType === 'text') options.unshift(['template','文本模板']);
+    return options;
+  }
+
+  function ruleTypeLabel(type) {
+    return {
+      direct:'直接使用',
+      mapping:'值映射',
+      boolean:'布尔映射',
+      formula:'数值公式',
+      range:'范围限制',
+      template:'文本模板'
+    }[type] || '直接使用';
+  }
+
+  function calculateBindingResult(data, point, rule) {
+    if (!data || !point) return data ? data.propertyValue : '';
+    var raw = String(point.value);
+    var currentRule = rule || data;
+    var type = currentRule.ruleType || defaultRuleType(data);
+
+    if (type === 'mapping') {
+      var matched = (currentRule.mapping || []).find(function(item){ return String(item[0]) === raw; });
+      return matched ? matched[1] : data.propertyValue;
+    }
+    if (type === 'boolean') {
+      return raw === 'true' || raw === '1' ? currentRule.trueValue : currentRule.falseValue;
+    }
+    if (type === 'formula') {
+      var coefficient = parseFloat(currentRule.formula) || 1332;
+      var numericValue = Number(raw);
+      return numericValue > 0 ? Math.max(.3, Math.min(10, coefficient / numericValue)).toFixed(1) + ' 秒' : data.propertyValue;
+    }
+    if (type === 'range') {
+      var minimum = Number(currentRule.min);
+      var maximum = Number(currentRule.max);
+      var ranged = Math.max(minimum, Math.min(maximum, Number(raw) || 0));
+      return data.targetType === 'percent' ? ranged + '%' : String(ranged);
+    }
+    if (type === 'template') {
+      return String(currentRule.template || '{value}').replace(/\{value\}/g, raw);
+    }
+    return raw;
+  }
+
+  function ruleSummary(data, point, rule) {
+    if (!data || !point) return '尚未选择点位';
+    var result = calculateBindingResult(data, point, rule);
+    if (rule.ruleType === 'mapping' || rule.ruleType === 'boolean') return point.value + ' → ' + result;
+    if (rule.ruleType === 'formula') return rule.formula + ' → ' + result;
+    if (rule.ruleType === 'template') return '模板 → ' + result;
+    if (rule.ruleType === 'range') return rule.min + '～' + rule.max + ' → ' + result;
+    return '直接使用 → ' + result;
+  }
+
+  function refreshCommIcons() {
+    if (window.lucide) window.lucide.createIcons();
+  }
+
+  function showCommView(viewId) {
+    document.querySelectorAll('#right-communication .comm-view').forEach(function(view){ view.classList.add('hidden'); });
+    var target = document.getElementById(viewId);
+    if (target) {
+      target.classList.remove('hidden');
+      target.scrollTop = 0;
+    }
+  }
+
+  // 方案二十的多步向导保留为设计对照，但不再注册或执行。
+</script>
+
+<script>
+  // 方案二十一只保留一个状态模型：当前参数、候选点位、搜索词和协议筛选。
+  bindingState.selectedPropertyId = '';
+  bindingState.selectedPointId = '';
+  bindingState.pointQuery = '';
+  bindingState.protocolFilter = 'ALL';
+
+  function propertyIconName(data) {
+    return { color:'palette', percent:'percent', boolean:'toggle-left', duration:'timer', text:'type' }[data.targetType] || 'sliders-horizontal';
+  }
+
+  function parameterSections() {
+    var sections = [];
+    Object.keys(commData).forEach(function(propertyId) {
+      var section = commData[propertyId].section;
+      if (sections.indexOf(section) < 0) sections.push(section);
+    });
+    return sections;
+  }
+
+  function renderPropertyPanel() {
+    var panel = document.getElementById('property-parameter-pane');
+    if (!panel) return;
+    panel.innerHTML = parameterSections().map(function(section) {
+      var rows = Object.keys(commData).filter(function(propertyId) {
+        return commData[propertyId].section === section;
+      }).map(function(propertyId) {
+        var data = commData[propertyId];
+        var swatch = isColorValue(data.propertyValue) ? '<i class="result-swatch" style="background:' + escapeHtml(data.propertyValue) + '"></i>' : '';
+        return '<div class="property-param-row" data-shared-property="' + escapeHtml(propertyId) + '"><b>' + escapeHtml(data.title) + '</b><span class="property-param-value">' + swatch + escapeHtml(data.propertyValue) + '</span></div>';
+      }).join('');
+      return '<section class="property-param-section"><h4 class="property-param-title">' + escapeHtml(section) + '</h4>' + rows + '</section>';
+    }).join('');
+  }
+
+  function renderParameterRow(propertyId) {
+    var data = commData[propertyId];
+    var point = data.bound ? findCatalogPoint(data.pointId) : null;
+    var isBound = !!point;
+    var isSelecting = bindingState.selectedPropertyId === propertyId;
+    var action = isBound
+      ? '<span class="binding-status is-bound">已连接</span>'
+      : '<span class="bind-data-button">绑定数据</span>';
+    var html = '<div class="parameter-binding-row' + (isSelecting ? ' is-selecting' : '') + (bindingState.justUpdatedKey === propertyId ? ' is-updated' : '') + '" data-property-id="' + escapeHtml(propertyId) + '">';
+    html += '<button class="parameter-row-main" type="button" data-action="open-parameter" data-property-id="' + escapeHtml(propertyId) + '"><span class="property-kind-icon"><i data-lucide="' + propertyIconName(data) + '" class="icon-sm"></i></span><span class="parameter-row-copy"><b>' + escapeHtml(data.title) + '</b><small>属性当前值 ' + escapeHtml(data.propertyValue) + '</small></span>' + action + '</button>';
+    if (isBound) {
+      html += '<div class="bound-parameter-details"><div class="bound-parameter-relation"><b>' + escapeHtml(data.title) + '</b><span>←</span><b>' + escapeHtml(point.name) + '</b></div>';
+      html += '<div class="bound-parameter-meta"><code>' + escapeHtml(point.id) + '</code><span>' + escapeHtml(point.source) + ' / ' + escapeHtml(point.protocol) + '</span><strong>实时 ' + escapeHtml(point.value) + '</strong></div>';
+      html += '<div class="bound-parameter-actions"><button class="replace-data-button" type="button" data-action="open-parameter" data-property-id="' + escapeHtml(propertyId) + '">更换</button><button class="disconnect-data-button" type="button" data-action="unbind" data-property-id="' + escapeHtml(propertyId) + '">解除</button></div></div>';
+    }
+    return html + '</div>';
+  }
+
+  function filteredPoints() {
+    var query = String(bindingState.pointQuery || '').trim().toLowerCase();
+    var protocol = bindingState.protocolFilter || 'ALL';
+    return pointCatalog.filter(function(point) {
+      var matchesProtocol = protocol === 'ALL' || point.protocol === protocol;
+      var searchable = [point.name, point.id, point.group, point.source, point.protocol].join(' ').toLowerCase();
+      return matchesProtocol && (!query || searchable.indexOf(query) >= 0);
+    });
+  }
+
+  function dynamicPointRowsHtml() {
+    var propertyId = bindingState.selectedPropertyId;
+    var data = commData[propertyId];
+    var matches = filteredPoints();
+    if (!data || !matches.length) return '<div class="picker-empty">没有找到匹配的动态数据</div>';
+    var groups = [];
+    matches.forEach(function(point) {
+      if (groups.indexOf(point.group) < 0) groups.push(point.group);
+    });
+    return groups.map(function(group) {
+      var rows = matches.filter(function(point) { return point.group === group; }).map(function(point) {
+        var selected = bindingState.selectedPointId === point.id;
+        var current = data.bound && data.pointId === point.id;
+        return '<button class="dynamic-point-row' + (selected ? ' is-selected' : '') + '" type="button" data-point-id="' + escapeHtml(point.id) + '" aria-pressed="' + selected + '"><i class="status-dot"></i><span class="dynamic-point-copy"><b>' + escapeHtml(point.name) + '</b><code>' + escapeHtml(point.id) + '</code><small class="dynamic-point-meta"><span>' + escapeHtml(point.source) + '</span><span>' + escapeHtml(point.protocol) + '</span><strong>实时 ' + escapeHtml(point.value) + '</strong>' + (current ? '<span>当前连接</span>' : '') + '</small></span><span class="dynamic-point-state"><i data-lucide="check" class="icon-sm"></i></span></button>';
+      }).join('');
+      return '<section><div class="point-group-title"><span>' + escapeHtml(group) + '</span><span>● 在线</span></div>' + rows + '</section>';
+    }).join('');
+  }
+
+  function connectionConfirmationHtml() {
+    var data = commData[bindingState.selectedPropertyId];
+    var point = findCatalogPoint(bindingState.selectedPointId);
+    if (!data || !point) return '';
+    return '<div class="inline-connect-confirm"><b>将“' + escapeHtml(point.name) + '”连接到“' + escapeHtml(data.title) + '”</b><button class="establish-connection-button" type="button" data-action="confirm-connection"><i data-lucide="link" class="icon-sm"></i>建立连接</button></div>';
+  }
+
+  function inlinePointPickerHtml(propertyId) {
+    var options = ['ALL','MQTT','HTTP','SQL','REDIS'].map(function(protocol) {
+      var label = protocol === 'ALL' ? '全部协议' : protocol;
+      return '<option value="' + protocol + '"' + (bindingState.protocolFilter === protocol ? ' selected' : '') + '>' + label + '</option>';
+    }).join('');
+    return '<div class="inline-point-picker" data-picker-for="' + escapeHtml(propertyId) + '"><div class="inline-picker-head"><b>选择动态数据</b><span>点击一项进行核对</span><button class="inline-picker-close" type="button" title="收起" data-action="close-picker"><i data-lucide="x" class="icon-sm"></i></button></div><div class="inline-picker-tools"><label class="picker-search"><i data-lucide="search" class="icon-sm"></i><input id="inline-point-search" type="text" value="' + escapeHtml(bindingState.pointQuery) + '" placeholder="搜索名称或 ID" data-search="point"></label><select class="protocol-filter" id="inline-protocol-filter" data-filter="protocol">' + options + '</select></div><div class="inline-point-results" id="inline-point-results">' + dynamicPointRowsHtml() + '</div><div id="inline-confirm-slot">' + connectionConfirmationHtml() + '</div></div>';
+  }
+
+  function renderCommList(keepScroll) {
+    var list = document.getElementById('comm-list-view');
+    if (!list) return;
+    var previousScroll = keepScroll ? list.scrollTop : 0;
+    var propertyIds = Object.keys(commData);
+    var boundCount = propertyIds.filter(function(propertyId) {
+      return commData[propertyId].bound && findCatalogPoint(commData[propertyId].pointId);
+    }).length;
+    var html = '<div class="node-head"><span class="node-icon"><i data-lucide="fan" class="icon-sm"></i></span><div><b>风机 01</b><small>组件动态参数</small></div><span class="node-health">● 数据正常</span></div>';
+    html += '<div class="compact-comm-summary"><b>' + propertyIds.length + ' 个参数</b><span>' + boundCount + ' 个已连接</span></div>';
+    parameterSections().forEach(function(section) {
+      var sectionIds = propertyIds.filter(function(propertyId) { return commData[propertyId].section === section; });
+      html += '<section><div class="property-group-title"><span>' + escapeHtml(section) + '</span><span>' + sectionIds.length + ' 项</span></div>';
+      sectionIds.forEach(function(propertyId) {
+        html += renderParameterRow(propertyId);
+        if (bindingState.selectedPropertyId === propertyId) html += inlinePointPickerHtml(propertyId);
+      });
+      html += '</section>';
+    });
+    html += '<div class="parameter-list-footer">未连接动态数据时，组件继续使用“属性”中的当前值。</div>';
+    list.innerHTML = html;
+    list.scrollTop = previousScroll;
+    var badge = document.getElementById('comm-binding-count');
+    if (badge) badge.textContent = boundCount;
+    refreshCommIcons();
+  }
+
+  function renderInlinePointResults() {
+    var results = document.getElementById('inline-point-results');
+    var confirmation = document.getElementById('inline-confirm-slot');
+    if (results) results.innerHTML = dynamicPointRowsHtml();
+    if (confirmation) confirmation.innerHTML = connectionConfirmationHtml();
+    refreshCommIcons();
+  }
+
+  function openParameterBinding(propertyId) {
+    if (!commData[propertyId]) return false;
+    if (bindingState.selectedPropertyId === propertyId) return true;
+    bindingState.selectedPropertyId = propertyId;
+    bindingState.selectedPointId = '';
+    bindingState.pointQuery = '';
+    bindingState.protocolFilter = 'ALL';
+    renderCommList(false);
+    var selectedRow = document.querySelector('.parameter-binding-row.is-selecting');
+    if (selectedRow) selectedRow.scrollIntoView({ block:'nearest' });
+    window.setTimeout(function() {
+      var search = document.getElementById('inline-point-search');
+      if (search) search.focus();
+    }, 0);
+    return true;
+  }
+
+  function closeInlinePicker() {
+    bindingState.selectedPropertyId = '';
+    bindingState.selectedPointId = '';
+    bindingState.pointQuery = '';
+    bindingState.protocolFilter = 'ALL';
+    renderCommList(true);
+  }
+
+  function selectDynamicPoint(pointId) {
+    if (!bindingState.selectedPropertyId || !findCatalogPoint(pointId)) return false;
+    bindingState.selectedPointId = pointId;
+    renderInlinePointResults();
+    return true;
+  }
+
+  function confirmDynamicConnection() {
+    var propertyId = bindingState.selectedPropertyId;
+    var data = commData[propertyId];
+    var point = findCatalogPoint(bindingState.selectedPointId);
+    if (!data || !point) return false;
+    data.bound = true;
+    data.pointId = point.id;
+    bindingState.selectedPropertyId = '';
+    bindingState.selectedPointId = '';
+    bindingState.justUpdatedKey = propertyId;
+    renderCommList(false);
+    showBindingToast('已建立连接：' + data.title + ' ← ' + point.name);
+    return true;
+  }
+
+  function unbindProperty(propertyId) {
+    var data = commData[propertyId];
+    if (!data) return false;
+    data.bound = false;
+    data.pointId = '';
+    if (bindingState.selectedPropertyId === propertyId) closeInlinePicker();
+    else renderCommList(true);
+    showBindingToast('已解除“' + data.title + '”的数据连接');
+    return true;
+  }
+
+  function showBindingToast(message) {
+    var toast = document.getElementById('binding-toast');
+    if (!toast) return;
+    toast.textContent = message;
+    toast.classList.remove('hidden');
+    if (bindingState.toastTimer) window.clearTimeout(bindingState.toastTimer);
+    bindingState.toastTimer = window.setTimeout(function() { toast.classList.add('hidden'); }, 2200);
+  }
+
+  function bindCommunicationEvents() {
+    var root = document.getElementById('right-communication');
+    if (!root || root.dataset.v21Bound === 'true') return;
+    root.dataset.v21Bound = 'true';
+    root.addEventListener('click', function(event) {
+      var actionElement = event.target.closest('[data-action]');
+      if (actionElement && root.contains(actionElement)) {
+        var action = actionElement.dataset.action;
+        if (action === 'open-parameter') openParameterBinding(actionElement.dataset.propertyId);
+        if (action === 'close-picker') closeInlinePicker();
+        if (action === 'confirm-connection') confirmDynamicConnection();
+        if (action === 'unbind') unbindProperty(actionElement.dataset.propertyId);
+        return;
+      }
+      var pointRow = event.target.closest('.dynamic-point-row[data-point-id]');
+      if (pointRow && root.contains(pointRow)) {
+        selectDynamicPoint(pointRow.dataset.pointId);
+        return;
+      }
+      var parameterRow = event.target.closest('.parameter-binding-row[data-property-id]');
+      if (parameterRow && root.contains(parameterRow)) openParameterBinding(parameterRow.dataset.propertyId);
+    });
+    root.addEventListener('input', function(event) {
+      if (event.target.dataset.search === 'point') {
+        bindingState.pointQuery = event.target.value;
+        bindingState.selectedPointId = '';
+        renderInlinePointResults();
+      }
+    });
+    root.addEventListener('change', function(event) {
+      if (event.target.dataset.filter === 'protocol') {
+        bindingState.protocolFilter = event.target.value;
+        bindingState.selectedPointId = '';
+        renderInlinePointResults();
+      }
+    });
+    root.addEventListener('keydown', function(event) {
+      var parameterRow = event.target.closest('.parameter-binding-row[data-property-id]');
+      if (parameterRow && event.target === parameterRow && (event.key === 'Enter' || event.key === ' ')) {
+        event.preventDefault();
+        openParameterBinding(parameterRow.dataset.propertyId);
+      }
+    });
+  }
+
+  function showRightTab(name, button) {
+    document.querySelectorAll('.right-tabs-demo button').forEach(function(tab) { tab.classList.remove('active'); });
+    document.querySelectorAll('.right-pane').forEach(function(pane) { pane.classList.add('hidden'); });
+    button.classList.add('active');
+    document.getElementById('right-' + name).classList.remove('hidden');
+    if (name === 'property') renderPropertyPanel();
+    if (name === 'communication') {
+      bindingState.selectedPropertyId = '';
+      bindingState.selectedPointId = '';
+      renderCommList(false);
+    }
+    refreshCommIcons();
+  }
+
+  function toggleSelect(element) {
+    document.querySelectorAll('.decision .option').forEach(function(option) { option.classList.remove('selected'); });
+    element.classList.add('selected');
+  }
+
+  document.addEventListener('DOMContentLoaded', function() {
+    bindCommunicationEvents();
+    renderSource();
+    renderPropertyPanel();
+    renderCommList(false);
+    refreshCommIcons();
+  });
+</script>

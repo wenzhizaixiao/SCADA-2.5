@@ -1,0 +1,506 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>苔岑2D - 统一数据总览原型</title>
+  <script src="https://unpkg.com/lucide@0.468.0/dist/umd/lucide.js"></script>
+  <style>
+    :root {
+      --brand: #129b82;
+      --brand-dark: #087764;
+      --brand-soft: #eaf7f4;
+      --blue: #168eea;
+      --ink: #25313a;
+      --muted: #708089;
+      --line: #dce4e7;
+      --line-soft: #edf1f2;
+      --surface: #fff;
+      --soft: #f6f8f9;
+      --warn: #d58a20;
+      --danger: #d95656;
+      --shadow: 0 12px 34px rgba(31, 48, 58, .12);
+    }
+
+    * { box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; }
+    body { background: #eef2f3; color: var(--ink); font-family: Inter, "Microsoft YaHei", "PingFang SC", Arial, sans-serif; letter-spacing: 0; }
+    button, input, select { font: inherit; letter-spacing: 0; }
+    button { color: inherit; }
+    svg { width: 17px; height: 17px; stroke-width: 1.8; }
+
+    .app { width: 100vw; height: 100vh; min-width: 1000px; background: var(--surface); }
+    .topbar { height: 58px; display: flex; align-items: center; border-bottom: 1px solid var(--line); background: #fff; padding: 0 16px; }
+    .brand { display: flex; align-items: center; gap: 10px; min-width: 232px; }
+    .brand-mark { width: 27px; height: 27px; border: 5px solid #19b49b; transform: rotate(45deg); }
+    .brand-copy strong { display: block; font-size: 14px; }
+    .brand-copy span { display: block; margin-top: 2px; color: var(--muted); font-size: 11px; }
+    .view-tabs { align-self: stretch; display: flex; margin-left: 24px; }
+    .view-tab { position: relative; min-width: 106px; border: 0; background: transparent; color: #667780; cursor: pointer; font-size: 13px; }
+    .view-tab:hover { background: #f8fafb; }
+    .view-tab.active { color: var(--ink); font-weight: 700; }
+    .view-tab.active::after { content: ""; position: absolute; left: 18px; right: 18px; bottom: -1px; height: 2px; background: var(--brand); }
+    .top-actions { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+    .button, .icon-button { height: 34px; border: 1px solid #cfdadd; background: #fff; cursor: pointer; }
+    .button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; padding: 0 12px; border-radius: 3px; font-size: 12px; }
+    .button:hover, .icon-button:hover { border-color: #87bbb2; background: #f5fbf9; }
+    .button.primary { border-color: var(--brand); background: var(--brand); color: #fff; }
+    .button.primary:hover { background: var(--brand-dark); }
+    .icon-button { display: grid; place-items: center; width: 34px; padding: 0; border-radius: 3px; }
+
+    .workspace { height: calc(100vh - 58px); background: #f5f7f8; }
+    .view { display: none; height: 100%; }
+    .view.active { display: flex; flex-direction: column; }
+
+    .summary-band { height: 72px; display: grid; grid-template-columns: repeat(5, minmax(140px, 1fr)); border-bottom: 1px solid var(--line); background: #fff; }
+    .metric { position: relative; display: flex; flex-direction: column; justify-content: center; padding: 0 22px; border-right: 1px solid var(--line-soft); }
+    .metric:last-child { border-right: 0; }
+    .metric span { color: var(--muted); font-size: 11px; }
+    .metric strong { margin-top: 5px; font-size: 21px; font-weight: 650; font-variant-numeric: tabular-nums; }
+    .metric small { margin-left: 6px; color: #8b989f; font-size: 10px; font-weight: 400; }
+    .metric.good strong { color: var(--brand-dark); }
+    .metric.warning strong { color: var(--warn); }
+    .metric .trend { position: absolute; right: 16px; bottom: 15px; color: #168164; font-size: 10px; }
+
+    .health-strip { min-height: 48px; display: flex; align-items: center; gap: 0; border-bottom: 1px solid var(--line); background: #fbfcfc; padding: 0 16px; overflow-x: auto; }
+    .health-title { display: flex; align-items: center; gap: 7px; min-width: 110px; color: #53656f; font-size: 11px; font-weight: 700; }
+    .source-chip { height: 30px; display: inline-flex; align-items: center; gap: 7px; padding: 0 10px; border: 1px solid transparent; border-right-color: var(--line); background: transparent; cursor: pointer; color: #5f717b; font-size: 11px; white-space: nowrap; }
+    .source-chip:last-child { border-right-color: transparent; }
+    .source-chip:hover { background: #f0f5f4; }
+    .source-chip.active { border-color: #92c9bf; background: var(--brand-soft); color: var(--brand-dark); }
+    .protocol { display: grid; place-items: center; min-width: 31px; height: 19px; padding: 0 4px; border: 1px solid #c4d1d5; background: #fff; color: #536973; font-size: 8px; font-weight: 800; }
+    .dot { width: 7px; height: 7px; border-radius: 50%; background: #20a780; box-shadow: 0 0 0 3px rgba(32,167,128,.10); }
+    .dot.warn { background: var(--warn); box-shadow: 0 0 0 3px rgba(213,138,32,.10); }
+    .dot.bad { background: var(--danger); box-shadow: 0 0 0 3px rgba(217,86,86,.10); }
+
+    .data-panel { min-height: 0; flex: 1; display: flex; flex-direction: column; margin: 12px 14px 14px; border: 1px solid var(--line); background: #fff; }
+    .table-toolbar { min-height: 52px; display: flex; align-items: center; gap: 8px; padding: 8px 11px; border-bottom: 1px solid var(--line); }
+    .search-field { min-width: 300px; max-width: 520px; flex: 1; height: 34px; display: flex; align-items: center; gap: 7px; padding: 0 10px; border: 1px solid #ccd7db; background: #fff; }
+    .search-field:focus-within { border-color: #69b6a8; box-shadow: 0 0 0 2px rgba(18,155,130,.08); }
+    .search-field svg { color: #819097; }
+    .search-field input { min-width: 0; flex: 1; border: 0; outline: 0; color: var(--ink); font-size: 12px; }
+    .filter-select { height: 34px; min-width: 112px; border: 1px solid #ccd7db; background: #fff; padding: 0 27px 0 9px; color: #50636c; font-size: 12px; }
+    .search-button { height: 34px; display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--brand); background: var(--brand); color: #fff; padding: 0 14px; cursor: pointer; }
+    .search-button:hover { background: var(--brand-dark); }
+    .check-filter { display: inline-flex; align-items: center; gap: 6px; min-width: 105px; color: #63747c; font-size: 11px; white-space: nowrap; }
+    .check-filter input { accent-color: var(--brand); }
+    .toolbar-info { margin-left: auto; color: #829097; font-size: 10px; white-space: nowrap; }
+
+    .data-table { min-height: 0; flex: 1; overflow: auto; }
+    .data-row { display: grid; grid-template-columns: 42px minmax(190px, 1.25fr) minmax(130px, .8fr) 82px minmax(135px, .8fr) minmax(210px, 1.2fr) 94px 84px 42px; align-items: center; min-width: 1160px; min-height: 45px; border-bottom: 1px solid var(--line-soft); padding: 0 10px; font-size: 11px; }
+    .data-row.head { position: sticky; top: 0; z-index: 2; min-height: 38px; background: #f7f9fa; color: #718089; font-size: 10px; font-weight: 700; }
+    .data-row.item { cursor: pointer; }
+    .data-row.item:hover { background: #f7fbfa; }
+    .data-row.item.selected { background: #edf8f5; box-shadow: inset 3px 0 var(--brand); }
+    .cell { min-width: 0; padding: 0 7px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .data-name b { display: block; overflow: hidden; text-overflow: ellipsis; font-size: 12px; white-space: nowrap; }
+    .data-name small { display: block; overflow: hidden; margin-top: 3px; color: #89969d; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+    .live-value { color: #2b414a; font: 600 12px/1.2 Consolas, "Microsoft YaHei", monospace; font-variant-numeric: tabular-nums; }
+    .type-tag, .usage-tag { display: inline-flex; align-items: center; height: 22px; padding: 0 7px; border: 1px solid #d9e1e3; background: #f9fbfb; color: #62737c; font-size: 9px; }
+    .usage-tag.used { border-color: #afd8d0; background: var(--brand-soft); color: var(--brand-dark); }
+    .source-name { display: flex; align-items: center; gap: 7px; }
+    .json-path { color: #49606a; font: 10px Consolas, monospace; }
+    .time { color: #708089; font-variant-numeric: tabular-nums; }
+    .row-action { display: grid; place-items: center; width: 29px; height: 29px; border: 0; background: transparent; color: #718089; cursor: pointer; }
+    .row-action:hover { background: #eaf4f2; color: var(--brand-dark); }
+    .empty { display: none; height: 210px; align-items: center; justify-content: center; color: #8a969c; font-size: 12px; }
+    .table-footer { height: 42px; display: flex; align-items: center; padding: 0 12px; border-top: 1px solid var(--line); background: #fbfcfc; color: #708089; font-size: 10px; }
+    .table-footer strong { color: var(--ink); }
+    .pagination { display: flex; gap: 4px; margin-left: auto; }
+    .page { min-width: 27px; height: 27px; border: 1px solid #d7dfe2; background: #fff; color: #64757e; cursor: pointer; }
+    .page.active { border-color: var(--brand); background: var(--brand); color: #fff; }
+
+    .connection-toolbar { min-height: 62px; display: flex; align-items: center; gap: 10px; padding: 0 16px; border-bottom: 1px solid var(--line); background: #fff; }
+    .connection-title h2 { margin: 0; font-size: 15px; }
+    .connection-title p { margin: 4px 0 0; color: var(--muted); font-size: 10px; }
+    .connection-toolbar .search-field { margin-left: auto; max-width: 360px; }
+    .connection-table { min-height: 0; flex: 1; margin: 12px 14px 14px; overflow: auto; border: 1px solid var(--line); background: #fff; }
+    .connection-row { display: grid; grid-template-columns: 52px minmax(160px, 1fr) minmax(230px, 1.5fr) 90px 90px 90px 105px 110px; min-width: 1040px; min-height: 54px; align-items: center; padding: 0 12px; border-bottom: 1px solid var(--line-soft); font-size: 11px; }
+    .connection-row.head { position: sticky; top: 0; z-index: 2; min-height: 39px; background: #f7f9fa; color: #718089; font-size: 10px; font-weight: 700; }
+    .connection-row.item:hover { background: #f8fbfa; }
+    .connection-name b, .connection-name small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .connection-name small { margin-top: 3px; color: #8a979d; font-size: 9px; }
+    .status-label { display: inline-flex; align-items: center; gap: 6px; color: #3d7064; }
+    .status-label.warn { color: #9a681d; }
+    .manage-button { height: 29px; display: inline-flex; align-items: center; justify-content: center; gap: 5px; border: 1px solid #d1dcdf; background: #fff; cursor: pointer; color: #536871; font-size: 10px; }
+    .manage-button:hover { border-color: #8ac2b8; background: #f2faf8; color: var(--brand-dark); }
+
+    .drawer-backdrop { position: fixed; inset: 58px 0 0; z-index: 8; background: rgba(34,49,58,.14); opacity: 0; pointer-events: none; transition: opacity .18s ease; }
+    .drawer-backdrop.open { opacity: 1; pointer-events: auto; }
+    .drawer { position: fixed; right: 0; top: 58px; bottom: 0; z-index: 9; width: min(430px, 42vw); min-width: 390px; display: flex; flex-direction: column; border-left: 1px solid #cfdadd; background: #fff; box-shadow: -12px 0 34px rgba(31,48,58,.12); transform: translateX(102%); transition: transform .2s ease; }
+    .drawer.open { transform: translateX(0); }
+    .drawer-head { min-height: 65px; display: flex; align-items: center; padding: 0 13px 0 16px; border-bottom: 1px solid var(--line); }
+    .drawer-head-copy { min-width: 0; flex: 1; }
+    .drawer-head-copy strong { display: block; overflow: hidden; font-size: 14px; text-overflow: ellipsis; white-space: nowrap; }
+    .drawer-head-copy span { display: block; overflow: hidden; margin-top: 4px; color: var(--muted); font: 10px Consolas, monospace; text-overflow: ellipsis; white-space: nowrap; }
+    .drawer-tabs { height: 42px; display: grid; grid-template-columns: repeat(3, 1fr); border-bottom: 1px solid var(--line); }
+    .drawer-tab { position: relative; border: 0; background: #fff; color: #697a83; cursor: pointer; font-size: 11px; }
+    .drawer-tab.active { color: var(--ink); font-weight: 700; }
+    .drawer-tab.active::after { content: ""; position: absolute; left: 18px; right: 18px; bottom: -1px; height: 2px; background: var(--brand); }
+    .drawer-body { min-height: 0; flex: 1; overflow: auto; padding: 14px 16px 76px; }
+    .drawer-pane { display: none; }
+    .drawer-pane.active { display: block; }
+    .detail-list { border: 1px solid var(--line); }
+    .detail-row { min-height: 40px; display: grid; grid-template-columns: 94px minmax(0,1fr); align-items: center; padding: 7px 10px; border-bottom: 1px solid var(--line-soft); font-size: 11px; }
+    .detail-row:last-child { border-bottom: 0; }
+    .detail-row span { color: #74838b; }
+    .detail-row b { min-width: 0; overflow: hidden; color: #30464f; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
+    .section-label { display: flex; align-items: center; justify-content: space-between; margin: 16px 0 8px; font-size: 11px; font-weight: 700; }
+    .section-label small { color: #8b979d; font-size: 9px; font-weight: 400; }
+    .value-block { padding: 12px; border-left: 3px solid var(--brand); background: var(--brand-soft); color: #264c44; font: 600 15px Consolas, monospace; }
+    .json-toolbar { height: 34px; display: flex; align-items: center; gap: 6px; border: 1px solid #cdd8dc; padding: 0 8px; }
+    .json-toolbar input { min-width: 0; flex: 1; border: 0; outline: 0; font-size: 11px; }
+    .json-tree { margin-top: 8px; border: 1px solid var(--line); background: #27343c; color: #d8e6e3; padding: 10px 8px; font: 11px/1.75 Consolas, monospace; }
+    .json-line { display: flex; align-items: center; min-height: 24px; padding: 0 5px; border-left: 2px solid transparent; cursor: pointer; white-space: nowrap; }
+    .json-line:hover { background: rgba(255,255,255,.06); }
+    .json-line.level-1 { padding-left: 20px; }
+    .json-line.level-2 { padding-left: 38px; }
+    .json-line.level-3 { padding-left: 56px; }
+    .json-line.selected { border-left-color: #55d7be; background: rgba(68,206,179,.16); }
+    .json-key { color: #8ed6c8; }
+    .json-number { color: #f0c478; }
+    .json-string { color: #b9d98b; }
+    .json-count { color: #809097; }
+    .usage-list { border: 1px solid var(--line); }
+    .usage-row { min-height: 54px; display: grid; grid-template-columns: 34px minmax(0,1fr) auto; align-items: center; padding: 7px 9px; border-bottom: 1px solid var(--line-soft); }
+    .usage-row:last-child { border-bottom: 0; }
+    .component-icon { display: grid; place-items: center; width: 28px; height: 28px; border: 1px solid #acd4cc; background: var(--brand-soft); color: var(--brand-dark); }
+    .usage-copy b { display: block; font-size: 11px; }
+    .usage-copy span { display: block; margin-top: 3px; color: var(--muted); font-size: 9px; }
+    .relation { color: var(--brand-dark); font-size: 10px; }
+    .drawer-foot { position: absolute; left: 0; right: 0; bottom: 0; height: 64px; display: flex; align-items: center; gap: 8px; border-top: 1px solid var(--line); background: #fff; padding: 0 15px; }
+    .path-chip { min-width: 0; flex: 1; overflow: hidden; padding: 8px 9px; border: 1px solid var(--line); background: #f7f9fa; color: #526772; font: 10px Consolas, monospace; text-overflow: ellipsis; white-space: nowrap; }
+
+    .modal-backdrop { position: fixed; inset: 0; z-index: 20; display: none; place-items: center; background: rgba(30,44,52,.36); }
+    .modal-backdrop.open { display: grid; }
+    .modal { width: 540px; border: 1px solid #cbd6da; background: #fff; box-shadow: var(--shadow); }
+    .modal-head { height: 52px; display: flex; align-items: center; padding: 0 14px; border-bottom: 1px solid var(--line); }
+    .modal-head strong { font-size: 14px; }
+    .modal-head .icon-button { margin-left: auto; }
+    .modal-body { padding: 14px; }
+    .protocol-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 7px; }
+    .protocol-choice { min-height: 70px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 7px; border: 1px solid var(--line); background: #fff; cursor: pointer; font-size: 11px; }
+    .protocol-choice:hover, .protocol-choice.selected { border-color: #71bbae; background: var(--brand-soft); color: var(--brand-dark); }
+    .form-label { display: block; margin: 14px 0 5px; color: #5c6e77; font-size: 11px; }
+    .form-input { width: 100%; height: 34px; border: 1px solid #cdd8dc; padding: 0 9px; outline: 0; }
+    .modal-foot { height: 54px; display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 0 14px; border-top: 1px solid var(--line); }
+    .toast { position: fixed; left: 50%; top: 72px; z-index: 30; padding: 9px 15px; background: #26343c; color: #fff; font-size: 11px; transform: translate(-50%, -12px); opacity: 0; pointer-events: none; transition: .18s ease; }
+    .toast.show { transform: translate(-50%, 0); opacity: 1; }
+
+    @media (max-width: 1180px) {
+      .summary-band { grid-template-columns: repeat(5, minmax(120px,1fr)); }
+      .metric { padding: 0 14px; }
+      .metric strong { font-size: 18px; }
+      .health-title { min-width: 90px; }
+      .source-chip { padding: 0 7px; }
+      .toolbar-info { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <div class="brand-copy"><strong>数据源管理</strong><span>当前工作空间 · 生产监控大屏</span></div>
+      </div>
+      <nav class="view-tabs" aria-label="数据源管理视图">
+        <button class="view-tab active" data-view="overview">数据总览</button>
+        <button class="view-tab" data-view="connections">连接管理</button>
+      </nav>
+      <div class="top-actions">
+        <button class="button" id="refreshButton"><i data-lucide="refresh-cw"></i>刷新</button>
+        <button class="button primary" id="newSourceButton"><i data-lucide="plus"></i>新建连接</button>
+        <button class="icon-button" title="关闭数据源管理" aria-label="关闭数据源管理"><i data-lucide="x"></i></button>
+      </div>
+    </header>
+
+    <main class="workspace">
+      <section class="view active" id="overviewView">
+        <div class="summary-band">
+          <div class="metric good"><span>连接状态</span><strong>29 / 32<small>在线</small></strong></div>
+          <div class="metric"><span>汇总数据字段</span><strong>128,460<small>个</small></strong></div>
+          <div class="metric"><span>实时更新速率</span><strong id="rateMetric">2,356<small>次/秒</small></strong><span class="trend">↑ 4.8%</span></div>
+          <div class="metric warning"><span>异常与延迟</span><strong>18<small>个字段</small></strong></div>
+          <div class="metric good"><span>已被组件使用</span><strong>386<small>个字段</small></strong></div>
+        </div>
+
+        <div class="health-strip">
+          <span class="health-title"><i data-lucide="activity"></i>来源状态</span>
+          <button class="source-chip active" data-source="all"><span class="dot"></span>全部来源 32</button>
+          <button class="source-chip" data-source="MQTT"><span class="protocol">MQTT</span>8 个 · 42,300 字段</button>
+          <button class="source-chip" data-source="HTTP"><span class="protocol">HTTP</span>6 个 · 8,620 字段</button>
+          <button class="source-chip" data-source="MySQL"><span class="protocol">MYSQL</span>5 个 · 61,200 字段</button>
+          <button class="source-chip" data-source="SQL Server"><span class="protocol">SQL</span>4 个 · 12,440 字段</button>
+          <button class="source-chip" data-source="Redis"><span class="protocol">REDIS</span>3 个 · 3,200 字段</button>
+          <button class="source-chip" data-source="Socket"><span class="dot warn"></span>Socket 3 个</button>
+          <button class="source-chip" data-source="WebSocket"><span class="dot"></span>WebSocket 3 个</button>
+        </div>
+
+        <section class="data-panel">
+          <div class="table-toolbar">
+            <label class="search-field"><i data-lucide="search"></i><input id="dataSearch" placeholder="搜索数据名称、JSON 路径或来源"></label>
+            <select class="filter-select" id="typeFilter" aria-label="数据类型"><option value="all">全部类型</option><option value="数值">数值</option><option value="文本">文本</option><option value="布尔">布尔</option><option value="表格">表格</option><option value="对象">对象</option></select>
+            <select class="filter-select" id="statusFilter" aria-label="数据状态"><option value="all">全部状态</option><option value="正常">正常</option><option value="延迟">延迟</option><option value="异常">异常</option></select>
+            <label class="check-filter"><input type="checkbox" id="usedOnly">仅看已使用</label>
+            <button class="search-button" id="searchButton"><i data-lucide="search"></i>搜索</button>
+            <span class="toolbar-info">最后汇总：刚刚 · 自动刷新 1 秒</span>
+          </div>
+
+          <div class="data-table" id="dataTable">
+            <div class="data-row head">
+              <div class="cell">状态</div><div class="cell">数据名称</div><div class="cell">当前值</div><div class="cell">类型</div><div class="cell">数据来源</div><div class="cell">JSON 路径</div><div class="cell">更新时间</div><div class="cell">使用情况</div><div></div>
+            </div>
+            <div id="dataRows"></div>
+            <div class="empty" id="emptyState">没有符合条件的数据</div>
+          </div>
+          <footer class="table-footer"><span>当前展示 <strong id="visibleCount">8</strong> 条，完整目录共 <strong>128,460</strong> 条 · 实际系统使用虚拟滚动</span><div class="pagination"><button class="page active">1</button><button class="page">2</button><button class="page">3</button><button class="page">…</button><button class="page">16058</button></div></footer>
+        </section>
+      </section>
+
+      <section class="view" id="connectionsView">
+        <div class="connection-toolbar">
+          <div class="connection-title"><h2>连接管理</h2><p>统一维护协议连接、采集状态和响应情况</p></div>
+          <label class="search-field"><i data-lucide="search"></i><input id="connectionSearch" placeholder="搜索连接名称、地址或协议"></label>
+          <select class="filter-select"><option>全部状态</option><option>在线</option><option>离线</option><option>异常</option></select>
+        </div>
+        <div class="connection-table">
+          <div class="connection-row head"><div>协议</div><div>连接名称</div><div>连接地址</div><div>状态</div><div>数据字段</div><div>更新速率</div><div>最近响应</div><div>操作</div></div>
+          <div id="connectionRows"></div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div class="drawer-backdrop" id="drawerBackdrop"></div>
+  <aside class="drawer" id="detailDrawer" aria-label="数据字段检查器">
+    <header class="drawer-head">
+      <div class="drawer-head-copy"><strong id="drawerTitle">设备温度</strong><span id="drawerPath">$.data.devices[0].temperature</span></div>
+      <button class="icon-button" id="closeDrawer" title="关闭"><i data-lucide="x"></i></button>
+    </header>
+    <nav class="drawer-tabs">
+      <button class="drawer-tab active" data-pane="detail">字段详情</button>
+      <button class="drawer-tab" data-pane="json">JSON 上下文</button>
+      <button class="drawer-tab" data-pane="usage">使用位置</button>
+    </nav>
+    <div class="drawer-body">
+      <section class="drawer-pane active" id="detailPane">
+        <div class="value-block" id="drawerValue">36.5 °C</div>
+        <div class="section-label">字段信息 <small>自动从最新响应识别</small></div>
+        <div class="detail-list">
+          <div class="detail-row"><span>数据类型</span><b id="drawerType">数值 number</b></div>
+          <div class="detail-row"><span>数据来源</span><b id="drawerSource">车间设备 · MQTT</b></div>
+          <div class="detail-row"><span>字段状态</span><b id="drawerStatus">正常 · 质量良好</b></div>
+          <div class="detail-row"><span>更新时间</span><b id="drawerTime">刚刚</b></div>
+          <div class="detail-row"><span>更新频率</span><b>每秒 12 次</b></div>
+        </div>
+        <div class="section-label">兼容组件属性</div>
+        <div class="detail-list">
+          <div class="detail-row"><span>可直接绑定</span><b>文字内容、数值、进度、旋转速度</b></div>
+          <div class="detail-row"><span>需要转换</span><b>颜色、显示状态</b></div>
+        </div>
+      </section>
+
+      <section class="drawer-pane" id="jsonPane">
+        <label class="json-toolbar"><i data-lucide="search"></i><input placeholder="搜索 JSON key 或路径"></label>
+        <div class="section-label">最近一次响应 <small>只展开当前字段上下文</small></div>
+        <div class="json-tree">
+          <div class="json-line"><span>{</span></div>
+          <div class="json-line level-1"><span class="json-key">"code"</span>: <span class="json-number">200</span>,</div>
+          <div class="json-line level-1"><span class="json-key">"data"</span>: {</div>
+          <div class="json-line level-2"><span class="json-key">"devices"</span>: [ <span class="json-count">3 items</span></div>
+          <div class="json-line level-3">{ <span class="json-key">"id"</span>: <span class="json-string">"fan-01"</span>,</div>
+          <div class="json-line level-3 selected"><span class="json-key">"temperature"</span>: <span class="json-number" id="jsonSelectedValue">36.5</span>,</div>
+          <div class="json-line level-3"><span class="json-key">"status"</span>: <span class="json-string">"running"</span> },</div>
+          <div class="json-line level-2">],</div>
+          <div class="json-line level-2"><span class="json-key">"updatedAt"</span>: <span class="json-string">"2026-08-01T14:32:08Z"</span></div>
+          <div class="json-line level-1">}</div>
+          <div class="json-line">}</div>
+        </div>
+      </section>
+
+      <section class="drawer-pane" id="usagePane">
+        <div class="section-label">已绑定组件 <small id="usageCountLabel">2 个</small></div>
+        <div class="usage-list" id="usageList">
+          <div class="usage-row"><span class="component-icon"><i data-lucide="type"></i></span><span class="usage-copy"><b>温度显示文本</b><span>主画布 · 图层 18</span></span><span class="relation">文字内容 ← 当前字段</span></div>
+          <div class="usage-row"><span class="component-icon"><i data-lucide="gauge"></i></span><span class="usage-copy"><b>设备温度仪表</b><span>主画布 · 图层 26</span></span><span class="relation">仪表数值 ← 当前字段</span></div>
+        </div>
+        <div class="section-label">绑定规则</div>
+        <div class="detail-list">
+          <div class="detail-row"><span>关系表达</span><b>组件属性 ← 来源 / JSON 路径</b></div>
+          <div class="detail-row"><span>失效回退</span><b>继续显示组件的静态属性值</b></div>
+        </div>
+      </section>
+    </div>
+    <footer class="drawer-foot"><span class="path-chip" id="drawerFootPath">$.data.devices[0].temperature</span><button class="button primary" id="useFieldButton">在通信面板中使用</button></footer>
+  </aside>
+
+  <div class="modal-backdrop" id="sourceModal">
+    <section class="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+      <header class="modal-head"><strong id="modalTitle">新建数据连接</strong><button class="icon-button" id="closeModal"><i data-lucide="x"></i></button></header>
+      <div class="modal-body">
+        <div class="protocol-grid">
+          <button class="protocol-choice selected"><span class="protocol">MQTT</span>MQTT</button><button class="protocol-choice"><span class="protocol">HTTP</span>HTTP API</button><button class="protocol-choice"><span class="protocol">MYSQL</span>MySQL</button><button class="protocol-choice"><span class="protocol">SQL</span>SQL Server</button><button class="protocol-choice"><span class="protocol">REDIS</span>Redis</button><button class="protocol-choice"><span class="protocol">TCP</span>Socket</button><button class="protocol-choice"><span class="protocol">WS</span>WebSocket</button>
+        </div>
+        <label class="form-label" for="sourceName">连接名称</label><input class="form-input" id="sourceName" placeholder="例如：一号车间设备">
+      </div>
+      <footer class="modal-foot"><button class="button" id="cancelModal">取消</button><button class="button primary" id="createSource">下一步：配置连接</button></footer>
+    </section>
+  </div>
+  <div class="toast" id="toast">已刷新全部数据</div>
+
+  <script>
+    const pointRows = [
+      { name: '设备温度', id: 'line1.fan01.temperature', value: '36.5 °C', raw: 36.5, type: '数值', source: '车间设备', protocol: 'MQTT', path: '$.data.devices[0].temperature', status: '正常', time: '刚刚', used: 2 },
+      { name: '设备运行状态', id: 'line1.fan01.status', value: 'running', raw: 'running', type: '文本', source: '车间设备', protocol: 'MQTT', path: '$.data.devices[0].status', status: '正常', time: '刚刚', used: 3 },
+      { name: '瞬时功率', id: 'energy.workshop.power', value: '482.6 kW', raw: 482.6, type: '数值', source: '能源接口', protocol: 'HTTP', path: '$.data.realtime.power', status: '正常', time: '1 秒前', used: 6 },
+      { name: '今日生产记录', id: 'production.today.rows', value: '12,680 行 × 9 列', raw: '[12680 rows]', type: '表格', source: '生产数据库', protocol: 'MySQL', path: '$.data.rows', status: '正常', time: '3 秒前', used: 1 },
+      { name: '质量合格率', id: 'quality.passRate', value: '98.72%', raw: 98.72, type: '数值', source: '质量数据库', protocol: 'SQL Server', path: '$.result.summary.passRate', status: '延迟', time: '18 秒前', used: 4 },
+      { name: '当前告警', id: 'alarm.current', value: '{ level: 2, count: 6 }', raw: '{ level: 2, count: 6 }', type: '对象', source: '告警缓存', protocol: 'Redis', path: '$.alarm.current', status: '正常', time: '刚刚', used: 2 },
+      { name: 'PLC 在线状态', id: 'plc.online', value: 'false', raw: false, type: '布尔', source: 'PLC Socket 网关', protocol: 'Socket', path: '$.payload.online', status: '异常', time: '2 分钟前', used: 5 },
+      { name: '事件消息', id: 'runtime.event.message', value: '产线切换完成', raw: '产线切换完成', type: '文本', source: '实时事件通道', protocol: 'WebSocket', path: '$.event.message', status: '正常', time: '刚刚', used: 0 },
+      { name: '设备转速', id: 'line1.fan01.rpm', value: '1,486 rpm', raw: 1486, type: '数值', source: '车间设备', protocol: 'MQTT', path: '$.data.devices[0].rpm', status: '正常', time: '刚刚', used: 7 },
+      { name: '月度能耗', id: 'energy.month.total', value: '28,410 kWh', raw: 28410, type: '数值', source: '能源接口', protocol: 'HTTP', path: '$.data.month.total', status: '正常', time: '5 秒前', used: 0 }
+    ]
+
+    const connectionRows = [
+      ['MQTT','车间设备','mqtt://10.20.1.18:1883','在线','42,300','1,842/s','刚刚'],
+      ['HTTP','能源接口','https://energy-gateway/api/v1/realtime','在线','8,620','120/s','1 秒前'],
+      ['MySQL','生产数据库','10.20.3.11:3306 / production','在线','61,200','30/s','3 秒前'],
+      ['SQL Server','质量数据库','10.20.3.21:1433 / quality','延迟','12,440','8/s','18 秒前'],
+      ['Redis','告警缓存','10.20.4.16:6379 / db 2','在线','3,200','260/s','刚刚'],
+      ['Socket','PLC Socket 网关','10.20.2.30:9001','离线','520','0/s','2 分钟前'],
+      ['WebSocket','实时事件通道','wss://runtime-gateway/ws','在线','180','96/s','刚刚']
+    ]
+
+    let selectedSource = 'all'
+    let selectedPoint = pointRows[0]
+
+    const dataRows = document.getElementById('dataRows')
+    const emptyState = document.getElementById('emptyState')
+    const visibleCount = document.getElementById('visibleCount')
+    const drawer = document.getElementById('detailDrawer')
+    const drawerBackdrop = document.getElementById('drawerBackdrop')
+    const toast = document.getElementById('toast')
+
+    function statusClass(status) { return status === '正常' ? '' : status === '延迟' ? 'warn' : 'bad' }
+    function showToast(message) {
+      toast.textContent = message
+      toast.classList.add('show')
+      clearTimeout(showToast.timer)
+      showToast.timer = setTimeout(() => toast.classList.remove('show'), 1600)
+    }
+
+    function filteredPoints() {
+      const query = document.getElementById('dataSearch').value.trim().toLowerCase()
+      const type = document.getElementById('typeFilter').value
+      const status = document.getElementById('statusFilter').value
+      const usedOnly = document.getElementById('usedOnly').checked
+      return pointRows.filter(row => {
+        const matchesSource = selectedSource === 'all' || row.protocol === selectedSource
+        const matchesQuery = !query || [row.name, row.id, row.source, row.path, row.value].some(value => String(value).toLowerCase().includes(query))
+        return matchesSource && matchesQuery && (type === 'all' || row.type === type) && (status === 'all' || row.status === status) && (!usedOnly || row.used > 0)
+      })
+    }
+
+    function renderPoints() {
+      const rows = filteredPoints()
+      dataRows.innerHTML = rows.map(row => `
+        <div class="data-row item ${selectedPoint && selectedPoint.id === row.id && drawer.classList.contains('open') ? 'selected' : ''}" data-id="${row.id}">
+          <div class="cell"><span class="dot ${statusClass(row.status)}" title="${row.status}"></span></div>
+          <div class="cell data-name"><b>${row.name}</b><small>${row.id}</small></div>
+          <div class="cell live-value">${row.value}</div>
+          <div class="cell"><span class="type-tag">${row.type}</span></div>
+          <div class="cell source-name"><span class="protocol">${row.protocol === 'SQL Server' ? 'SQL' : row.protocol.toUpperCase().slice(0,5)}</span><span>${row.source}</span></div>
+          <div class="cell json-path" title="${row.path}">${row.path}</div>
+          <div class="cell time">${row.time}</div>
+          <div class="cell"><span class="usage-tag ${row.used ? 'used' : ''}">${row.used ? `${row.used} 个组件` : '未使用'}</span></div>
+          <button class="row-action" data-id="${row.id}" title="查看字段"><i data-lucide="panel-right-open"></i></button>
+        </div>`).join('')
+      emptyState.style.display = rows.length ? 'none' : 'flex'
+      visibleCount.textContent = rows.length
+      dataRows.querySelectorAll('.item').forEach(element => element.addEventListener('click', () => openPoint(element.dataset.id)))
+      if (window.lucide) lucide.createIcons()
+    }
+
+    function openPoint(id) {
+      selectedPoint = pointRows.find(row => row.id === id) || pointRows[0]
+      document.getElementById('drawerTitle').textContent = selectedPoint.name
+      document.getElementById('drawerPath').textContent = selectedPoint.path
+      document.getElementById('drawerFootPath').textContent = selectedPoint.path
+      document.getElementById('drawerValue').textContent = selectedPoint.value
+      document.getElementById('drawerType').textContent = `${selectedPoint.type} · ${selectedPoint.type === '数值' ? 'number' : selectedPoint.type === '表格' ? 'array<object>' : selectedPoint.type === '布尔' ? 'boolean' : 'string/object'}`
+      document.getElementById('drawerSource').textContent = `${selectedPoint.source} · ${selectedPoint.protocol}`
+      document.getElementById('drawerStatus').textContent = `${selectedPoint.status} · ${selectedPoint.status === '正常' ? '质量良好' : '需要检查'}`
+      document.getElementById('drawerTime').textContent = selectedPoint.time
+      document.getElementById('jsonSelectedValue').textContent = typeof selectedPoint.raw === 'string' ? `"${selectedPoint.raw}"` : selectedPoint.raw
+      document.getElementById('usageCountLabel').textContent = `${selectedPoint.used} 个`
+      drawer.classList.add('open')
+      drawerBackdrop.classList.add('open')
+      renderPoints()
+    }
+
+    function closeDrawer() {
+      drawer.classList.remove('open')
+      drawerBackdrop.classList.remove('open')
+      renderPoints()
+    }
+
+    function renderConnections() {
+      document.getElementById('connectionRows').innerHTML = connectionRows.map(row => `
+        <div class="connection-row item">
+          <div><span class="protocol">${row[0] === 'SQL Server' ? 'SQL' : row[0].toUpperCase().slice(0,5)}</span></div>
+          <div class="connection-name"><b>${row[1]}</b><small>${row[0]} 连接</small></div>
+          <div class="cell json-path" title="${row[2]}">${row[2]}</div>
+          <div><span class="status-label ${row[3] === '在线' ? '' : 'warn'}"><span class="dot ${row[3] === '在线' ? '' : row[3] === '延迟' ? 'warn' : 'bad'}"></span>${row[3]}</span></div>
+          <div>${row[4]}</div><div>${row[5]}</div><div class="time">${row[6]}</div>
+          <div><button class="manage-button"><i data-lucide="pencil"></i>管理连接</button></div>
+        </div>`).join('')
+      document.querySelectorAll('.manage-button').forEach(button => button.addEventListener('click', () => showToast('正式页面将在右侧打开该连接配置')))
+      if (window.lucide) lucide.createIcons()
+    }
+
+    document.querySelectorAll('.view-tab').forEach(button => button.addEventListener('click', () => {
+      document.querySelectorAll('.view-tab').forEach(item => item.classList.toggle('active', item === button))
+      document.querySelectorAll('.view').forEach(view => view.classList.remove('active'))
+      document.getElementById(`${button.dataset.view}View`).classList.add('active')
+      closeDrawer()
+    }))
+
+    document.querySelectorAll('.source-chip').forEach(button => button.addEventListener('click', () => {
+      selectedSource = button.dataset.source
+      document.querySelectorAll('.source-chip').forEach(item => item.classList.toggle('active', item === button))
+      renderPoints()
+    }))
+
+    document.querySelectorAll('.drawer-tab').forEach(button => button.addEventListener('click', () => {
+      document.querySelectorAll('.drawer-tab').forEach(item => item.classList.toggle('active', item === button))
+      document.querySelectorAll('.drawer-pane').forEach(pane => pane.classList.remove('active'))
+      document.getElementById(`${button.dataset.pane}Pane`).classList.add('active')
+    }))
+
+    ;['dataSearch','typeFilter','statusFilter','usedOnly'].forEach(id => document.getElementById(id).addEventListener(id === 'dataSearch' ? 'input' : 'change', renderPoints))
+    document.getElementById('searchButton').addEventListener('click', () => { renderPoints(); showToast(`找到 ${filteredPoints().length} 条示例数据`) })
+    document.getElementById('refreshButton').addEventListener('click', event => {
+      event.currentTarget.querySelector('svg')?.classList.add('spin')
+      document.getElementById('rateMetric').innerHTML = `${(2320 + Math.floor(Math.random() * 80)).toLocaleString()}<small>次/秒</small>`
+      showToast('已刷新全部来源和汇总数据')
+    })
+    document.getElementById('closeDrawer').addEventListener('click', closeDrawer)
+    drawerBackdrop.addEventListener('click', closeDrawer)
+    document.getElementById('useFieldButton').addEventListener('click', () => showToast(`通信面板将预选：${selectedPoint.name}，仍需手动确认绑定`))
+
+    const sourceModal = document.getElementById('sourceModal')
+    function closeModal() { sourceModal.classList.remove('open') }
+    document.getElementById('newSourceButton').addEventListener('click', () => sourceModal.classList.add('open'))
+    document.getElementById('closeModal').addEventListener('click', closeModal)
+    document.getElementById('cancelModal').addEventListener('click', closeModal)
+    document.getElementById('createSource').addEventListener('click', () => { closeModal(); showToast('下一步进入所选协议的连接配置') })
+    document.querySelectorAll('.protocol-choice').forEach(button => button.addEventListener('click', () => document.querySelectorAll('.protocol-choice').forEach(item => item.classList.toggle('selected', item === button))))
+
+    renderPoints()
+    renderConnections()
+    if (window.lucide) lucide.createIcons()
+  </script>
+</body>
+</html>

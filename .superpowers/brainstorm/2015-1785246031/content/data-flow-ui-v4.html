@@ -1,0 +1,164 @@
+<style>
+  .v4 { color:#25343e; }
+  .v4 * { box-sizing:border-box; }
+  .v4 h2 { margin-bottom:6px; }
+  .lead { margin:0 0 16px; color:#687983; }
+  .flowbar { display:grid; grid-template-columns:1fr 36px 1fr 36px 1fr; align-items:center; margin-bottom:18px; }
+  .flowstep { min-height:58px; padding:10px 14px; border:1px solid #ccd6dc; border-radius:5px; background:#fff; }
+  .flowstep b { display:block; margin-bottom:3px; color:#176f61; }
+  .flowstep span { color:#697a84; font-size:11px; }
+  .flowarrow { text-align:center; color:#168b78; font-size:21px; }
+  .surface { border:1px solid #cbd4da; border-radius:6px; overflow:hidden; background:#fff; box-shadow:0 9px 24px rgba(35,50,60,.08); }
+  .surface-head { height:54px; display:flex; align-items:center; gap:10px; padding:0 15px; border-bottom:1px solid #dce2e6; }
+  .surface-head h3 { margin:0; font-size:15px; }
+  .surface-head p { margin:0; color:#75858f; font-size:11px; }
+  .surface-head button { margin-left:auto; padding:7px 10px; border:1px solid #168b77; border-radius:4px; background:#168b77; color:#fff; }
+  .ingress { display:grid; grid-template-columns:230px 1fr; min-height:405px; }
+  .connections { background:#fafbfb; border-right:1px solid #dce2e6; }
+  .connections-title { padding:12px 13px; display:flex; justify-content:space-between; font-size:11px; font-weight:700; }
+  .conn { display:grid; grid-template-columns:34px 1fr auto; gap:8px; align-items:center; padding:11px 12px; border-top:1px solid #e6ebee; font-size:10px; }
+  .conn.on { border-left:3px solid #178f7b; background:#eef8f5; }
+  .kind { width:34px; height:34px; display:grid; place-items:center; border:1px solid #ced8dd; border-radius:4px; background:#fff; color:#435963; font-weight:700; }
+  .conn small { display:block; margin-top:3px; color:#7e8d96; }
+  .dot,.bad { width:8px; height:8px; border-radius:50%; display:inline-block; background:#19a675; }
+  .bad { background:#d65a5a; }
+  .ingress-main { padding:14px; }
+  .source-name { display:flex; align-items:center; gap:7px; margin-bottom:11px; }
+  .source-name h3 { margin:0; font-size:13px; }
+  .source-name button { margin-left:auto; padding:6px 9px; border:1px solid #ccd6dc; border-radius:4px; background:#fff; color:#5a6d78; }
+  .metrics { display:grid; grid-template-columns:repeat(4,1fr); border:1px solid #d8e0e4; border-radius:5px; overflow:hidden; }
+  .metric { padding:10px; border-right:1px solid #e1e6e9; }
+  .metric:last-child { border-right:0; }
+  .metric span { display:block; color:#74848e; font-size:9px; }
+  .metric b { display:block; margin-top:3px; font-size:14px; }
+  .metric b.ok { color:#13806c; }
+  .result-tabs { display:flex; gap:20px; margin-top:13px; border-bottom:1px solid #dde4e8; }
+  .result-tab { padding:8px 1px; color:#6b7b85; font-size:11px; border-bottom:2px solid transparent; }
+  .result-tab.on { color:#0d7867; border-bottom-color:#178f7b; font-weight:700; }
+  .point-head,.point-row { display:grid; grid-template-columns:1.5fr .7fr .55fr .6fr .8fr; gap:8px; align-items:center; }
+  .point-head { padding:9px 7px; color:#7b8992; background:#f7f9fa; font-size:9px; }
+  .point-row { padding:9px 7px; border-bottom:1px solid #edf0f2; font-size:10px; }
+  .point-name { color:#334a56; font-weight:600; }
+  .value { color:#0f7968; font-variant-numeric:tabular-nums; }
+  .quality { display:flex; align-items:center; gap:5px; color:#176e60; }
+  .raw-link { margin-top:10px; color:#627580; font-size:10px; }
+  .raw-link b { color:#0d7867; }
+
+  .binding-section { margin-top:20px; }
+  .binding-intro { margin:0 0 10px; color:#687983; font-size:12px; }
+  .app { border:1px solid #cbd4da; border-radius:6px; overflow:hidden; background:#eef1f3; box-shadow:0 9px 24px rgba(35,50,60,.08); }
+  .app-top { height:49px; display:flex; align-items:center; gap:7px; padding:0 12px; background:#fff; border-bottom:1px solid #dce2e6; }
+  .brand { min-width:150px; display:flex; align-items:center; gap:8px; font-weight:700; font-size:11px; }
+  .diamond { width:20px; height:20px; border:3px solid #178e7a; transform:rotate(45deg); }
+  .tool { padding:6px 7px; border:1px solid #e0e5e8; border-radius:4px; background:#f7f8f9; color:#61717c; font-size:10px; }
+  .space { flex:1; }
+  .app-body { display:grid; grid-template-columns:160px 1fr 300px; min-height:440px; }
+  .left,.right { background:#fff; }
+  .left { border-right:1px solid #dce2e6; }
+  .right { border-left:1px solid #dce2e6; }
+  .tabs { height:39px; display:grid; grid-template-columns:repeat(3,1fr); border-bottom:1px solid #e3e8eb; }
+  .tabs.four { grid-template-columns:repeat(4,1fr); }
+  .tab { display:grid; place-items:center; color:#71818b; font-size:10px; border-bottom:2px solid transparent; }
+  .tab.on { color:#0e7b69; border-bottom-color:#178f7b; font-weight:700; }
+  .library { display:grid; grid-template-columns:1fr 1fr; gap:7px; padding:10px; }
+  .shape { height:54px; display:grid; place-items:center; border:1px solid #dce3e7; border-radius:4px; color:#64747e; font-size:9px; }
+  .canvas { position:relative; background-color:#f0f2f3; background-image:linear-gradient(#dce1e4 1px,transparent 1px),linear-gradient(90deg,#dce1e4 1px,transparent 1px); background-size:21px 21px; }
+  .paper { position:absolute; inset:22px; background:#fff; border:1px solid #cbd3d8; }
+  .fan { position:absolute; left:70px; top:58px; width:106px; height:106px; display:grid; place-items:center; border:2px solid #198c81; outline:2px solid #178eea; outline-offset:5px; border-radius:50%; background:#eaf7f5; }
+  .rotor { width:54px; height:54px; display:grid; place-items:center; border:8px dotted #178d82; border-radius:50%; color:#176d66; font-size:9px; text-align:center; }
+  .temp { position:absolute; left:245px; top:65px; width:130px; height:70px; display:grid; place-items:center; border:2px solid #d34e4e; background:#fff2f2; color:#bf3c3c; font-size:22px; }
+  .table-mini { position:absolute; left:70px; right:55px; top:235px; height:100px; border:1px solid #74838c; background:#fff; font-size:9px; }
+  .table-title { padding:6px; text-align:center; background:#e9edef; font-weight:700; }
+  .tr { display:grid; grid-template-columns:1.3fr 1fr 1fr; }
+  .tr span { padding:5px; border-top:1px solid #dce2e6; border-right:1px solid #dce2e6; }
+  .comm { padding:11px; }
+  .comm-head { display:flex; align-items:center; gap:7px; padding-bottom:9px; border-bottom:1px solid #e6ebee; }
+  .node-icon { width:38px; height:38px; display:grid; place-items:center; border:2px solid #198c81; border-radius:50%; background:#eaf7f5; color:#176f67; }
+  .comm-head b { font-size:11px; }
+  .comm-head small { display:block; margin-top:2px; color:#7e8c95; }
+  .point-count { margin-left:auto; color:#0e7867; font-size:9px; }
+  .bind-columns { display:grid; grid-template-columns:84px 18px 1fr; gap:5px; padding:10px 0 4px; color:#84919a; font-size:9px; }
+  .binding { display:grid; grid-template-columns:84px 18px 1fr; gap:5px; align-items:center; padding:7px 0; border-bottom:1px solid #edf0f2; font-size:9px; }
+  .target { color:#314752; font-weight:700; }
+  .arrow { color:#168b78; text-align:center; font-size:15px; }
+  .point-select { padding:6px 7px; border:1px solid #d2dbe0; border-radius:3px; color:#4d626e; }
+  .point-select em { display:block; margin-top:2px; color:#0e7a68; font-style:normal; }
+  .add-bind { width:100%; margin-top:9px; padding:7px; border:1px dashed #72bbae; border-radius:4px; background:#fff; color:#0e7867; font-size:10px; }
+  .simple-rule { margin-top:9px; padding:8px; border-left:3px solid #d44e4e; background:#fff5f5; font-size:9px; }
+  .simple-rule span { display:inline-block; padding:4px 5px; margin:3px 1px 0; border:1px solid #d9dfe2; border-radius:3px; background:#fff; }
+  .preview { margin-top:9px; padding:7px; background:#eef8f5; color:#166d5e; font-size:9px; }
+  .app-footer { padding:8px 12px; border-top:1px solid #dce2e6; background:#fff; color:#657681; font-size:9px; }
+  .table-bind { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin-top:12px; }
+  .table-map { padding:9px; border:1px solid #d5dde2; border-radius:4px; background:#fff; font-size:10px; }
+  .table-map b { display:block; margin-bottom:5px; }
+  .table-map span { color:#607681; }
+  .principles { margin-top:18px; padding:13px; border:1px solid #d6dee3; border-radius:6px; background:#f7f9fa; }
+  .principles strong { display:block; margin-bottom:7px; }
+  .principles ul { margin:0; padding-left:18px; color:#61727d; font-size:11px; line-height:1.8; }
+  .decision { margin-top:22px; }
+  @media(max-width:1050px){.flowbar{grid-template-columns:1fr}.flowarrow{transform:rotate(90deg)}.ingress{grid-template-columns:190px 1fr}.app-body{grid-template-columns:130px 1fr 270px}.metrics{grid-template-columns:1fr 1fr}.table-bind{grid-template-columns:1fr}}
+</style>
+
+<div class="v4">
+  <h2>方案四：先确认“获得了什么数据”，再让组件使用点位</h2>
+  <p class="lead">协议只属于数据接入阶段。组件绑定阶段完全隐藏协议，只显示已经确认可用的标准点位。</p>
+
+  <div class="flowbar">
+    <div class="flowstep"><b>1. 建立连接</b><span>配置 HTTP、MQTT、SQL、Redis 或 Socket</span></div><div class="flowarrow">→</div>
+    <div class="flowstep"><b>2. 确认采集结果</b><span>查看原始数据、解析结果、点位值和质量</span></div><div class="flowarrow">→</div>
+    <div class="flowstep"><b>3. 组件使用点位</b><span>选中组件，把点位绑定到对应目标属性</span></div>
+  </div>
+
+  <section class="surface">
+    <div class="surface-head"><div><h3>数据接入</h3><p>统一建立连接，并确认每个连接实际获得了什么数据</p></div><button>＋ 新建连接</button></div>
+    <div class="ingress">
+      <aside class="connections">
+        <div class="connections-title"><span>连接列表</span><span>3 / 4 正常</span></div>
+        <div class="conn on"><span class="kind">MQ</span><div><b>车间设备</b><small>1,240 条/秒 · 刚刚</small></div><i class="dot"></i></div>
+        <div class="conn"><span class="kind">SQL</span><div><b>生产报表</b><small>36 行 · 0.5 秒前</small></div><i class="dot"></i></div>
+        <div class="conn"><span class="kind">RD</span><div><b>实时告警</b><small>86 条/秒 · 刚刚</small></div><i class="dot"></i></div>
+        <div class="conn"><span class="kind">HT</span><div><b>能源接口</b><small>12 秒未收到数据</small></div><i class="bad"></i></div>
+      </aside>
+      <main class="ingress-main">
+        <div class="source-name"><i class="dot"></i><h3>车间设备</h3><button>编辑连接</button><button>重新测试</button></div>
+        <div class="metrics"><div class="metric"><span>连接状态</span><b class="ok">正常</b></div><div class="metric"><span>最近数据</span><b>18 ms</b></div><div class="metric"><span>接收速度</span><b>1,240/s</b></div><div class="metric"><span>解析成功率</span><b>100%</b></div></div>
+        <div class="result-tabs"><span class="result-tab on">点位数据（286）</span><span class="result-tab">原始数据</span><span class="result-tab">解析错误（0）</span></div>
+        <div class="point-head"><span>点位名称</span><span>当前值</span><span>类型</span><span>质量</span><span>更新时间</span></div>
+        <div class="point-row"><span class="point-name">line1.motor01.temperature</span><span class="value">86.2</span><span>数值</span><span class="quality"><i class="dot"></i>正常</span><span>21:48:18.126</span></div>
+        <div class="point-row"><span class="point-name">line1.motor01.running</span><span class="value">true</span><span>布尔</span><span class="quality"><i class="dot"></i>正常</span><span>21:48:18.126</span></div>
+        <div class="point-row"><span class="point-name">line1.motor01.rpm</span><span class="value">1480</span><span>数值</span><span class="quality"><i class="dot"></i>正常</span><span>21:48:18.126</span></div>
+        <div class="point-row"><span class="point-name">line1.motor01.alarm</span><span class="value">warning</span><span>枚举</span><span class="quality"><i class="dot"></i>正常</span><span>21:48:18.126</span></div>
+        <div class="raw-link">切换到“<b>原始数据</b>”可以查看接收到的 JSON、SQL 行或消息正文，确认字段解析是否正确。</div>
+      </main>
+    </div>
+  </section>
+
+  <section class="binding-section">
+    <h3>组件使用数据</h3>
+    <p class="binding-intro">数据已经在接入阶段转成统一点位，因此组件只选择点位，不再显示 MQTT、SQL、Redis 等来源。</p>
+    <div class="app">
+      <div class="app-top"><div class="brand"><i class="diamond"></i>苔岑2D绘图</div><span class="tool">选择</span><span class="tool">铅笔</span><span class="tool">连线</span><span class="space"></span><span class="tool">预览</span></div>
+      <div class="app-body">
+        <aside class="left"><div class="tabs"><span class="tab">图纸</span><span class="tab on">组件</span><span class="tab">我的</span></div><div class="library"><div class="shape">矩形</div><div class="shape">文本</div><div class="shape">风机</div><div class="shape">表格</div><div class="shape">仪表</div><div class="shape">进度</div></div></aside>
+        <main class="canvas"><div class="paper"><div class="fan"><div class="rotor">1480<br>rpm</div></div><div class="temp">86.2 ℃</div><div class="table-mini"><div class="table-title">实时告警</div><div class="tr"><span>21:48:12</span><span>电机 01</span><span style="color:#c53e3e">高温</span></div><div class="tr"><span>21:47:55</span><span>阀门 03</span><span style="color:#c68016">偏低</span></div></div></div></main>
+        <aside class="right"><div class="tabs four"><span class="tab">属性</span><span class="tab on">通信</span><span class="tab">布局</span><span class="tab">结构</span></div><div class="comm">
+          <div class="comm-head"><span class="node-icon">◉</span><div><b>风机 01</b><small>选择点位驱动组件属性</small></div><span class="point-count">286 个可用点位</span></div>
+          <div class="bind-columns"><span>目标属性</span><span></span><span>绑定点位</span></div>
+          <div class="binding"><span class="target">运行状态</span><span class="arrow">←</span><span class="point-select">line1.motor01.running<em>当前 true</em></span></div>
+          <div class="binding"><span class="target">旋转速度</span><span class="arrow">←</span><span class="point-select">line1.motor01.rpm<em>当前 1480</em></span></div>
+          <div class="binding"><span class="target">显示数值</span><span class="arrow">←</span><span class="point-select">line1.motor01.temperature<em>当前 86.2</em></span></div>
+          <div class="binding"><span class="target">状态颜色</span><span class="arrow">←</span><span class="point-select">line1.motor01.alarm<em>当前 warning</em></span></div>
+          <button class="add-bind">＋ 添加绑定</button>
+          <div class="simple-rule"><b>样式规则</b><br>当 <span>temperature</span><span>≥</span><span>80</span> 时，使用 <span>红色 + 闪烁</span></div>
+          <div class="preview"><i class="dot"></i>实时预览正常 · 一期只读</div>
+        </div></aside>
+      </div>
+      <div class="app-footer">组件绑定只引用点位 ID；点位来自哪种协议由数据接入层负责，组件不需要知道。</div>
+    </div>
+    <div class="table-bind"><div class="table-map"><b>表格数据</b><span>alarm.snapshot → 快照覆盖</span></div><div class="table-map"><b>新增记录</b><span>alarm.newEvent → 流式追加</span></div><div class="table-map"><b>行状态样式</b><span>alarm.level → 正常 / 告警颜色</span></div></div>
+  </section>
+
+  <section class="principles"><strong>这版修正的核心逻辑</strong><ul><li>数据接入必须能看到连接状态、接收频率、最近数据、原始内容、解析错误和最终点位。</li><li>只有确认正常的点位才能进入组件绑定。</li><li>组件绑定只显示点位和目标属性，不显示数据源类型。</li><li>多个组件使用同一点位时，底层只订阅一次，再按绑定关系分发。</li></ul></section>
+
+  <div class="decision"><h3>这条“连接 → 确认数据 → 使用点位”的流程是否正确？</h3><div class="options"><div class="option" data-choice="v4-correct" onclick="toggleSelect(this)"><div class="letter">A</div><div class="content"><h3>逻辑正确</h3><p>继续细化新建连接和添加绑定的操作。</p></div></div><div class="option" data-choice="v4-ingress" onclick="toggleSelect(this)"><div class="letter">B</div><div class="content"><h3>数据接入仍需调整</h3><p>连接后的采集结果和点位确认仍不够直观。</p></div></div><div class="option" data-choice="v4-binding" onclick="toggleSelect(this)"><div class="letter">C</div><div class="content"><h3>组件使用仍需调整</h3><p>点位与目标属性的绑定方式还需要简化。</p></div></div></div></div>
+</div>

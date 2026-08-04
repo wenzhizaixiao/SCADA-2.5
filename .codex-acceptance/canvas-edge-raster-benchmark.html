@@ -1,0 +1,126 @@
+<!doctype html>
+<meta charset="utf-8">
+<pre id="output">running</pre>
+<script>
+const width = 2234
+const height = 1340
+const edgeCount = 20000
+const batchSize = 512
+
+const frame = () => new Promise(resolve => setTimeout(resolve, 0))
+
+function drawEdge(context) {
+  context.beginPath()
+  context.moveTo(180.25, 180.25)
+  context.lineTo(2010.75, 1120.75)
+  context.stroke()
+}
+
+function drawPathBatch(context, count) {
+  context.beginPath()
+  for (let index = 0; index < count; index += 1) {
+    context.moveTo(180.25, 180.25)
+    context.lineTo(2010.75, 1120.75)
+  }
+  context.stroke()
+}
+
+async function benchmark(name, { pathBatch = false, willReadFrequently = false, barrier = false } = {}) {
+  const canvas = document.createElement('canvas')
+  canvas.width = width
+  canvas.height = height
+  const context = canvas.getContext('2d', { willReadFrequently })
+  context.strokeStyle = 'rgba(72, 85, 99, 0.72)'
+  context.lineWidth = 2.25
+  const sliceTimes = []
+  const startedAt = performance.now()
+  for (let start = 0; start < edgeCount; start += batchSize) {
+    const sliceStartedAt = performance.now()
+    const count = Math.min(batchSize, edgeCount - start)
+    if (pathBatch) drawPathBatch(context, count)
+    else for (let index = 0; index < count; index += 1) drawEdge(context)
+    if (barrier) context.getImageData(1095, 650, 1, 1)
+    sliceTimes.push(performance.now() - sliceStartedAt)
+    await frame()
+  }
+  const drawingFinishedAt = performance.now()
+  const target = document.createElement('canvas')
+  target.width = width
+  target.height = height
+  const targetContext = target.getContext('2d', { willReadFrequently: true })
+  const commitStartedAt = performance.now()
+  targetContext.drawImage(canvas, 0, 0)
+  const drawImageMs = performance.now() - commitStartedAt
+  const readStartedAt = performance.now()
+  const pixel = targetContext.getImageData(1095, 650, 1, 1).data
+  const readMs = performance.now() - readStartedAt
+  return {
+    name,
+    totalMs: performance.now() - startedAt,
+    drawMs: drawingFinishedAt - startedAt,
+    maxSliceMs: Math.max(...sliceTimes),
+    drawImageMs,
+    readMs,
+    pixel: [...pixel]
+  }
+}
+
+function renderPixels({ pathBatch, opacity, count = 32 }) {
+  const canvas = document.createElement('canvas')
+  canvas.width = 128
+  canvas.height = 64
+  const context = canvas.getContext('2d', { willReadFrequently: true })
+  context.strokeStyle = `rgba(10, 80, 220, ${opacity})`
+  context.lineWidth = 1.35
+  if (pathBatch) {
+    context.beginPath()
+    for (let index = 0; index < count; index += 1) {
+      context.moveTo(8.25, 9.25)
+      context.lineTo(116.75, 52.75)
+    }
+    context.stroke()
+  } else {
+    for (let index = 0; index < count; index += 1) {
+      context.beginPath()
+      context.moveTo(8.25, 9.25)
+      context.lineTo(116.75, 52.75)
+      context.stroke()
+    }
+  }
+  return context.getImageData(0, 0, 128, 64).data
+}
+
+function pixelDifference(opacity) {
+  const direct = renderPixels({ pathBatch: false, opacity })
+  const batched = renderPixels({ pathBatch: true, opacity })
+  let changed = 0
+  let maxDelta = 0
+  let totalDelta = 0
+  for (let index = 0; index < direct.length; index += 1) {
+    const delta = Math.abs(direct[index] - batched[index])
+    if (delta) changed += 1
+    if (delta > maxDelta) maxDelta = delta
+    totalDelta += delta
+  }
+  return { opacity, changed, maxDelta, totalDelta }
+}
+
+async function run() {
+  const results = {
+    pixelDifferences: [pixelDifference(1), pixelDifference(.72)],
+    benchmarks: []
+  }
+  results.benchmarks.push(await benchmark('separate'))
+  results.benchmarks.push(await benchmark('path-batch', { pathBatch: true }))
+  results.benchmarks.push(await benchmark('separate-barrier', { barrier: true }))
+  results.benchmarks.push(await benchmark('separate-will-read', { willReadFrequently: true }))
+  results.benchmarks.push(await benchmark('separate-will-read-barrier', { willReadFrequently: true, barrier: true }))
+  document.querySelector('#output').textContent = JSON.stringify(results)
+  document.documentElement.dataset.done = 'true'
+}
+
+run().catch(error => {
+  document.querySelector('#output').textContent = JSON.stringify({ error: error.stack || String(error) })
+  document.documentElement.dataset.done = 'true'
+})
+</script>

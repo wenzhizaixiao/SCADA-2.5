@@ -1,0 +1,233 @@
+<style>
+  .v2 { color: #22313b; }
+  .v2 * { box-sizing: border-box; }
+  .v2 h2 { margin-bottom: 6px; }
+  .v2 .lead { margin: 0 0 18px; color: #647480; }
+  .frame { border: 1px solid #cbd4da; border-radius: 6px; overflow: hidden; background: #f3f5f6; box-shadow: 0 10px 28px rgba(35,49,59,.09); }
+  .top { height: 52px; padding: 0 14px; display: flex; align-items: center; gap: 8px; background: #fff; border-bottom: 1px solid #dce2e6; }
+  .logo { display: flex; align-items: center; gap: 9px; min-width: 160px; font-weight: 700; }
+  .diamond { width: 22px; height: 22px; border: 3px solid #168f7b; transform: rotate(45deg); }
+  .cmd { padding: 7px 9px; border: 1px solid #dce2e6; border-radius: 4px; color: #52636f; background: #f7f8f9; font-size: 12px; }
+  .cmd.data { margin-left: auto; display: flex; align-items: center; gap: 7px; color: #0d7968; border-color: #9fcfc6; background: #edf8f5; font-weight: 600; }
+  .green-dot, .red-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; background: #19a674; }
+  .red-dot { background: #dd5151; }
+  .editor { display: grid; grid-template-columns: 190px 1fr 260px; min-height: 310px; }
+  .side { background: #fff; }
+  .left { border-right: 1px solid #dce2e6; }
+  .right { border-left: 1px solid #dce2e6; }
+  .tabs { display: grid; grid-template-columns: repeat(3, 1fr); height: 40px; border-bottom: 1px solid #e3e8eb; }
+  .tabs.four { grid-template-columns: repeat(4, 1fr); }
+  .tab { display: grid; place-items: center; color: #687984; font-size: 12px; border-bottom: 2px solid transparent; }
+  .tab.on { color: #0d7c6a; border-bottom-color: #179681; font-weight: 600; }
+  .library { display: grid; grid-template-columns: repeat(2, 1fr); gap: 7px; padding: 12px; }
+  .shape { height: 60px; display: grid; place-items: center; border: 1px solid #dce3e7; border-radius: 4px; color: #5c6c76; font-size: 11px; }
+  .canvas { position: relative; background-color: #f0f2f3; background-image: linear-gradient(#dce1e4 1px, transparent 1px), linear-gradient(90deg, #dce1e4 1px, transparent 1px); background-size: 22px 22px; }
+  .paper { position: absolute; inset: 24px; background: #fff; border: 1px solid #cbd3d8; }
+  .node { position: absolute; left: 52px; top: 50px; width: 150px; height: 82px; border: 2px solid #d94c4c; outline: 2px solid #178eea; outline-offset: 5px; background: #fff3f3; display: grid; place-items: center; text-align: center; }
+  .node strong { color: #c63b3b; font-size: 25px; }
+  .binding-tag { position: absolute; right: -15px; top: -15px; width: 25px; height: 25px; display: grid; place-items: center; border-radius: 50%; background: #178eea; color: #fff; font-size: 11px; }
+  .pipe { position: absolute; left: 250px; top: 160px; width: 230px; height: 34px; border: 2px solid #4383a1; background: repeating-linear-gradient(90deg, #dfedf3 0 22px, #79b7cf 22px 38px); text-align: center; line-height: 30px; color: #27657f; font-size: 11px; }
+  .prop { padding: 12px; }
+  .prop h3 { margin: 0 0 10px; font-size: 14px; }
+  .fold { display: flex; justify-content: space-between; padding: 10px 0; border-bottom: 1px solid #e7ecef; font-size: 12px; font-weight: 600; }
+  .binding-summary { padding: 12px 0; border-bottom: 1px solid #e7ecef; }
+  .summary-head { display: flex; justify-content: space-between; font-size: 12px; font-weight: 700; }
+  .summary-head button { border: 0; border-radius: 4px; padding: 4px 7px; color: #0c7968; background: #e7f5f2; }
+  .map-mini { margin-top: 9px; padding: 7px; border-left: 3px solid #179681; background: #f4f8f7; font-size: 11px; }
+  .note { margin-top: 8px; color: #778691; font-size: 11px; line-height: 1.5; }
+  .why { padding: 10px 14px; border-top: 1px solid #dce2e6; background: #fff; color: #60717d; font-size: 12px; }
+  .why b { color: #176f60; }
+
+  .workbench { margin-top: 20px; border: 1px solid #cbd4da; border-radius: 6px; overflow: hidden; background: #fff; box-shadow: 0 10px 28px rgba(35,49,59,.08); }
+  .work-head { height: 58px; display: flex; align-items: center; gap: 12px; padding: 0 16px; border-bottom: 1px solid #dce2e6; }
+  .back { color: #52636f; font-size: 12px; }
+  .work-title { font-weight: 700; }
+  .work-status { margin-left: auto; color: #147461; font-size: 12px; }
+  .work-tabs { display: flex; height: 44px; padding-left: 16px; border-bottom: 1px solid #dfe5e9; background: #fafbfb; }
+  .work-tab { min-width: 120px; display: grid; place-items: center; color: #60717c; font-size: 13px; border-bottom: 2px solid transparent; }
+  .work-tab.on { color: #0d7c6a; border-bottom-color: #179681; font-weight: 700; }
+  .work-body { padding: 16px; }
+  .protocols { display: grid; grid-template-columns: repeat(6, 1fr); gap: 8px; }
+  .protocol { min-height: 68px; padding: 9px; border: 1px solid #d5dde2; border-radius: 5px; color: #52646f; background: #fff; text-align: center; font-size: 11px; }
+  .protocol b { display: block; margin-bottom: 4px; color: #2c414e; font-size: 13px; }
+  .protocol.on { border-color: #4eaa99; background: #eef8f6; color: #0f7464; }
+  .protocol.on b { color: #0d7564; }
+  .source-layout { display: grid; grid-template-columns: 180px 1fr 260px; gap: 14px; margin-top: 14px; }
+  .pane { border: 1px solid #d9e0e4; border-radius: 5px; overflow: hidden; background: #fff; }
+  .pane-head { padding: 10px 12px; border-bottom: 1px solid #e3e8eb; background: #f8f9fa; font-size: 12px; font-weight: 700; }
+  .source-item { padding: 10px 11px; border-bottom: 1px solid #edf0f2; font-size: 11px; }
+  .source-item.on { border-left: 3px solid #179681; background: #f1f8f6; }
+  .source-item small { display: block; margin-top: 3px; color: #778690; }
+  .add { margin: 10px; padding: 8px; border: 1px dashed #8fc7bc; border-radius: 4px; text-align: center; color: #0f7968; font-size: 11px; }
+  .form { padding: 12px; }
+  .field { display: grid; grid-template-columns: 96px 1fr; gap: 9px; align-items: center; margin-bottom: 9px; font-size: 11px; }
+  .input { min-height: 31px; padding: 7px 8px; border: 1px solid #ccd6dc; border-radius: 4px; background: #fff; color: #344a57; }
+  .field-help { margin: -4px 0 9px 105px; color: #81909a; font-size: 10px; }
+  .actions { display: flex; justify-content: flex-end; gap: 7px; padding-top: 4px; }
+  .button { padding: 7px 11px; border: 1px solid #cdd6dc; border-radius: 4px; background: #fff; color: #52636f; font-size: 11px; }
+  .button.primary { border-color: #168b77; background: #168b77; color: #fff; }
+  .preview { padding: 12px; font-size: 11px; }
+  .ok { padding: 8px; border-left: 3px solid #19a674; background: #eef8f4; color: #156d5d; }
+  .json { margin-top: 9px; padding: 9px; border-radius: 4px; background: #202b32; color: #d6e8e3; font-family: Consolas, monospace; line-height: 1.55; }
+  .detected { margin-top: 9px; color: #60717c; line-height: 1.7; }
+
+  .binding-work { margin-top: 18px; padding-top: 16px; border-top: 1px solid #dfe5e9; }
+  .binding-work h3 { margin: 0 0 5px; }
+  .binding-work > p { margin: 0 0 12px; color: #71818c; font-size: 12px; }
+  .steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 12px; }
+  .step { padding: 9px 11px; border: 1px solid #d4dce1; border-radius: 4px; color: #5c6d78; font-size: 12px; }
+  .step b { display: inline-grid; place-items: center; width: 20px; height: 20px; margin-right: 6px; border-radius: 50%; background: #e6ecef; }
+  .step.on { border-color: #6ab6a8; background: #f1f9f7; color: #106f60; }
+  .step.on b { background: #168b77; color: #fff; }
+  .bind-layout { display: grid; grid-template-columns: .9fr 1.2fr; gap: 14px; }
+  .point-list { padding: 9px; }
+  .search { padding: 7px 8px; border: 1px solid #d3dce1; border-radius: 4px; color: #82909a; font-size: 11px; }
+  .data-point { display: grid; grid-template-columns: 1fr auto; padding: 9px 5px; border-bottom: 1px solid #edf0f2; font-size: 11px; }
+  .data-point.on { color: #0f7867; font-weight: 600; }
+  .bind-panel { padding: 12px; }
+  .selected-node { display: flex; align-items: center; gap: 9px; padding: 9px; border: 1px solid #cdd9df; border-radius: 4px; background: #f8fafb; font-size: 11px; }
+  .node-icon { width: 36px; height: 36px; display: grid; place-items: center; border: 2px solid #d64c4c; background: #fff3f3; color: #c53c3c; }
+  .mapping { display: grid; grid-template-columns: 1fr 24px 1fr 32px; gap: 6px; align-items: center; margin-top: 9px; font-size: 11px; }
+  .mapping .input { min-height: 30px; }
+  .arrow { text-align: center; color: #168b77; font-size: 18px; }
+  .remove { text-align: center; color: #9a5960; }
+  .rule { margin-top: 10px; padding: 10px; border: 1px solid #ead3d3; border-radius: 4px; background: #fff7f7; font-size: 11px; }
+  .rule-line { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+  .token { padding: 5px 7px; border: 1px solid #d8dee2; border-radius: 3px; background: #fff; color: #405460; }
+  .advanced { margin-top: 8px; color: #7b8992; }
+  .readonly { margin-top: 12px; padding: 9px 11px; background: #f2f5f6; color: #667681; font-size: 11px; }
+  .decision { margin-top: 22px; }
+  @media (max-width: 1050px) {
+    .editor { grid-template-columns: 160px 1fr 230px; }
+    .protocols { grid-template-columns: repeat(3, 1fr); }
+    .source-layout, .bind-layout { grid-template-columns: 1fr; }
+  }
+</style>
+
+<div class="v2">
+  <h2>方案二：数据从画图导航中独立出来</h2>
+  <p class="lead">左侧继续只负责画图；顶部“数据配置”进入独立工作台。选中组件时，右侧只展示绑定摘要和快捷入口。</p>
+
+  <section class="frame">
+    <div class="top">
+      <div class="logo"><span class="diamond"></span>苔岑2D绘图</div>
+      <span class="cmd">选择</span><span class="cmd">铅笔</span><span class="cmd">连线</span><span class="cmd">鹰眼</span>
+      <span class="cmd data"><i class="green-dot"></i>数据配置</span>
+      <span class="cmd">预览</span>
+    </div>
+    <div class="editor">
+      <aside class="side left">
+        <div class="tabs"><span class="tab">图纸</span><span class="tab on">组件</span><span class="tab">我的</span></div>
+        <div class="library"><div class="shape">矩形</div><div class="shape">文本</div><div class="shape">仪表</div><div class="shape">风机</div><div class="shape">表格</div><div class="shape">进度条</div></div>
+      </aside>
+      <main class="canvas">
+        <div class="paper"><div class="node"><div><strong>86.2</strong> ℃<br><small>温度过高</small></div><span class="binding-tag">3</span></div><div class="pipe">流向 →　流向 →　流向 →</div></div>
+      </main>
+      <aside class="side right">
+        <div class="tabs four"><span class="tab on">属性</span><span class="tab">通信</span><span class="tab">布局</span><span class="tab">结构</span></div>
+        <div class="prop">
+          <h3>温度显示组件</h3>
+          <div class="fold"><span>基础属性</span><span>›</span></div>
+          <div class="fold"><span>外观与样式</span><span>›</span></div>
+          <div class="binding-summary">
+            <div class="summary-head"><span>数据绑定（3）</span><button>编辑绑定</button></div>
+            <div class="map-mini">temperature → 显示数值</div>
+            <div class="map-mini">temperature ≥ 80 → 红色闪烁</div>
+            <div class="map-mini">quality = offline → 灰色</div>
+            <p class="note">这里只展示结果。连接地址、账号、Topic 和 SQL 不塞进组件属性栏。</p>
+          </div>
+        </div>
+      </aside>
+    </div>
+    <div class="why"><b>调整结果：</b>左侧仍然只有画图相关入口；数据源是系统能力，从顶部进入；组件属性只保留最常用的绑定摘要。</div>
+  </section>
+
+  <section class="workbench">
+    <div class="work-head"><span class="back">← 返回画布</span><span class="work-title">数据配置</span><span class="work-status"><i class="green-dot"></i> 4 个数据源正常</span></div>
+    <div class="work-tabs"><span class="work-tab on">数据源</span><span class="work-tab">组件绑定</span><span class="work-tab">运行监控</span></div>
+    <div class="work-body">
+      <div class="protocols">
+        <div class="protocol"><b>HTTP API</b>地址 + 请求周期</div>
+        <div class="protocol on"><b>MQTT</b>Broker + Topic</div>
+        <div class="protocol"><b>MySQL</b>连接 + 查询模板</div>
+        <div class="protocol"><b>SQL Server</b>连接 + 查询模板</div>
+        <div class="protocol"><b>Redis</b>Key / Stream / PubSub</div>
+        <div class="protocol"><b>Socket</b>后台代理 + 解析规则</div>
+      </div>
+
+      <div class="source-layout">
+        <aside class="pane">
+          <div class="pane-head">已配置数据源</div>
+          <div class="source-item on"><b>车间设备</b><small>MQTT · 已连接</small></div>
+          <div class="source-item"><b>生产报表</b><small>MySQL · 500ms 查询</small></div>
+          <div class="source-item"><b>实时事件</b><small>Redis Stream · 正常</small></div>
+          <div class="add">＋ 新建数据源</div>
+        </aside>
+        <section class="pane">
+          <div class="pane-head">MQTT 连接配置</div>
+          <div class="form">
+            <div class="field"><span>数据源名称</span><div class="input">车间设备</div></div>
+            <div class="field"><span>连接地址</span><div class="input">mqtt.example.local:1883</div></div>
+            <div class="field-help">页面只保存数据源编号；真实账号和密码由后台安全保存。</div>
+            <div class="field"><span>订阅主题</span><div class="input">factory/line1/+/status</div></div>
+            <div class="field"><span>消息格式</span><div class="input">JSON　　字段自动识别</div></div>
+            <div class="field"><span>服务质量</span><div class="input">QoS 1 · 保留最后状态</div></div>
+            <div class="actions"><button class="button">测试连接</button><button class="button primary">保存数据源</button></div>
+          </div>
+        </section>
+        <aside class="pane">
+          <div class="pane-head">测试结果与数据预览</div>
+          <div class="preview">
+            <div class="ok"><i class="green-dot"></i> 连接成功 · 延迟 18ms</div>
+            <div class="json">{<br>&nbsp;"temperature": 86.2,<br>&nbsp;"running": true,<br>&nbsp;"rpm": 1480<br>}</div>
+            <div class="detected"><b>已识别 3 个数据点</b><br>temperature　数值<br>running　布尔<br>rpm　数值</div>
+          </div>
+        </aside>
+      </div>
+
+      <div class="binding-work">
+        <h3>组件绑定：固定为三步，不让用户猜</h3>
+        <p>可以从画布选中组件后进入，也可以在这里按名称选择组件。数据点和可绑定属性都由系统自动列出。</p>
+        <div class="steps"><div class="step on"><b>1</b>选择数据点</div><div class="step on"><b>2</b>选择组件及目标属性</div><div class="step on"><b>3</b>预览并保存</div></div>
+        <div class="bind-layout">
+          <aside class="pane">
+            <div class="pane-head">1. 选择数据点</div>
+            <div class="point-list">
+              <div class="search">搜索名称、Topic 或字段...</div>
+              <div class="data-point on"><span>motor01.temperature</span><b>86.2</b></div>
+              <div class="data-point"><span>motor01.running</span><b>true</b></div>
+              <div class="data-point"><span>motor01.rpm</span><b>1480</b></div>
+              <div class="data-point"><span>alarm.snapshot</span><b>数组 36 行</b></div>
+              <div class="data-point"><span>alarm.stream</span><b>数据流</b></div>
+            </div>
+          </aside>
+          <section class="pane">
+            <div class="pane-head">2. 绑定到选中组件</div>
+            <div class="bind-panel">
+              <div class="selected-node"><span class="node-icon">86.2</span><div><b>温度显示组件</b><br><small>系统已列出该组件支持的属性</small></div></div>
+              <div class="mapping"><div class="input">motor01.temperature</div><span class="arrow">→</span><div class="input">显示数值</div><span class="remove">×</span></div>
+              <div class="mapping"><div class="input">motor01.temperature</div><span class="arrow">→</span><div class="input">填充颜色（按规则）</div><span class="remove">×</span></div>
+              <div class="mapping"><div class="input">motor01.running</div><span class="arrow">→</span><div class="input">显示 / 隐藏</div><span class="remove">×</span></div>
+              <div class="rule">
+                <b>样式规则</b>
+                <div class="rule-line"><span>当</span><span class="token">temperature</span><span class="token">≥</span><span class="token">80</span><span>则</span><span class="token">红色 + 闪烁</span></div>
+                <div class="advanced">› 高级设置：多条件、计算公式、防抖和回差</div>
+              </div>
+              <div class="actions"><button class="button">实时预览</button><button class="button primary">保存绑定</button></div>
+            </div>
+          </section>
+        </div>
+        <div class="readonly"><b>一期只读：</b>数据只能驱动数值、文字、颜色、边框、显隐、动画、仪表、图表和表格；按钮、开关等暂不向数据源写回。</div>
+      </div>
+    </div>
+  </section>
+
+  <div class="decision">
+    <h3>请重点判断新版的入口和绑定流程</h3>
+    <div class="options">
+      <div class="option" data-choice="v2-right" onclick="toggleSelect(this)"><div class="letter">A</div><div class="content"><h3>方向正确</h3><p>左侧保留画图，顶部进入数据配置，三步绑定清晰。</p></div></div>
+      <div class="option" data-choice="source-adjust" onclick="toggleSelect(this)"><div class="letter">B</div><div class="content"><h3>连接配置还需调整</h3><p>入口正确，但 HTTP、MQTT、SQL、Redis 的配置方式还不够直观。</p></div></div>
+      <div class="option" data-choice="binding-adjust" onclick="toggleSelect(this)"><div class="letter">C</div><div class="content"><h3>组件绑定还需调整</h3><p>数据点到组件属性和样式规则的对应关系仍需要进一步简化。</p></div></div>
+    </div>
+  </div>
+</div>

@@ -1,0 +1,6 @@
+node_modules/
+dist/
+stress-project.json
+*.log
+.DS_Store
+Thumbs.db

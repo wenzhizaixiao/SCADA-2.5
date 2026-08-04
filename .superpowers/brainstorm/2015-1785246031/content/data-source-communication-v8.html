@@ -1,0 +1,581 @@
+<style>
+  .v8 {
+    --brand: #13a68f;
+    --brand-dark: #087a69;
+    --brand-soft: #edf9f6;
+    --ink: #253640;
+    --muted: #70818b;
+    --line: #d9e1e5;
+    --line-soft: #e9eef0;
+    --surface: #ffffff;
+    --canvas: #f2f4f5;
+    color: var(--ink);
+    font-family: "Microsoft YaHei", "PingFang SC", Arial, sans-serif;
+  }
+  .v8, .v8 * { box-sizing: border-box; }
+  .v8 h2, .v8 h3, .v8 p { letter-spacing: 0; }
+  .v8 h2 { margin: 0 0 5px; font-size: 20px; }
+  .v8 .lead { margin: 0 0 18px; color: var(--muted); font-size: 13px; }
+  .v8 .section-title {
+    display: flex;
+    align-items: end;
+    justify-content: space-between;
+    gap: 16px;
+    margin: 22px 0 9px;
+  }
+  .v8 .section-title h3 { margin: 0; font-size: 15px; }
+  .v8 .section-title p { margin: 0; color: var(--muted); font-size: 11px; }
+  .v8 button { font: inherit; letter-spacing: 0; }
+  .v8 .icon { width: 17px; height: 17px; stroke-width: 1.8; }
+  .v8 .icon-sm { width: 14px; height: 14px; stroke-width: 1.8; }
+
+  .design-note {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 1px;
+    overflow: hidden;
+    border: 1px solid var(--line);
+    border-radius: 5px;
+    background: var(--line);
+  }
+  .design-note > div { padding: 10px 12px; background: #fff; }
+  .design-note b { display: block; margin-bottom: 3px; font-size: 11px; }
+  .design-note span { color: var(--muted); font-size: 10px; line-height: 1.55; }
+
+  .app-frame {
+    overflow: hidden;
+    border: 1px solid #cbd5da;
+    border-radius: 5px;
+    background: #fff;
+    box-shadow: 0 10px 25px rgba(34, 52, 62, .08);
+  }
+  .topbar {
+    display: flex;
+    align-items: stretch;
+    height: 62px;
+    border-bottom: 1px solid var(--line);
+    background: #fff;
+  }
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 177px;
+    padding: 0 14px;
+    font-size: 14px;
+    font-weight: 700;
+  }
+  .brand-mark {
+    width: 25px;
+    height: 25px;
+    border: 4px solid #1bb59f;
+    transform: rotate(45deg);
+  }
+  .tool-group { display: flex; align-items: stretch; border-left: 1px solid #eef1f2; }
+  .tool {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    min-width: 50px;
+    padding: 5px 8px;
+    border: 0;
+    border-right: 1px solid #f0f2f3;
+    background: #fff;
+    color: #536671;
+    cursor: pointer;
+    font-size: 9px;
+  }
+  .tool:hover, .tool.active { background: var(--brand-soft); color: var(--brand-dark); }
+  .tool.disabled { color: #bcc5ca; cursor: default; }
+  .toolbar-space { flex: 1; min-width: 44px; }
+  .data-entry {
+    min-width: 58px;
+    color: var(--brand-dark);
+    background: #f5fbf9;
+    border-left: 1px solid #dcece8;
+    border-right: 1px solid #dcece8;
+  }
+  .data-entry::after {
+    content: "";
+    position: absolute;
+    right: 10px;
+    top: 10px;
+    width: 6px;
+    height: 6px;
+    border: 2px solid #fff;
+    border-radius: 50%;
+    background: #e89b28;
+  }
+  .preview-btn {
+    align-self: center;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    height: 34px;
+    margin: 0 12px;
+    padding: 0 15px;
+    border: 0;
+    border-radius: 2px;
+    background: #168ee0;
+    color: #fff;
+    font-size: 11px;
+  }
+
+  .editor-body { display: grid; grid-template-columns: 205px minmax(360px, 1fr) 330px; height: 510px; }
+  .component-library { border-right: 1px solid var(--line); background: #fff; }
+  .left-tabs { display: grid; grid-template-columns: repeat(3, 1fr); height: 42px; border-bottom: 1px solid var(--line); }
+  .left-tabs span { display: grid; place-items: center; color: #657781; font-size: 10px; }
+  .left-tabs .active { color: var(--brand-dark); border-bottom: 2px solid var(--brand); }
+  .library-search { margin: 9px; padding: 8px; border: 1px solid var(--line); border-radius: 3px; color: #98a4aa; font-size: 9px; }
+  .library-title { display: flex; justify-content: space-between; padding: 8px 11px; font-size: 10px; font-weight: 700; }
+  .shape-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; padding: 0 10px; }
+  .shape-item { display: grid; place-items: center; height: 62px; border: 1px solid var(--line-soft); border-radius: 3px; color: #74848d; font-size: 9px; }
+  .shape-drawing { width: 28px; height: 22px; margin-bottom: 5px; border: 2px solid #79909b; }
+  .shape-drawing.circle { width: 25px; height: 25px; border-radius: 50%; }
+
+  .canvas-area {
+    position: relative;
+    overflow: hidden;
+    background-color: var(--canvas);
+    background-image: linear-gradient(#dfe4e7 1px, transparent 1px), linear-gradient(90deg, #dfe4e7 1px, transparent 1px);
+    background-size: 18px 18px;
+  }
+  .canvas-hint {
+    position: absolute;
+    left: 12px;
+    top: 8px;
+    color: #84929a;
+    font-size: 9px;
+  }
+  .fan-node {
+    position: absolute;
+    left: 28%;
+    top: 33%;
+    display: grid;
+    place-items: center;
+    width: 124px;
+    height: 124px;
+    border: 2px solid #24a18f;
+    border-radius: 50%;
+    background: #f7fffd;
+    box-shadow: 0 0 0 5px rgba(24, 157, 138, .12);
+  }
+  .fan-hub { width: 18px; height: 18px; border-radius: 50%; background: #168b7a; z-index: 2; }
+  .blade { position: absolute; width: 18px; height: 44px; border-radius: 50% 50% 18% 18%; background: #86c7bc; transform-origin: 50% 44px; }
+  .blade.b1 { transform: translateY(-31px); }
+  .blade.b2 { transform: rotate(120deg) translateY(-31px); }
+  .blade.b3 { transform: rotate(240deg) translateY(-31px); }
+  .selection-tag {
+    position: absolute;
+    left: calc(28% + 4px);
+    top: calc(33% + 136px);
+    padding: 4px 7px;
+    border-radius: 3px;
+    background: #168b7a;
+    color: #fff;
+    font-size: 9px;
+  }
+  .canvas-value {
+    position: absolute;
+    left: calc(28% + 136px);
+    top: calc(33% + 44px);
+    min-width: 85px;
+    padding: 8px 9px;
+    border: 1px solid #d3dfdc;
+    border-radius: 3px;
+    background: #fff;
+    font-size: 9px;
+  }
+  .canvas-value b { display: block; color: #13806f; font-size: 13px; }
+  .canvas-value span { color: var(--muted); }
+
+  .right-panel { position: relative; border-left: 1px solid var(--line); background: #fff; }
+  .right-tabs { display: grid; grid-template-columns: repeat(4, 1fr); height: 43px; border-bottom: 1px solid var(--line); }
+  .right-tabs span { display: grid; place-items: center; color: #647680; font-size: 11px; }
+  .right-tabs .active { color: #24343d; border-bottom: 2px solid var(--brand); font-weight: 700; }
+  .communication { height: calc(100% - 43px); overflow: auto; padding: 12px; }
+  .selected-component {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--line-soft);
+  }
+  .component-icon { display: grid; place-items: center; width: 32px; height: 32px; border: 1px solid #68b9ac; border-radius: 50%; background: var(--brand-soft); color: var(--brand-dark); }
+  .selected-component b { display: block; font-size: 11px; }
+  .selected-component small { display: block; margin-top: 2px; color: var(--muted); font-size: 8px; }
+  .binding-count { margin-left: auto; color: var(--brand-dark); font-size: 8px; }
+  .panel-heading { display: flex; align-items: center; justify-content: space-between; margin: 12px 0 7px; }
+  .panel-heading b { font-size: 10px; }
+  .panel-heading span { color: var(--muted); font-size: 8px; }
+  .binding-item { margin-bottom: 7px; padding: 9px; border: 1px solid var(--line); border-radius: 4px; background: #fff; }
+  .function-line { display: flex; align-items: center; gap: 6px; margin-bottom: 7px; }
+  .function-line .function-name { font-size: 10px; font-weight: 700; }
+  .function-line .function-type { color: var(--muted); font-size: 8px; }
+  .icon-button { margin-left: auto; padding: 2px; border: 0; background: transparent; color: #89979e; cursor: pointer; }
+  .point-select {
+    display: grid;
+    grid-template-columns: 18px minmax(0, 1fr) auto 15px;
+    align-items: center;
+    gap: 5px;
+    width: 100%;
+    padding: 7px;
+    border: 1px solid #cfdade;
+    border-radius: 3px;
+    background: #f9fbfb;
+    color: #334a56;
+    text-align: left;
+    cursor: pointer;
+  }
+  .point-select b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 9px; }
+  .live-value { color: #087a69; font-size: 8px; }
+  .mapping { display: flex; align-items: center; gap: 7px; margin-top: 6px; color: #768790; font-size: 8px; }
+  .mapping strong { color: #41555f; font-weight: 600; }
+  .mapping button { display: grid; place-items: center; margin-left: auto; padding: 1px; border: 0; background: transparent; color: #6f818b; cursor: pointer; }
+  .add-binding {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    width: 100%;
+    padding: 8px;
+    border: 1px dashed #6cb7aa;
+    border-radius: 3px;
+    background: #fff;
+    color: var(--brand-dark);
+    cursor: pointer;
+    font-size: 9px;
+  }
+  .panel-rule { display: flex; align-items: center; gap: 7px; padding: 8px; border-top: 1px solid var(--line-soft); font-size: 8px; }
+  .color-dot { width: 9px; height: 9px; border-radius: 2px; background: #efa72d; }
+  .panel-rule b { display: block; font-size: 9px; }
+  .panel-rule span { color: var(--muted); }
+  .point-picker {
+    position: absolute;
+    right: 12px;
+    top: 152px;
+    z-index: 4;
+    width: 292px;
+    overflow: hidden;
+    border: 1px solid #aebdc4;
+    border-radius: 4px;
+    background: #fff;
+    box-shadow: 0 12px 30px rgba(34, 52, 62, .18);
+  }
+  .picker-head { display: flex; align-items: center; gap: 7px; padding: 9px; border-bottom: 1px solid var(--line); font-size: 10px; font-weight: 700; }
+  .picker-head button { margin-left: auto; border: 0; background: transparent; color: #71818a; cursor: pointer; }
+  .picker-search { display: flex; align-items: center; gap: 6px; margin: 8px; padding: 7px; border: 1px solid var(--line); border-radius: 3px; color: #96a1a7; font-size: 8px; }
+  .picker-group { padding: 4px 9px 5px; color: #788992; font-size: 8px; }
+  .point-option { display: grid; grid-template-columns: 9px 1fr auto; gap: 7px; align-items: center; padding: 8px 10px; border-top: 1px solid #edf0f2; cursor: pointer; }
+  .point-option:hover, .point-option.active { background: var(--brand-soft); }
+  .point-status { width: 7px; height: 7px; border-radius: 50%; background: #17a36f; }
+  .point-option b { display: block; font-size: 9px; }
+  .point-option small { display: block; margin-top: 2px; color: var(--muted); font-size: 7px; }
+  .point-option strong { color: var(--brand-dark); font-size: 9px; }
+  .picker-foot { padding: 8px 10px; border-top: 1px solid var(--line); background: #f8fafb; color: var(--muted); font-size: 8px; }
+
+  .config-window {
+    overflow: hidden;
+    border: 1px solid #cbd5da;
+    border-radius: 5px;
+    background: #fff;
+    box-shadow: 0 10px 25px rgba(34, 52, 62, .08);
+  }
+  .config-top {
+    display: flex;
+    align-items: center;
+    height: 54px;
+    padding: 0 14px;
+    border-bottom: 1px solid var(--line);
+  }
+  .config-top h3 { margin: 0; font-size: 14px; }
+  .config-top p { margin: 3px 0 0; color: var(--muted); font-size: 9px; }
+  .source-summary { display: flex; gap: 12px; margin-left: auto; color: #60727d; font-size: 9px; }
+  .source-summary b { color: #15926f; }
+  .new-source {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    height: 30px;
+    margin-left: 14px;
+    padding: 0 10px;
+    border: 1px solid var(--brand);
+    border-radius: 3px;
+    background: var(--brand);
+    color: #fff;
+    font-size: 9px;
+  }
+  .config-content { display: grid; grid-template-columns: 230px minmax(0, 1fr); min-height: 445px; }
+  .source-list { border-right: 1px solid var(--line); background: #fafbfb; }
+  .source-list-head { display: flex; align-items: center; justify-content: space-between; height: 38px; padding: 0 11px; color: #657680; font-size: 9px; }
+  .source-row { display: grid; grid-template-columns: 34px 1fr auto; gap: 8px; align-items: center; padding: 10px 11px; border-top: 1px solid #e7ecee; cursor: pointer; }
+  .source-row.active { border-left: 3px solid var(--brand); background: var(--brand-soft); padding-left: 8px; }
+  .protocol-logo { display: grid; place-items: center; width: 32px; height: 32px; border: 1px solid #cad6db; border-radius: 4px; background: #fff; color: #455b67; font-size: 8px; font-weight: 800; }
+  .protocol-logo.mqtt { border-color: #79bdaf; color: #087a69; }
+  .protocol-logo.mysql { border-color: #9abdd0; color: #286b91; }
+  .protocol-logo.redis { border-color: #d5a1a1; color: #ad4141; }
+  .protocol-logo.http { border-color: #b8abd2; color: #7256a4; }
+  .source-row b { display: block; font-size: 10px; }
+  .source-row small { display: block; margin-top: 2px; color: var(--muted); font-size: 7px; }
+  .health-dot { width: 7px; height: 7px; border-radius: 50%; background: #17a36f; }
+  .health-dot.offline { background: #d65b5b; }
+  .config-main { padding: 12px 14px 14px; }
+  .config-tabs { display: flex; gap: 20px; height: 33px; border-bottom: 1px solid var(--line); }
+  .config-tabs span { position: relative; color: #667983; font-size: 9px; }
+  .config-tabs .active { color: #1f353f; font-weight: 700; }
+  .config-tabs .active::after { content: ""; position: absolute; left: 0; right: 0; bottom: -1px; height: 2px; background: var(--brand); }
+  .config-dashboard { display: grid; grid-template-columns: 1.05fr .95fr; gap: 12px; margin-top: 12px; }
+  .config-section { border: 1px solid var(--line); border-radius: 4px; overflow: hidden; }
+  .config-section-title { display: flex; align-items: center; justify-content: space-between; min-height: 34px; padding: 0 10px; border-bottom: 1px solid var(--line); background: #f8fafb; font-size: 9px; font-weight: 700; }
+  .status-ok { color: #168b70; font-weight: 500; }
+  .config-form { padding: 10px; }
+  .form-row { display: grid; grid-template-columns: 80px 1fr; gap: 8px; align-items: center; margin-bottom: 8px; font-size: 8px; }
+  .field-box { min-height: 29px; padding: 7px 8px; border: 1px solid #cfdade; border-radius: 3px; background: #fff; color: #344b57; }
+  .field-help { margin: -4px 0 8px 88px; color: #89979e; font-size: 7px; }
+  .form-actions { display: flex; justify-content: flex-end; gap: 6px; margin-top: 11px; }
+  .secondary-btn, .primary-btn { min-height: 29px; padding: 0 9px; border: 1px solid #cbd6dc; border-radius: 3px; background: #fff; color: #526772; font-size: 8px; }
+  .primary-btn { border-color: var(--brand); background: var(--brand); color: #fff; }
+  .metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; margin: 10px; overflow: hidden; border: 1px solid var(--line); border-radius: 3px; background: var(--line); }
+  .metric { padding: 8px; background: #fff; }
+  .metric span { display: block; color: var(--muted); font-size: 7px; }
+  .metric b { display: block; margin-top: 3px; font-size: 11px; }
+  .raw-title { display: flex; justify-content: space-between; margin: 0 10px 5px; color: #62747e; font-size: 8px; }
+  .raw-data { margin: 0 10px 9px; padding: 8px 9px; border-radius: 3px; background: #243038; color: #d9e9e6; font: 8px/1.55 Consolas, monospace; }
+  .point-preview { margin: 0 10px 10px; border: 1px solid var(--line); border-radius: 3px; overflow: hidden; }
+  .point-preview-row { display: grid; grid-template-columns: minmax(0, 1fr) 55px 62px; padding: 6px 8px; border-top: 1px solid var(--line-soft); font-size: 8px; }
+  .point-preview-row:first-child { border-top: 0; background: #f7f9fa; color: var(--muted); }
+  .point-preview-row .good { color: #0a866c; }
+
+  .binding-logic {
+    display: grid;
+    grid-template-columns: 1fr 26px 1fr 26px 1fr;
+    align-items: center;
+    margin-top: 10px;
+    padding: 12px;
+    border: 1px solid var(--line);
+    border-radius: 5px;
+    background: #fff;
+  }
+  .logic-node { padding: 10px; border: 1px solid var(--line); border-radius: 4px; text-align: center; }
+  .logic-node b { display: block; font-size: 10px; }
+  .logic-node span { display: block; margin-top: 3px; color: var(--muted); font-size: 8px; }
+  .logic-arrow { color: var(--brand); text-align: center; font-size: 16px; }
+  .approval {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-top: 18px;
+    padding: 11px 12px;
+    border: 1px solid #bcd8d2;
+    border-radius: 5px;
+    background: var(--brand-soft);
+  }
+  .approval b { display: block; font-size: 11px; }
+  .approval span { display: block; margin-top: 3px; color: #52716a; font-size: 9px; }
+  .approval .options { margin-left: auto; min-width: 340px; }
+
+  @media (max-width: 1120px) {
+    .editor-body { grid-template-columns: 160px minmax(280px, 1fr) 310px; }
+    .brand { min-width: 140px; }
+    .tool { min-width: 44px; padding-left: 5px; padding-right: 5px; }
+    .config-content { grid-template-columns: 200px minmax(0, 1fr); }
+    .config-dashboard { grid-template-columns: 1fr; }
+    .design-note { grid-template-columns: 1fr; }
+  }
+</style>
+
+<div class="v8">
+  <h2>方案八：全局数据源入口 + 组件“通信”内直接绑定</h2>
+  <p class="lead">连接在全局统一建立；使用数据时，只需要选中组件，在右侧把“组件功能”绑定到“具体点位”。</p>
+
+  <div class="design-note">
+    <div><b>入口只保留一处</b><span>工具栏“网格”之后新增“数据源”图标，始终可见，与当前是否选中组件无关。</span></div>
+    <div><b>协议说明块删除</b><span>HTTP、SQL、Redis 的静态说明没有操作价值，协议差异只在新建数据源时按需展示。</span></div>
+    <div><b>绑定回到“通信”</b><span>不再打开大型绑定页面；选中组件后，就在当前右侧面板完成绑定、更换和清除。</span></div>
+  </div>
+
+  <div class="section-title">
+    <h3>1. 编辑器中的最终位置与绑定方式</h3>
+    <p>点击工具栏“数据源”进入统一连接配置；点击右侧点位可展开选择器</p>
+  </div>
+  <section class="app-frame">
+    <header class="topbar">
+      <div class="brand"><span class="brand-mark"></span><span>苔岑2D绘图</span></div>
+      <div class="tool-group">
+        <button class="tool" title="打开"><i data-lucide="folder-open" class="icon"></i><span>打开</span></button>
+        <button class="tool" title="保存"><i data-lucide="save" class="icon"></i><span>保存</span></button>
+      </div>
+      <div class="tool-group">
+        <button class="tool active" title="选择"><i data-lucide="mouse-pointer-2" class="icon"></i><span>选择</span></button>
+        <button class="tool" title="铅笔"><i data-lucide="pencil" class="icon"></i><span>铅笔</span></button>
+        <button class="tool" title="鹰眼地图"><i data-lucide="map" class="icon"></i><span>鹰眼地图</span></button>
+        <button class="tool" title="连线"><i data-lucide="git-branch" class="icon"></i><span>连线</span></button>
+      </div>
+      <div class="tool-group">
+        <button class="tool disabled" title="撤销"><i data-lucide="undo-2" class="icon"></i><span>撤销</span></button>
+        <button class="tool disabled" title="重做"><i data-lucide="redo-2" class="icon"></i><span>重做</span></button>
+        <button class="tool" title="锁定"><i data-lucide="lock" class="icon"></i><span>锁定</span></button>
+        <button class="tool disabled" title="组合"><i data-lucide="combine" class="icon"></i><span>组合</span></button>
+        <button class="tool disabled" title="置顶"><i data-lucide="layers" class="icon"></i><span>置顶</span></button>
+        <button class="tool" title="网格"><i data-lucide="grid-3x3" class="icon"></i><span>网格</span></button>
+        <button class="tool data-entry" title="数据源：3/4 正常，1 个异常" onclick="document.getElementById('config-demo').scrollIntoView({behavior:'smooth'})"><i data-lucide="database-zap" class="icon"></i><span>数据源</span></button>
+      </div>
+      <div class="toolbar-space"></div>
+      <button class="preview-btn"><i data-lucide="play" class="icon-sm"></i><span>预览</span></button>
+    </header>
+
+    <div class="editor-body">
+      <aside class="component-library">
+        <div class="left-tabs"><span>图纸</span><span class="active">组件</span><span>我的</span></div>
+        <div class="library-search">搜索组件</div>
+        <div class="library-title"><span>基本形状</span><span>⌃</span></div>
+        <div class="shape-grid">
+          <div class="shape-item"><div class="shape-drawing"></div><span>矩形</span></div>
+          <div class="shape-item"><div class="shape-drawing circle"></div><span>圆形</span></div>
+          <div class="shape-item"><i data-lucide="type" class="icon"></i><span>文本</span></div>
+          <div class="shape-item"><i data-lucide="image" class="icon"></i><span>图片</span></div>
+        </div>
+      </aside>
+
+      <main class="canvas-area">
+        <span class="canvas-hint">Ctrl 多选，滚轮缩放，拖动画布</span>
+        <div class="fan-node">
+          <span class="blade b1"></span><span class="blade b2"></span><span class="blade b3"></span><span class="fan-hub"></span>
+        </div>
+        <span class="selection-tag">风机 01</span>
+        <div class="canvas-value"><b>1480</b><span>r/min · 运行中</span></div>
+      </main>
+
+      <aside class="right-panel">
+        <div class="right-tabs"><span>属性</span><span class="active">通信</span><span>布局</span><span>结构</span></div>
+        <div class="communication">
+          <div class="selected-component">
+            <span class="component-icon"><i data-lucide="fan" class="icon"></i></span>
+            <div><b>风机 01</b><small>当前选中组件</small></div>
+            <span class="binding-count">3 个功能已绑定</span>
+          </div>
+
+          <div class="panel-heading"><b>功能绑定</b><span>组件功能 → 点位</span></div>
+          <div class="binding-item">
+            <div class="function-line"><i data-lucide="power" class="icon-sm"></i><span class="function-name">运行 / 停止</span><span class="function-type">布尔</span><button class="icon-button" title="清除绑定"><i data-lucide="x" class="icon-sm"></i></button></div>
+            <button class="point-select" onclick="togglePicker()"><i data-lucide="link-2" class="icon-sm"></i><b>motor01.running</b><span class="live-value">true</span><i data-lucide="chevron-down" class="icon-sm"></i></button>
+            <div class="mapping"><span>对应关系</span><strong>true = 运行</strong><strong>false = 停止</strong><button title="编辑对应关系"><i data-lucide="pencil-line" class="icon-sm"></i></button></div>
+          </div>
+
+          <div class="binding-item">
+            <div class="function-line"><i data-lucide="gauge" class="icon-sm"></i><span class="function-name">旋转速度</span><span class="function-type">数值</span><button class="icon-button" title="清除绑定"><i data-lucide="x" class="icon-sm"></i></button></div>
+            <button class="point-select"><i data-lucide="link-2" class="icon-sm"></i><b>motor01.rpm</b><span class="live-value">1480</span><i data-lucide="chevron-down" class="icon-sm"></i></button>
+            <div class="mapping"><span>转换</span><strong>0–3000 r/min → 4–0.5 秒/圈</strong><button title="编辑数值转换"><i data-lucide="pencil-line" class="icon-sm"></i></button></div>
+          </div>
+
+          <div class="binding-item">
+            <div class="function-line"><i data-lucide="palette" class="icon-sm"></i><span class="function-name">状态颜色</span><span class="function-type">枚举</span><button class="icon-button" title="清除绑定"><i data-lucide="x" class="icon-sm"></i></button></div>
+            <button class="point-select"><i data-lucide="link-2" class="icon-sm"></i><b>motor01.alarm</b><span class="live-value">warning</span><i data-lucide="chevron-down" class="icon-sm"></i></button>
+            <div class="mapping"><span>映射</span><strong>正常 / 警告 / 报警 / 离线</strong><button title="编辑状态映射"><i data-lucide="pencil-line" class="icon-sm"></i></button></div>
+          </div>
+
+          <button class="add-binding" title="只列出当前组件尚未绑定的功能"><i data-lucide="plus" class="icon-sm"></i><span>添加未绑定功能（1）</span></button>
+          <div class="panel-heading"><b>样式联动</b><span>1 条规则</span></div>
+          <div class="panel-rule"><span class="color-dot"></span><div><b>告警状态</b><span>alarm = warning 时，边框显示橙色</span></div><button class="icon-button" title="编辑规则"><i data-lucide="chevron-right" class="icon-sm"></i></button></div>
+        </div>
+
+        <div class="point-picker" id="point-picker">
+          <div class="picker-head"><span>为“运行 / 停止”选择点位</span><button title="关闭" onclick="togglePicker()"><i data-lucide="x" class="icon-sm"></i></button></div>
+          <div class="picker-search"><i data-lucide="search" class="icon-sm"></i><span>搜索点位名称或别名</span></div>
+          <div class="picker-group">生产线 / 风机 01</div>
+          <div class="point-option active"><i class="point-status"></i><div><b>motor01.running</b><small>风机运行状态 · 布尔</small></div><strong>true</strong></div>
+          <div class="point-option"><i class="point-status"></i><div><b>motor01.ready</b><small>风机就绪状态 · 布尔</small></div><strong>true</strong></div>
+          <div class="point-option"><i class="point-status"></i><div><b>motor01.interlock</b><small>风机联锁状态 · 布尔</small></div><strong>false</strong></div>
+          <div class="picker-foot">只列出与当前功能数据类型兼容的点位</div>
+        </div>
+      </aside>
+    </div>
+  </section>
+
+  <div class="section-title" id="config-demo">
+    <h3>2. 从工具栏进入的数据源配置</h3>
+    <p>底部协议说明块已删除；所有空间都用于真实配置、测试和数据检查</p>
+  </div>
+  <section class="config-window">
+    <header class="config-top">
+      <div><h3>数据源管理</h3><p>当前工作空间统一维护，不属于任何单个组件</p></div>
+      <div class="source-summary"><span><b>3 / 4</b> 正常</span><span><b>286</b> 个点位</span><span><b>1,362</b> 条/秒</span></div>
+      <button class="new-source"><i data-lucide="plus" class="icon-sm"></i><span>新建数据源</span></button>
+    </header>
+    <div class="config-content">
+      <aside class="source-list">
+        <div class="source-list-head"><span>连接列表</span><i data-lucide="search" class="icon-sm"></i></div>
+        <div class="source-row active"><span class="protocol-logo mqtt">MQTT</span><div><b>车间设备 MQTT</b><small>已连接 · 1,240 条/秒 · 18ms</small></div><i class="health-dot"></i></div>
+        <div class="source-row"><span class="protocol-logo mysql">SQL</span><div><b>生产报表 MySQL</b><small>已连接 · 每 500ms 查询 · 36 行</small></div><i class="health-dot"></i></div>
+        <div class="source-row"><span class="protocol-logo redis">RDS</span><div><b>实时告警 Redis</b><small>已连接 · Stream · 86 条/秒</small></div><i class="health-dot"></i></div>
+        <div class="source-row"><span class="protocol-logo http">HTTP</span><div><b>能源接口 HTTP</b><small>异常 · 12 秒未收到数据</small></div><i class="health-dot offline"></i></div>
+      </aside>
+
+      <main class="config-main">
+        <div class="config-tabs"><span class="active">连接与采集</span><span>数据预览</span><span>点位管理</span><span>运行记录</span></div>
+        <div class="config-dashboard">
+          <section class="config-section">
+            <div class="config-section-title"><span>车间设备 MQTT · 连接配置</span><span class="status-ok">● 正常连接</span></div>
+            <div class="config-form">
+              <div class="form-row"><span>连接名称</span><div class="field-box">车间设备 MQTT</div></div>
+              <div class="form-row"><span>服务地址</span><div class="field-box">mqtt.example.local:1883</div></div>
+              <div class="field-help">账号与密码以后由后台凭据库保存，图纸中只保存连接 ID。</div>
+              <div class="form-row"><span>订阅主题</span><div class="field-box">factory/line1/+/status</div></div>
+              <div class="form-row"><span>数据格式</span><div class="field-box">JSON · 自动识别字段</div></div>
+              <div class="form-row"><span>服务质量</span><div class="field-box">QoS 1</div></div>
+              <div class="form-actions"><button class="secondary-btn">取消</button><button class="secondary-btn">测试获取</button><button class="primary-btn">保存配置</button></div>
+            </div>
+          </section>
+
+          <section class="config-section">
+            <div class="config-section-title"><span>实时获取结果</span><span class="status-ok">刚刚更新</span></div>
+            <div class="metrics"><div class="metric"><span>连接延迟</span><b>18 ms</b></div><div class="metric"><span>接收频率</span><b>1,240/s</b></div><div class="metric"><span>解析错误</span><b>0</b></div></div>
+            <div class="raw-title"><span>最近原始消息</span><span>14:32:16.125</span></div>
+            <div class="raw-data">{<br>&nbsp;&nbsp;"temperature": 86.2,<br>&nbsp;&nbsp;"running": true,<br>&nbsp;&nbsp;"rpm": 1480,<br>&nbsp;&nbsp;"alarm": "warning"<br>}</div>
+            <div class="raw-title"><span>已解析点位</span><span>4 个</span></div>
+            <div class="point-preview">
+              <div class="point-preview-row"><span>点位</span><span>当前值</span><span>质量</span></div>
+              <div class="point-preview-row"><span>motor01.running</span><span>true</span><span class="good">正常</span></div>
+              <div class="point-preview-row"><span>motor01.rpm</span><span>1480</span><span class="good">正常</span></div>
+              <div class="point-preview-row"><span>motor01.temperature</span><span>86.2</span><span class="good">正常</span></div>
+            </div>
+          </section>
+        </div>
+      </main>
+    </div>
+  </section>
+
+  <div class="section-title">
+    <h3>3. 用户实际看到的顺序</h3>
+    <p>连接只建立一次，组件只消费点位</p>
+  </div>
+  <div class="binding-logic">
+    <div class="logic-node"><b>工具栏“数据源”</b><span>建立连接并确认数据正常</span></div>
+    <div class="logic-arrow">→</div>
+    <div class="logic-node"><b>选中画布组件</b><span>打开右侧“通信”</span></div>
+    <div class="logic-arrow">→</div>
+    <div class="logic-node"><b>功能绑定点位</b><span>运行、数值、样式立即联动</span></div>
+  </div>
+
+  <div class="approval">
+    <div><b>请确认这版信息架构</b><span>重点看：工具栏入口位置、配置页精简程度、右侧通信绑定是否足够直接。</span></div>
+    <div class="options">
+      <div class="option" data-choice="v8-approved" onclick="toggleSelect(this)"><div class="letter">A</div><div class="content"><h3>这版方向正确</h3><p>继续细化通信面板的具体字段。</p></div></div>
+      <div class="option" data-choice="v8-adjust" onclick="toggleSelect(this)"><div class="letter">B</div><div class="content"><h3>绑定方式仍需调整</h3><p>指出不直观的具体位置后继续改。</p></div></div>
+    </div>
+  </div>
+</div>
+
+<script src="https://unpkg.com/lucide@0.468.0/dist/umd/lucide.min.js"></script>
+<script>
+  function togglePicker() {
+    const picker = document.getElementById('point-picker');
+    picker.style.display = picker.style.display === 'none' ? 'block' : 'none';
+  }
+  document.addEventListener('DOMContentLoaded', function () {
+    if (window.lucide) window.lucide.createIcons();
+  });
+</script>

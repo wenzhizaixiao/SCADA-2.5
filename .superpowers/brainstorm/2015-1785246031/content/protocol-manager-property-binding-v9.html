@@ -1,0 +1,458 @@
+<style>
+  .v9 {
+    --brand: #14a78f;
+    --brand-dark: #087969;
+    --brand-soft: #edf8f6;
+    --blue: #2785bd;
+    --orange: #dc9227;
+    --red: #c85555;
+    --ink: #263842;
+    --muted: #71828c;
+    --line: #d8e1e5;
+    --line-soft: #eaf0f2;
+    --surface: #fff;
+    --surface-soft: #f7f9fa;
+    color: var(--ink);
+    font-family: "Microsoft YaHei", "PingFang SC", Arial, sans-serif;
+  }
+  .v9, .v9 * { box-sizing: border-box; }
+  .v9 h2, .v9 h3, .v9 p { letter-spacing: 0; }
+  .v9 h2 { margin: 0 0 5px; font-size: 20px; }
+  .v9 .lead { margin: 0 0 16px; color: var(--muted); font-size: 13px; }
+  .v9 button, .v9 input { font: inherit; letter-spacing: 0; }
+  .v9 .icon { width: 17px; height: 17px; stroke-width: 1.8; }
+  .v9 .icon-sm { width: 14px; height: 14px; stroke-width: 1.8; }
+  .v9 .section-head { display: flex; align-items: end; justify-content: space-between; gap: 20px; margin: 22px 0 9px; }
+  .v9 .section-head h3 { margin: 0; font-size: 15px; }
+  .v9 .section-head p { margin: 0; color: var(--muted); font-size: 10px; }
+
+  .principles { display: grid; grid-template-columns: repeat(3, 1fr); overflow: hidden; border: 1px solid var(--line); border-radius: 5px; background: var(--line); gap: 1px; }
+  .principle { padding: 11px 12px; background: #fff; }
+  .principle b { display: block; margin-bottom: 4px; font-size: 11px; }
+  .principle span { display: block; color: var(--muted); font-size: 9px; line-height: 1.55; }
+
+  .window { overflow: hidden; border: 1px solid #cbd6db; border-radius: 5px; background: #fff; box-shadow: 0 10px 26px rgba(34, 52, 62, .08); }
+  .manager-head { display: flex; align-items: center; min-height: 55px; padding: 0 14px; border-bottom: 1px solid var(--line); }
+  .back-btn { display: grid; place-items: center; width: 30px; height: 30px; margin-right: 10px; border: 1px solid var(--line); border-radius: 3px; background: #fff; color: #5c707a; }
+  .manager-title h3 { margin: 0; font-size: 14px; }
+  .manager-title p { margin: 3px 0 0; color: var(--muted); font-size: 8px; }
+  .manager-state { display: flex; align-items: center; gap: 12px; margin-left: auto; color: #5d707a; font-size: 8px; }
+  .manager-state b { color: var(--brand-dark); }
+  .primary-action { display: flex; align-items: center; gap: 5px; min-height: 30px; margin-left: 13px; padding: 0 10px; border: 1px solid var(--brand); border-radius: 3px; background: var(--brand); color: #fff; font-size: 9px; }
+  .manager-tabs { display: flex; gap: 24px; height: 38px; padding: 0 14px; border-bottom: 1px solid var(--line); }
+  .manager-tabs button { position: relative; border: 0; background: transparent; color: #637680; font-size: 9px; }
+  .manager-tabs button.active { color: #223740; font-weight: 700; }
+  .manager-tabs button.active::after { content: ""; position: absolute; left: 0; right: 0; bottom: -1px; height: 2px; background: var(--brand); }
+  .manager-body { padding: 12px 14px 14px; background: #fbfcfc; }
+  .metrics { display: grid; grid-template-columns: repeat(6, 1fr); overflow: hidden; border: 1px solid var(--line); border-radius: 4px; background: var(--line); gap: 1px; }
+  .metric { min-width: 0; padding: 9px 10px; background: #fff; }
+  .metric span { display: block; overflow: hidden; color: var(--muted); font-size: 7px; text-overflow: ellipsis; white-space: nowrap; }
+  .metric b { display: block; margin-top: 4px; font-size: 13px; }
+  .metric small { color: #78909a; font-size: 7px; }
+  .metric .warn { color: var(--orange); }
+  .subhead { display: flex; align-items: center; justify-content: space-between; margin: 13px 0 7px; }
+  .subhead b { font-size: 10px; }
+  .subhead span { color: var(--muted); font-size: 8px; }
+  .data-table { overflow: hidden; border: 1px solid var(--line); border-radius: 4px; background: #fff; }
+  .connection-row, .connection-header { display: grid; grid-template-columns: 185px 78px 78px 70px 80px 72px minmax(100px, 1fr) 35px; align-items: center; min-height: 38px; padding: 0 9px; border-top: 1px solid var(--line-soft); font-size: 8px; }
+  .connection-header { min-height: 31px; border-top: 0; background: var(--surface-soft); color: var(--muted); }
+  .connection-row:first-of-type { border-top: 0; }
+  .source-name { display: flex; align-items: center; gap: 7px; min-width: 0; }
+  .source-badge { display: grid; place-items: center; width: 34px; height: 25px; flex: 0 0 auto; border: 1px solid #cbd8dd; border-radius: 3px; background: #fff; font-size: 7px; font-weight: 800; }
+  .source-name b { display: block; overflow: hidden; font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
+  .source-name small { display: block; margin-top: 2px; color: var(--muted); font-size: 6px; }
+  .pill { display: inline-flex; align-items: center; gap: 4px; width: fit-content; padding: 3px 6px; border-radius: 3px; background: #eef8f4; color: #15805f; font-size: 7px; }
+  .pill.warn { background: #fff6e8; color: #ad6d12; }
+  .pill.bad { background: #fff0f0; color: #b44949; }
+  .status-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+  .row-action { display: grid; place-items: center; width: 24px; height: 24px; border: 0; background: transparent; color: #71838c; }
+
+  .all-data-toolbar { display: flex; align-items: center; gap: 6px; margin: 13px 0 7px; }
+  .all-data-toolbar b { margin-right: auto; font-size: 10px; }
+  .filter-box { display: flex; align-items: center; gap: 5px; min-width: 100px; height: 28px; padding: 0 8px; border: 1px solid var(--line); border-radius: 3px; background: #fff; color: #647781; font-size: 8px; }
+  .filter-box.search { width: 190px; }
+  .point-row, .point-header { display: grid; grid-template-columns: 175px 100px 105px 80px 68px 64px minmax(80px, 1fr); align-items: center; min-height: 34px; padding: 0 9px; border-top: 1px solid var(--line-soft); font-size: 8px; }
+  .point-header { min-height: 30px; border-top: 0; background: var(--surface-soft); color: var(--muted); }
+  .point-row b { font-size: 8px; }
+  .point-row small { display: block; margin-top: 2px; color: var(--muted); font-size: 6px; }
+  .quality { color: #128166; }
+  .quality.stale { color: #b17319; }
+  .table-foot { display: flex; align-items: center; justify-content: space-between; min-height: 31px; padding: 0 9px; border-top: 1px solid var(--line); background: #fafbfb; color: var(--muted); font-size: 7px; }
+
+  .protocol-shell { overflow: hidden; border: 1px solid #cbd6db; border-radius: 5px; background: #fff; box-shadow: 0 10px 26px rgba(34, 52, 62, .08); }
+  .protocol-shell-head { display: flex; align-items: center; min-height: 47px; padding: 0 13px; border-bottom: 1px solid var(--line); }
+  .protocol-shell-head b { font-size: 11px; }
+  .protocol-shell-head span { margin-left: 8px; color: var(--muted); font-size: 8px; }
+  .protocol-tabs { display: grid; grid-template-columns: repeat(6, 1fr); border-bottom: 1px solid var(--line); }
+  .protocol-tab { display: flex; align-items: center; justify-content: center; gap: 6px; min-height: 43px; border: 0; border-right: 1px solid var(--line-soft); background: #fff; color: #637680; cursor: pointer; font-size: 8px; }
+  .protocol-tab:last-child { border-right: 0; }
+  .protocol-tab.active { box-shadow: inset 0 -2px var(--brand); background: var(--brand-soft); color: var(--brand-dark); font-weight: 700; }
+  .protocol-panel { padding: 12px; }
+  .protocol-panel.hidden { display: none; }
+  .protocol-layout { display: grid; grid-template-columns: 1.08fr .92fr; gap: 12px; }
+  .panel-box { overflow: hidden; border: 1px solid var(--line); border-radius: 4px; }
+  .panel-box-title { display: flex; align-items: center; justify-content: space-between; min-height: 34px; padding: 0 10px; border-bottom: 1px solid var(--line); background: var(--surface-soft); font-size: 9px; font-weight: 700; }
+  .panel-box-title span { color: var(--muted); font-size: 7px; font-weight: 400; }
+  .form-content { padding: 10px; }
+  .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 10px; }
+  .form-field { min-width: 0; }
+  .form-field.full { grid-column: 1 / -1; }
+  .form-field label { display: block; margin-bottom: 4px; color: #5f727d; font-size: 7px; }
+  .input-box { display: flex; align-items: center; justify-content: space-between; min-height: 29px; padding: 6px 8px; border: 1px solid #cfdade; border-radius: 3px; background: #fff; color: #344b57; font-size: 8px; }
+  .input-box.masked { color: #84929a; }
+  .input-box.code { font-family: Consolas, monospace; }
+  .input-box.multi { min-height: 48px; align-items: flex-start; line-height: 1.55; }
+  .inline-help { margin-top: 4px; color: #87959c; font-size: 6px; }
+  .form-actions { display: flex; justify-content: flex-end; gap: 6px; margin-top: 10px; }
+  .secondary, .primary { min-height: 28px; padding: 0 9px; border: 1px solid #cad5da; border-radius: 3px; background: #fff; color: #536873; font-size: 8px; }
+  .primary { border-color: var(--brand); background: var(--brand); color: #fff; }
+  .status-strip { display: flex; align-items: center; gap: 7px; margin: 9px; padding: 8px; border-left: 3px solid var(--brand); background: var(--brand-soft); font-size: 8px; }
+  .status-strip .right { margin-left: auto; color: var(--muted); }
+  .protocol-metrics { display: grid; grid-template-columns: repeat(4, 1fr); overflow: hidden; margin: 0 9px 9px; border: 1px solid var(--line); border-radius: 3px; background: var(--line); gap: 1px; }
+  .protocol-metric { min-width: 0; padding: 7px; background: #fff; }
+  .protocol-metric span { display: block; overflow: hidden; color: var(--muted); font-size: 6px; text-overflow: ellipsis; white-space: nowrap; }
+  .protocol-metric b { display: block; margin-top: 3px; font-size: 10px; }
+  .sample-title { display: flex; justify-content: space-between; margin: 0 9px 5px; color: #61737d; font-size: 7px; }
+  .sample-code { min-height: 83px; margin: 0 9px 9px; padding: 8px; border-radius: 3px; background: #243038; color: #dcebe8; font: 7px/1.55 Consolas, monospace; white-space: pre-wrap; }
+  .sample-rows { margin: 0 9px 9px; overflow: hidden; border: 1px solid var(--line); border-radius: 3px; }
+  .sample-row { display: grid; grid-template-columns: 1fr 65px 55px; padding: 6px 8px; border-top: 1px solid var(--line-soft); font-size: 7px; }
+  .sample-row:first-child { border-top: 0; background: var(--surface-soft); color: var(--muted); }
+  .good { color: #108266; }
+
+  .editor { overflow: hidden; border: 1px solid #cbd6db; border-radius: 5px; background: #fff; box-shadow: 0 10px 26px rgba(34, 52, 62, .08); }
+  .editor-toolbar { display: flex; align-items: stretch; height: 55px; border-bottom: 1px solid var(--line); }
+  .editor-brand { display: flex; align-items: center; gap: 7px; min-width: 150px; padding: 0 12px; font-size: 11px; font-weight: 700; }
+  .brand-diamond { width: 23px; height: 23px; border: 4px solid #1ab49d; transform: rotate(45deg); }
+  .editor-tools { display: flex; border-left: 1px solid #eef2f3; }
+  .editor-tool { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; min-width: 48px; border: 0; border-right: 1px solid #eef2f3; background: #fff; color: #586b75; font-size: 8px; }
+  .editor-tool.active { background: var(--brand-soft); color: var(--brand-dark); }
+  .editor-spacer { flex: 1; }
+  .editor-preview { align-self: center; display: flex; align-items: center; gap: 5px; height: 31px; margin: 0 10px; padding: 0 12px; border: 0; border-radius: 2px; background: #198edb; color: #fff; font-size: 9px; }
+  .editor-body { display: grid; grid-template-columns: 150px minmax(300px, 1fr) 385px; height: 570px; }
+  .library { border-right: 1px solid var(--line); }
+  .library-tabs { display: grid; grid-template-columns: repeat(3, 1fr); height: 39px; border-bottom: 1px solid var(--line); }
+  .library-tabs span { display: grid; place-items: center; color: #6d7e87; font-size: 8px; }
+  .library-tabs .active { border-bottom: 2px solid var(--brand); color: var(--brand-dark); }
+  .library-search { margin: 8px; padding: 7px; border: 1px solid var(--line); border-radius: 3px; color: #98a3a9; font-size: 7px; }
+  .library-heading { display: flex; justify-content: space-between; padding: 7px 9px; font-size: 8px; font-weight: 700; }
+  .library-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; padding: 0 8px; }
+  .library-item { display: grid; place-items: center; height: 55px; border: 1px solid var(--line-soft); border-radius: 3px; color: #70818a; font-size: 7px; }
+  .canvas { position: relative; overflow: hidden; background-color: #f2f4f5; background-image: linear-gradient(#dfe5e7 1px, transparent 1px), linear-gradient(90deg, #dfe5e7 1px, transparent 1px); background-size: 18px 18px; }
+  .fan { position: absolute; left: 30%; top: 33%; display: grid; place-items: center; width: 120px; height: 120px; border: 4px solid #e89b28; border-radius: 50%; background: #fffaf1; }
+  .fan::before, .fan::after { content: ""; position: absolute; width: 18px; height: 46px; border-radius: 50% 50% 18% 18%; background: #e2b873; transform-origin: 50% 46px; }
+  .fan::before { transform: translateY(-33px); }
+  .fan::after { transform: rotate(120deg) translateY(-33px); }
+  .fan-blade { position: absolute; width: 18px; height: 46px; border-radius: 50% 50% 18% 18%; background: #e2b873; transform: rotate(240deg) translateY(-33px); transform-origin: 50% 46px; }
+  .fan-hub { z-index: 2; width: 17px; height: 17px; border-radius: 50%; background: #d58a21; }
+  .fan-label { position: absolute; left: calc(30% + 17px); top: calc(33% + 130px); padding: 4px 7px; border-radius: 3px; background: #148d78; color: #fff; font-size: 8px; }
+  .runtime-value { position: absolute; left: calc(30% + 133px); top: calc(33% + 40px); padding: 8px 9px; border: 1px solid var(--line); border-radius: 3px; background: #fff; font-size: 7px; }
+  .runtime-value b { display: block; color: #c17a17; font-size: 12px; }
+  .inspector { position: relative; border-left: 1px solid var(--line); background: #fff; }
+  .inspector-tabs { display: grid; grid-template-columns: repeat(4, 1fr); height: 41px; border-bottom: 1px solid var(--line); }
+  .inspector-tabs button { position: relative; border: 0; background: #fff; color: #647680; font-size: 9px; }
+  .inspector-tabs button.active { color: #253740; font-weight: 700; }
+  .inspector-tabs button.active::after { content: ""; position: absolute; left: 16px; right: 16px; bottom: 0; height: 2px; background: var(--brand); }
+  .tab-badge { display: inline-grid; place-items: center; min-width: 14px; height: 14px; margin-left: 3px; border-radius: 7px; background: #e8efef; color: #526b70; font-size: 6px; }
+  .inspector-content { height: calc(100% - 41px); overflow: auto; padding: 10px; }
+  .inspector-content.hidden { display: none; }
+  .selected-head { display: flex; align-items: center; gap: 8px; padding-bottom: 9px; border-bottom: 1px solid var(--line-soft); }
+  .selected-icon { display: grid; place-items: center; width: 30px; height: 30px; border: 1px solid #6db7ab; border-radius: 50%; background: var(--brand-soft); color: var(--brand-dark); }
+  .selected-head b { display: block; font-size: 9px; }
+  .selected-head small { display: block; margin-top: 2px; color: var(--muted); font-size: 6px; }
+  .section-label { display: flex; align-items: center; justify-content: space-between; margin: 12px 0 6px; font-size: 9px; font-weight: 700; }
+  .section-label span { color: var(--muted); font-size: 6px; font-weight: 400; }
+  .property-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+  .plain-property { min-width: 0; }
+  .plain-property label, .bindable-property > label { display: block; margin-bottom: 3px; color: #657781; font-size: 7px; }
+  .plain-value { min-height: 28px; padding: 7px; border: 1px solid var(--line); border-radius: 3px; color: #3d525d; font-size: 8px; }
+  .bindable-property { margin-bottom: 7px; }
+  .property-input { display: grid; grid-template-columns: minmax(0, 1fr) 32px; gap: 5px; }
+  .property-default { display: flex; align-items: center; gap: 6px; min-height: 31px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 3px; background: #fff; font-size: 8px; }
+  .swatch { width: 14px; height: 14px; border: 1px solid rgba(0,0,0,.15); border-radius: 2px; background: #19a68f; }
+  .swatch.orange { background: #e89b28; }
+  .default-tag { margin-left: auto; color: #8a989f; font-size: 6px; }
+  .bind-button { display: grid; place-items: center; min-height: 31px; border: 1px solid #8bc5ba; border-radius: 3px; background: var(--brand-soft); color: var(--brand-dark); cursor: pointer; }
+  .bind-button.unbound { border-color: var(--line); background: #fff; color: #839198; }
+  .runtime-hint { display: flex; align-items: center; gap: 5px; margin-top: 4px; color: #6c7f88; font-size: 6px; }
+  .runtime-hint b { color: #b36f12; font-size: 7px; }
+  .runtime-hint .live-dot { width: 6px; height: 6px; border-radius: 50%; background: #16a36f; }
+  .rules-row { display: flex; align-items: center; gap: 7px; padding: 8px; border: 1px solid var(--line); border-radius: 3px; font-size: 7px; }
+  .rules-row b { display: block; font-size: 8px; }
+  .rules-row span { color: var(--muted); }
+  .rules-row button { margin-left: auto; border: 0; background: transparent; color: #6a7d87; }
+  .binding-popover { position: absolute; z-index: 5; right: 10px; top: 98px; width: 365px; overflow: hidden; border: 1px solid #aebcc3; border-radius: 4px; background: #fff; box-shadow: 0 12px 30px rgba(34, 52, 62, .2); }
+  .binding-popover.hidden { display: none; }
+  .popover-head { display: flex; align-items: center; min-height: 39px; padding: 0 10px; border-bottom: 1px solid var(--line); font-size: 9px; font-weight: 700; }
+  .popover-head button { display: grid; place-items: center; margin-left: auto; border: 0; background: transparent; color: #708089; }
+  .popover-body { padding: 10px; }
+  .binding-summary { display: grid; grid-template-columns: 72px 1fr; gap: 7px; align-items: center; margin-bottom: 8px; font-size: 7px; }
+  .binding-summary label { color: #61747e; }
+  .select-box { display: flex; align-items: center; gap: 6px; min-height: 29px; padding: 6px 8px; border: 1px solid #cfdade; border-radius: 3px; font-size: 8px; }
+  .select-box b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .select-box .live { margin-left: auto; color: var(--brand-dark); }
+  .mapping-table { overflow: hidden; margin: 7px 0 8px 79px; border: 1px solid var(--line); border-radius: 3px; }
+  .mapping-row { display: grid; grid-template-columns: 1fr 20px 1fr; align-items: center; min-height: 28px; padding: 0 7px; border-top: 1px solid var(--line-soft); font-size: 7px; }
+  .mapping-row:first-child { border-top: 0; background: var(--surface-soft); color: var(--muted); }
+  .color-value { display: flex; align-items: center; gap: 5px; }
+  .mini-swatch { width: 10px; height: 10px; border-radius: 2px; background: #16a36f; }
+  .mini-swatch.warning { background: #e89b28; }
+  .mini-swatch.alarm { background: #d65252; }
+  .mini-swatch.offline { background: #8a969c; }
+  .popover-actions { display: flex; align-items: center; gap: 6px; margin-top: 10px; }
+  .danger-link { border: 0; background: transparent; color: #b44e4e; font-size: 7px; }
+  .popover-actions .secondary { margin-left: auto; }
+  .communication-summary { padding: 0; }
+  .communication-kpis { display: grid; grid-template-columns: repeat(3, 1fr); margin: 10px 0; overflow: hidden; border: 1px solid var(--line); border-radius: 3px; background: var(--line); gap: 1px; }
+  .communication-kpi { padding: 7px; background: #fff; }
+  .communication-kpi span { display: block; color: var(--muted); font-size: 6px; }
+  .communication-kpi b { display: block; margin-top: 3px; font-size: 9px; }
+  .communication-row { display: grid; grid-template-columns: 86px 1fr 56px 24px; gap: 5px; align-items: center; padding: 8px 0; border-top: 1px solid var(--line-soft); font-size: 7px; }
+  .communication-row:first-of-type { border-top: 0; }
+  .communication-row b { display: block; font-size: 8px; }
+  .communication-row small { display: block; margin-top: 2px; color: var(--muted); font-size: 6px; }
+  .locate-button { display: grid; place-items: center; border: 0; background: transparent; color: var(--brand-dark); }
+  .communication-alert { display: flex; gap: 7px; margin-top: 10px; padding: 8px; border-left: 3px solid var(--orange); background: #fff7eb; color: #7e5b2e; font-size: 7px; line-height: 1.5; }
+
+  .decision { display: flex; align-items: center; gap: 14px; margin-top: 18px; padding: 11px; border: 1px solid #bed9d3; border-radius: 5px; background: var(--brand-soft); }
+  .decision-copy { min-width: 270px; }
+  .decision-copy b { display: block; font-size: 11px; }
+  .decision-copy span { display: block; margin-top: 3px; color: #55736c; font-size: 8px; }
+  .decision .options { flex: 1; }
+
+  @media (max-width: 1120px) {
+    .principles { grid-template-columns: 1fr; }
+    .metrics { grid-template-columns: repeat(3, 1fr); }
+    .connection-row, .connection-header { grid-template-columns: 160px 70px 70px 60px 68px 60px minmax(80px, 1fr) 30px; }
+    .protocol-layout { grid-template-columns: 1fr; }
+    .editor-body { grid-template-columns: 130px minmax(260px, 1fr) 365px; }
+    .protocol-tabs { grid-template-columns: repeat(3, 1fr); }
+  }
+</style>
+
+<div class="v9">
+  <h2>方案九：协议化数据源管理 + 属性原位绑定</h2>
+  <p class="lead">全局页面负责“连接是否正常、采到了什么”；组件属性负责“这项属性使用哪个点位”；通信页只负责运行诊断。</p>
+
+  <div class="principles">
+    <div class="principle"><b>数据源管理</b><span>统一建立和编辑连接，同时区分连接状态与数据状态，查看全部点位的最新值。</span></div>
+    <div class="principle"><b>属性原位绑定</b><span>文字、数值、颜色、显隐和动画速度等可绑定属性旁显示链条按钮，位置和层级等默认不开放。</span></div>
+    <div class="principle"><b>通信只读总览</b><span>展示当前组件全部绑定、实时值、质量和更新时间，点击后定位回对应属性，不重复配置。</span></div>
+  </div>
+
+  <div class="section-head"><h3>1. 数据源管理总览</h3><p>先判断连接是否正常，再判断数据是否持续到达</p></div>
+  <section class="window">
+    <header class="manager-head">
+      <button class="back-btn" title="返回图纸"><i data-lucide="arrow-left" class="icon-sm"></i></button>
+      <div class="manager-title"><h3>数据源管理</h3><p>工作空间统一资源，与当前选中的组件无关</p></div>
+      <div class="manager-state"><span><b>5 / 6</b> 在线</span><span><b>1</b> 个异常</span><span>最近检查 14:32:18</span></div>
+      <button class="primary-action"><i data-lucide="plus" class="icon-sm"></i><span>新建连接</span></button>
+    </header>
+    <nav class="manager-tabs"><button class="active">总览</button><button>连接管理</button><button>采集数据</button><button>运行记录</button></nav>
+    <div class="manager-body">
+      <div class="metrics">
+        <div class="metric"><span>数据源</span><b>6</b><small>5 在线 / 1 异常</small></div>
+        <div class="metric"><span>标准点位</span><b>1,426</b><small>18 个过期</small></div>
+        <div class="metric"><span>入口更新</span><b>20,486/s</b><small>所有协议合计</small></div>
+        <div class="metric"><span>浏览器更新</span><b>4,812/s</b><small>合并后推送</small></div>
+        <div class="metric"><span>合并更新</span><b>15,674/s</b><small>76.5% 未触发重绘</small></div>
+        <div class="metric"><span>异常点位</span><b class="warn">18</b><small>延迟 16 / 离线 2</small></div>
+      </div>
+
+      <div class="subhead"><b>连接与采集状态</b><span>连接成功但没有数据时，数据状态仍会标记异常</span></div>
+      <div class="data-table">
+        <div class="connection-header"><span>数据源</span><span>连接状态</span><span>数据状态</span><span>点位</span><span>更新频率</span><span>P95 延迟</span><span>最近数据</span><span></span></div>
+        <div class="connection-row"><div class="source-name"><span class="source-badge">MQTT</span><div><b>车间设备 MQTT</b><small>生产一线 · 实时遥测</small></div></div><span class="pill"><i class="status-dot"></i>在线</span><span class="pill"><i class="status-dot"></i>正常</span><span>286</span><span>1,240/s</span><span>18ms</span><span>刚刚 · 无错误</span><button class="row-action" title="编辑"><i data-lucide="pencil-line" class="icon-sm"></i></button></div>
+        <div class="connection-row"><div class="source-name"><span class="source-badge">HTTP</span><div><b>能源接口 HTTP</b><small>能源中心 · 定时拉取</small></div></div><span class="pill"><i class="status-dot"></i>在线</span><span class="pill warn"><i class="status-dot"></i>延迟</span><span>124</span><span>1/s</span><span>42ms</span><span>12 秒前 · 数据过期</span><button class="row-action" title="编辑"><i data-lucide="pencil-line" class="icon-sm"></i></button></div>
+        <div class="connection-row"><div class="source-name"><span class="source-badge">MySQL</span><div><b>生产报表 MySQL</b><small>生产库 · 增量查询</small></div></div><span class="pill"><i class="status-dot"></i>在线</span><span class="pill"><i class="status-dot"></i>正常</span><span>356</span><span>356/s</span><span>31ms</span><span>刚刚 · 无错误</span><button class="row-action" title="编辑"><i data-lucide="pencil-line" class="icon-sm"></i></button></div>
+        <div class="connection-row"><div class="source-name"><span class="source-badge">MSSQL</span><div><b>质检 SQL Server</b><small>质量库 · Change Tracking</small></div></div><span class="pill"><i class="status-dot"></i>在线</span><span class="pill"><i class="status-dot"></i>正常</span><span>212</span><span>184/s</span><span>46ms</span><span>刚刚 · 无错误</span><button class="row-action" title="编辑"><i data-lucide="pencil-line" class="icon-sm"></i></button></div>
+        <div class="connection-row"><div class="source-name"><span class="source-badge">Redis</span><div><b>实时告警 Redis</b><small>告警中心 · Streams</small></div></div><span class="pill"><i class="status-dot"></i>在线</span><span class="pill"><i class="status-dot"></i>正常</span><span>178</span><span>86/s</span><span>9ms</span><span>刚刚 · Pending 0</span><button class="row-action" title="编辑"><i data-lucide="pencil-line" class="icon-sm"></i></button></div>
+        <div class="connection-row"><div class="source-name"><span class="source-badge">Socket</span><div><b>PLC Socket 网关</b><small>装配线 · TCP 网关</small></div></div><span class="pill bad"><i class="status-dot"></i>重连中</span><span class="pill bad"><i class="status-dot"></i>无数据</span><span>270</span><span>0/s</span><span>--</span><span>3 分钟前 · 连接超时</span><button class="row-action" title="编辑"><i data-lucide="pencil-line" class="icon-sm"></i></button></div>
+      </div>
+
+      <div class="all-data-toolbar"><b>全部采集数据</b><div class="filter-box"><span>全部连接</span><i data-lucide="chevron-down" class="icon-sm"></i></div><div class="filter-box"><span>全部质量</span><i data-lucide="chevron-down" class="icon-sm"></i></div><div class="filter-box search"><i data-lucide="search" class="icon-sm"></i><span>搜索点位名称或数据键</span></div></div>
+      <div class="data-table">
+        <div class="point-header"><span>数据键</span><span>点位名称</span><span>数据源</span><span>当前值</span><span>质量</span><span>频率</span><span>更新时间 / 延迟</span></div>
+        <div class="point-row"><div><b>line1.motor01.rpm</b><small>number · r/min</small></div><span>风机转速</span><span>车间设备 MQTT</span><span>1480</span><span class="quality">正常</span><span>10/s</span><span>刚刚 · 18ms</span></div>
+        <div class="point-row"><div><b>line1.motor01.running</b><small>boolean</small></div><span>风机运行状态</span><span>车间设备 MQTT</span><span>true</span><span class="quality">正常</span><span>2/s</span><span>刚刚 · 17ms</span></div>
+        <div class="point-row"><div><b>energy.today.total</b><small>number · kWh</small></div><span>今日总用电</span><span>能源接口 HTTP</span><span>18342.7</span><span class="quality stale">延迟</span><span>0.1/s</span><span>12 秒前 · 12.0s</span></div>
+        <div class="point-row"><div><b>quality.line1.passRate</b><small>number · %</small></div><span>一次合格率</span><span>质检 SQL Server</span><span>98.72</span><span class="quality">正常</span><span>1/s</span><span>刚刚 · 46ms</span></div>
+        <div class="point-row"><div><b>alarm.latest.level</b><small>enum</small></div><span>最新告警级别</span><span>实时告警 Redis</span><span>warning</span><span class="quality">正常</span><span>4/s</span><span>刚刚 · 9ms</span></div>
+        <div class="table-foot"><span>共 1,426 个点位 · 当前显示 1–5</span><span>可见行每 500ms 批量刷新，原始历史进入“运行记录”查询</span></div>
+      </div>
+    </div>
+  </section>
+
+  <div class="section-head"><h3>2. 每种协议的具体连接编辑与运行界面</h3><p>点击协议页签查看不同字段，所有页面结构保持一致</p></div>
+  <section class="protocol-shell">
+    <header class="protocol-shell-head"><b>连接编辑</b><span>统一包含连接配置、采集规则、数据映射和运行监控</span></header>
+    <nav class="protocol-tabs">
+      <button class="protocol-tab active" onclick="showProtocol('mqtt', this)"><i data-lucide="radio-tower" class="icon-sm"></i><span>MQTT</span></button>
+      <button class="protocol-tab" onclick="showProtocol('http', this)"><i data-lucide="globe-2" class="icon-sm"></i><span>HTTP</span></button>
+      <button class="protocol-tab" onclick="showProtocol('mysql', this)"><i data-lucide="database" class="icon-sm"></i><span>MySQL</span></button>
+      <button class="protocol-tab" onclick="showProtocol('mssql', this)"><i data-lucide="database-backup" class="icon-sm"></i><span>SQL Server</span></button>
+      <button class="protocol-tab" onclick="showProtocol('redis', this)"><i data-lucide="layers-3" class="icon-sm"></i><span>Redis</span></button>
+      <button class="protocol-tab" onclick="showProtocol('socket', this)"><i data-lucide="network" class="icon-sm"></i><span>WebSocket / Socket</span></button>
+    </nav>
+
+    <div class="protocol-panel" id="protocol-mqtt">
+      <div class="protocol-layout">
+        <section class="panel-box"><div class="panel-box-title"><span>MQTT 连接与订阅</span><span>凭据由后台加密保存</span></div><div class="form-content"><div class="form-grid">
+          <div class="form-field"><label>数据源名称</label><div class="input-box">车间设备 MQTT</div></div><div class="form-field"><label>传输方式</label><div class="input-box">TCP / MQTT 5.0 <i data-lucide="chevron-down" class="icon-sm"></i></div></div>
+          <div class="form-field full"><label>Broker 地址</label><div class="input-box code">mqtt://10.20.1.18:1883</div></div>
+          <div class="form-field"><label>Client ID</label><div class="input-box code">tc2d-gateway-line1</div></div><div class="form-field"><label>凭据引用</label><div class="input-box masked">factory-readonly · 已保存</div></div>
+          <div class="form-field full"><label>订阅 Topic</label><div class="input-box multi code">factory/line1/+/status&nbsp;&nbsp;&nbsp; QoS 1<br>factory/line1/+/telemetry&nbsp;&nbsp; QoS 0</div></div>
+          <div class="form-field"><label>Payload 格式</label><div class="input-box">JSON</div></div><div class="form-field"><label>Keep Alive</label><div class="input-box">60 秒</div></div>
+        </div><div class="form-actions"><button class="secondary">取消</button><button class="secondary">测试连接</button><button class="primary">保存配置</button></div></div></section>
+        <section class="panel-box"><div class="panel-box-title"><span>MQTT 运行监控</span><span>原始消息与解析点位同时可见</span></div><div class="status-strip"><span class="pill"><i class="status-dot"></i>连接在线</span><span class="pill"><i class="status-dot"></i>数据正常</span><span class="right">会话已恢复 · 运行 4h 21m</span></div><div class="protocol-metrics"><div class="protocol-metric"><span>消息</span><b>1,240/s</b></div><div class="protocol-metric"><span>Ping RTT</span><b>18ms</b></div><div class="protocol-metric"><span>订阅</span><b>2 / 2</b></div><div class="protocol-metric"><span>解析失败</span><b>0</b></div></div><div class="sample-title"><span>最近原始消息</span><span>14:32:16.125</span></div><div class="sample-code">{"device":"motor01","rpm":1480,"running":true,"alarm":"warning"}</div><div class="sample-rows"><div class="sample-row"><span>解析点位</span><span>当前值</span><span>质量</span></div><div class="sample-row"><span>motor01.rpm</span><span>1480</span><span class="good">正常</span></div><div class="sample-row"><span>motor01.running</span><span>true</span><span class="good">正常</span></div></div></section>
+      </div>
+    </div>
+
+    <div class="protocol-panel hidden" id="protocol-http">
+      <div class="protocol-layout">
+        <section class="panel-box"><div class="panel-box-title"><span>HTTP 连接与采集</span><span>支持定时拉取与 Webhook</span></div><div class="form-content"><div class="form-grid">
+          <div class="form-field"><label>数据源名称</label><div class="input-box">能源接口 HTTP</div></div><div class="form-field"><label>采集模式</label><div class="input-box">定时拉取 <i data-lucide="chevron-down" class="icon-sm"></i></div></div>
+          <div class="form-field"><label>请求方法</label><div class="input-box">GET</div></div><div class="form-field"><label>采集周期</label><div class="input-box">1 秒</div></div>
+          <div class="form-field full"><label>请求地址</label><div class="input-box code">https://energy-gateway/api/v1/realtime</div></div>
+          <div class="form-field"><label>鉴权</label><div class="input-box masked">Bearer Token · 已保存</div></div><div class="form-field"><label>超时 / 重试</label><div class="input-box">3 秒 / 2 次</div></div>
+          <div class="form-field full"><label>数据数组路径</label><div class="input-box code">$.data.devices[*]</div><div class="inline-help">敏感 Header、Token 与目标地址允许列表由后台维护。</div></div>
+        </div><div class="form-actions"><button class="secondary">取消</button><button class="secondary">发送测试请求</button><button class="primary">保存配置</button></div></div></section>
+        <section class="panel-box"><div class="panel-box-title"><span>HTTP 运行监控</span><span>响应与字段解析结果</span></div><div class="status-strip"><span class="pill"><i class="status-dot"></i>HTTP 200</span><span class="pill warn"><i class="status-dot"></i>数据延迟</span><span class="right">下次执行 0.8 秒后</span></div><div class="protocol-metrics"><div class="protocol-metric"><span>请求</span><b>1/s</b></div><div class="protocol-metric"><span>P95</span><b>42ms</b></div><div class="protocol-metric"><span>响应大小</span><b>18KB</b></div><div class="protocol-metric"><span>连续失败</span><b>0</b></div></div><div class="sample-title"><span>最近响应</span><span>12 秒前</span></div><div class="sample-code">{"data":{"devices":[{"id":"meter01","today":18342.7,"power":386.2}]}}</div><div class="sample-rows"><div class="sample-row"><span>解析点位</span><span>当前值</span><span>质量</span></div><div class="sample-row"><span>energy.today.total</span><span>18342.7</span><span style="color:#b17319">延迟</span></div><div class="sample-row"><span>energy.power.current</span><span>386.2</span><span style="color:#b17319">延迟</span></div></div></section>
+      </div>
+    </div>
+
+    <div class="protocol-panel hidden" id="protocol-mysql">
+      <div class="protocol-layout">
+        <section class="panel-box"><div class="panel-box-title"><span>MySQL 连接与增量采集</span><span>只允许后台发布的查询模板</span></div><div class="form-content"><div class="form-grid">
+          <div class="form-field"><label>数据源名称</label><div class="input-box">生产报表 MySQL</div></div><div class="form-field"><label>采集模式</label><div class="input-box">增量查询 <i data-lucide="chevron-down" class="icon-sm"></i></div></div>
+          <div class="form-field"><label>后台连接</label><div class="input-box code">mysql-prod-read</div></div><div class="form-field"><label>数据库</label><div class="input-box code">production</div></div>
+          <div class="form-field full"><label>查询模板</label><div class="input-box code">device_snapshot_by_updated_at</div></div>
+          <div class="form-field"><label>增量字段</label><div class="input-box code">updated_at</div></div><div class="form-field"><label>轮询周期</label><div class="input-box">1 秒</div></div>
+          <div class="form-field"><label>批次上限</label><div class="input-box">5,000 行</div></div><div class="form-field"><label>字段映射</label><div class="input-box">key / value / time / quality</div></div>
+        </div><div class="form-actions"><button class="secondary">取消</button><button class="secondary">测试查询</button><button class="primary">保存配置</button></div></div></section>
+        <section class="panel-box"><div class="panel-box-title"><span>MySQL 运行监控</span><span>查询负载与结果预览</span></div><div class="status-strip"><span class="pill"><i class="status-dot"></i>连接池正常</span><span class="pill"><i class="status-dot"></i>数据正常</span><span class="right">水位 2026-07-28 14:32:16</span></div><div class="protocol-metrics"><div class="protocol-metric"><span>查询 P95</span><b>31ms</b></div><div class="protocol-metric"><span>读取行</span><b>356/s</b></div><div class="protocol-metric"><span>连接池</span><b>3 / 10</b></div><div class="protocol-metric"><span>慢查询</span><b>0</b></div></div><div class="sample-title"><span>最近查询结果</span><span>356 行</span></div><div class="sample-code">[{"device_code":"M01","metric":"output","value":12640,"updated_at":"14:32:16"}]</div><div class="sample-rows"><div class="sample-row"><span>解析点位</span><span>当前值</span><span>质量</span></div><div class="sample-row"><span>production.M01.output</span><span>12640</span><span class="good">正常</span></div><div class="sample-row"><span>production.M01.target</span><span>13200</span><span class="good">正常</span></div></div></section>
+      </div>
+    </div>
+
+    <div class="protocol-panel hidden" id="protocol-mssql">
+      <div class="protocol-layout">
+        <section class="panel-box"><div class="panel-box-title"><span>SQL Server 连接与变更采集</span><span>凭据与 CT 版本由后台管理</span></div><div class="form-content"><div class="form-grid">
+          <div class="form-field"><label>数据源名称</label><div class="input-box">质检 SQL Server</div></div><div class="form-field"><label>采集模式</label><div class="input-box">Change Tracking <i data-lucide="chevron-down" class="icon-sm"></i></div></div>
+          <div class="form-field"><label>后台连接</label><div class="input-box code">mssql-quality-read</div></div><div class="form-field"><label>实例 / 数据库</label><div class="input-box code">MSSQLPROD01 / Quality</div></div>
+          <div class="form-field full"><label>查询模板</label><div class="input-box code">quality_result_changes</div></div>
+          <div class="form-field"><label>表 / 视图</label><div class="input-box code">dbo.v_LineQuality</div></div><div class="form-field"><label>轮询周期</label><div class="input-box">500 ms</div></div>
+          <div class="form-field"><label>批次上限</label><div class="input-box">2,000 行</div></div><div class="form-field"><label>加密连接</label><div class="input-box">Encrypt 开启</div></div>
+        </div><div class="form-actions"><button class="secondary">取消</button><button class="secondary">测试查询</button><button class="primary">保存配置</button></div></div></section>
+        <section class="panel-box"><div class="panel-box-title"><span>SQL Server 运行监控</span><span>Change Tracking 状态</span></div><div class="status-strip"><span class="pill"><i class="status-dot"></i>连接在线</span><span class="pill"><i class="status-dot"></i>数据正常</span><span class="right">当前版本 9,817,245</span></div><div class="protocol-metrics"><div class="protocol-metric"><span>查询 P95</span><b>46ms</b></div><div class="protocol-metric"><span>读取行</span><b>184/s</b></div><div class="protocol-metric"><span>采集延迟</span><b>83ms</b></div><div class="protocol-metric"><span>死锁</span><b>0</b></div></div><div class="sample-title"><span>最近变更结果</span><span>92 行</span></div><div class="sample-code">[{"line":"line1","pass_rate":98.72,"sample_count":642,"change_version":9817245}]</div><div class="sample-rows"><div class="sample-row"><span>解析点位</span><span>当前值</span><span>质量</span></div><div class="sample-row"><span>quality.line1.passRate</span><span>98.72</span><span class="good">正常</span></div><div class="sample-row"><span>quality.line1.samples</span><span>642</span><span class="good">正常</span></div></div></section>
+      </div>
+    </div>
+
+    <div class="protocol-panel hidden" id="protocol-redis">
+      <div class="protocol-layout">
+        <section class="panel-box"><div class="panel-box-title"><span>Redis 连接与流采集</span><span>禁止使用 KEYS * 做实时扫描</span></div><div class="form-content"><div class="form-grid">
+          <div class="form-field"><label>数据源名称</label><div class="input-box">实时告警 Redis</div></div><div class="form-field"><label>部署模式</label><div class="input-box">Standalone <i data-lucide="chevron-down" class="icon-sm"></i></div></div>
+          <div class="form-field"><label>后台连接</label><div class="input-box code">redis-alarm-read</div></div><div class="form-field"><label>Database</label><div class="input-box">2</div></div>
+          <div class="form-field"><label>采集模式</label><div class="input-box">Streams</div></div><div class="form-field"><label>Stream Key</label><div class="input-box code">alarm:events</div></div>
+          <div class="form-field"><label>Consumer Group</label><div class="input-box code">tc2d-runtime</div></div><div class="form-field"><label>起始策略</label><div class="input-box">未确认 → 最新</div></div>
+          <div class="form-field"><label>Block / Count</label><div class="input-box">1000ms / 500</div></div><div class="form-field"><label>Payload 格式</label><div class="input-box">Hash + JSON</div></div>
+        </div><div class="form-actions"><button class="secondary">取消</button><button class="secondary">测试读取</button><button class="primary">保存配置</button></div></div></section>
+        <section class="panel-box"><div class="panel-box-title"><span>Redis 运行监控</span><span>Stream Lag 与 Pending</span></div><div class="status-strip"><span class="pill"><i class="status-dot"></i>节点在线</span><span class="pill"><i class="status-dot"></i>数据正常</span><span class="right">最新 ID 1785239536125-0</span></div><div class="protocol-metrics"><div class="protocol-metric"><span>消息</span><b>86/s</b></div><div class="protocol-metric"><span>命令 P95</span><b>9ms</b></div><div class="protocol-metric"><span>Consumer Lag</span><b>0</b></div><div class="protocol-metric"><span>Pending</span><b>0</b></div></div><div class="sample-title"><span>最近 Stream 消息</span><span>刚刚</span></div><div class="sample-code">{"id":"ALM-20260728-0182","device":"motor01","level":"warning","active":true}</div><div class="sample-rows"><div class="sample-row"><span>解析点位</span><span>当前值</span><span>质量</span></div><div class="sample-row"><span>alarm.latest.level</span><span>warning</span><span class="good">正常</span></div><div class="sample-row"><span>alarm.motor01.active</span><span>true</span><span class="good">正常</span></div></div></section>
+      </div>
+    </div>
+
+    <div class="protocol-panel hidden" id="protocol-socket">
+      <div class="protocol-layout">
+        <section class="panel-box"><div class="panel-box-title"><span>WebSocket / Socket 网关</span><span>TCP/UDP 只能由后台网关连接</span></div><div class="form-content"><div class="form-grid">
+          <div class="form-field"><label>数据源名称</label><div class="input-box">PLC Socket 网关</div></div><div class="form-field"><label>上游类型</label><div class="input-box">TCP Socket <i data-lucide="chevron-down" class="icon-sm"></i></div></div>
+          <div class="form-field full"><label>后台网关连接</label><div class="input-box code">socket-plc-line1</div></div>
+          <div class="form-field"><label>Host / Port</label><div class="input-box code">10.20.2.30:9001</div></div><div class="form-field"><label>报文边界</label><div class="input-box">长度前缀 · 4 字节</div></div>
+          <div class="form-field"><label>字符编码</label><div class="input-box">UTF-8</div></div><div class="form-field"><label>最大报文</label><div class="input-box">1 MB</div></div>
+          <div class="form-field full"><label>心跳报文 / 周期</label><div class="input-box code">PING\r\n · 30 秒 · 超时 5 秒</div></div>
+          <div class="form-field full"><label>前端实时网关</label><div class="input-box code">wss://runtime-gateway/ws</div><div class="inline-help">浏览器只连接统一 WebSocket 网关，不直接连接原始 TCP/UDP Socket。</div></div>
+        </div><div class="form-actions"><button class="secondary">取消</button><button class="secondary">测试网关</button><button class="primary">保存配置</button></div></div></section>
+        <section class="panel-box"><div class="panel-box-title"><span>Socket 运行监控</span><span>握手、队列和报文状态</span></div><div class="status-strip"><span class="pill bad"><i class="status-dot"></i>重连中</span><span class="pill bad"><i class="status-dot"></i>无数据</span><span class="right">第 4 次重连 · 5 秒后重试</span></div><div class="protocol-metrics"><div class="protocol-metric"><span>最后接收</span><b>3m前</b></div><div class="protocol-metric"><span>接收速率</span><b>0/s</b></div><div class="protocol-metric"><span>队列深度</span><b>0</b></div><div class="protocol-metric"><span>格式错误</span><b>0</b></div></div><div class="sample-title"><span>最后有效报文</span><span>14:29:02.814</span></div><div class="sample-code">00 00 00 28 7B 22 70 6C 63 22 3A 22 4C 31 22 ...
+{"plc":"L1","state":"run","count":12640}</div><div class="sample-rows"><div class="sample-row"><span>解析点位</span><span>最后值</span><span>质量</span></div><div class="sample-row"><span>plc.line1.state</span><span>run</span><span style="color:#b44949">离线</span></div><div class="sample-row"><span>plc.line1.count</span><span>12640</span><span style="color:#b44949">离线</span></div></div></section>
+      </div>
+    </div>
+  </section>
+
+  <div class="section-head"><h3>3. 数据绑定放在具体属性旁边</h3><p>点击“属性 / 通信”切换；点击填充颜色右侧链条重新打开绑定浮层</p></div>
+  <section class="editor">
+    <header class="editor-toolbar">
+      <div class="editor-brand"><span class="brand-diamond"></span><span>苔岑2D绘图</span></div>
+      <div class="editor-tools"><button class="editor-tool"><i data-lucide="folder-open" class="icon"></i><span>打开</span></button><button class="editor-tool"><i data-lucide="save" class="icon"></i><span>保存</span></button><button class="editor-tool active"><i data-lucide="mouse-pointer-2" class="icon"></i><span>选择</span></button><button class="editor-tool"><i data-lucide="pencil" class="icon"></i><span>铅笔</span></button><button class="editor-tool"><i data-lucide="grid-3x3" class="icon"></i><span>网格</span></button><button class="editor-tool" title="数据源：5/6 在线"><i data-lucide="database-zap" class="icon"></i><span>数据源</span></button></div>
+      <div class="editor-spacer"></div><button class="editor-preview"><i data-lucide="play" class="icon-sm"></i><span>预览</span></button>
+    </header>
+    <div class="editor-body">
+      <aside class="library"><div class="library-tabs"><span>图纸</span><span class="active">组件</span><span>我的</span></div><div class="library-search">搜索组件</div><div class="library-heading"><span>工业设备</span><span>⌃</span></div><div class="library-grid"><div class="library-item"><i data-lucide="fan" class="icon"></i><span>风机</span></div><div class="library-item"><i data-lucide="gauge" class="icon"></i><span>仪表</span></div><div class="library-item"><i data-lucide="circle-dot" class="icon"></i><span>信号灯</span></div><div class="library-item"><i data-lucide="workflow" class="icon"></i><span>管道</span></div></div></aside>
+      <main class="canvas"><div class="fan"><span class="fan-blade"></span><span class="fan-hub"></span></div><span class="fan-label">风机 01</span><div class="runtime-value"><b>warning</b><span>运行时边框颜色</span></div></main>
+      <aside class="inspector">
+        <nav class="inspector-tabs"><button class="active" onclick="switchInspector('property', this)">属性</button><button onclick="switchInspector('communication', this)">通信 <span class="tab-badge">3</span></button><button>布局</button><button>结构</button></nav>
+        <div class="inspector-content" id="inspector-property">
+          <div class="selected-head"><span class="selected-icon"><i data-lucide="fan" class="icon-sm"></i></span><div><b>风机 01</b><small>属性输入框编辑设计默认值</small></div></div>
+          <div class="section-label"><span>基础属性</span><span>位置与层级不开放实时绑定</span></div>
+          <div class="property-grid"><div class="plain-property"><label>X</label><div class="plain-value">320</div></div><div class="plain-property"><label>Y</label><div class="plain-value">240</div></div><div class="plain-property"><label>宽</label><div class="plain-value">160</div></div><div class="plain-property"><label>高</label><div class="plain-value">160</div></div></div>
+          <div class="section-label"><span>外观与样式</span><span>可绑定属性显示链条</span></div>
+          <div class="bindable-property"><label>填充颜色</label><div class="property-input"><div class="property-default"><span class="swatch"></span><span>#19a68f</span><span class="default-tag">默认值</span></div><button class="bind-button" title="编辑数据绑定" onclick="togglePropertyBinding()"><i data-lucide="link-2" class="icon-sm"></i></button></div><div class="runtime-hint"><i class="live-dot"></i><span>当前值</span><span class="swatch orange"></span><b>#e89b28</b><span>来自 motor01.alarm</span></div></div>
+          <div class="bindable-property"><label>边框颜色</label><div class="property-input"><div class="property-default"><span class="swatch" style="background:#087969"></span><span>#087969</span><span class="default-tag">默认值</span></div><button class="bind-button unbound" title="绑定数据"><i data-lucide="link-2" class="icon-sm"></i></button></div></div>
+          <div class="section-label"><span>内容与动效</span><span>属性绑定采用同一入口</span></div>
+          <div class="bindable-property"><label>显示文字</label><div class="property-input"><div class="property-default"><span>风机 01</span><span class="default-tag">默认值</span></div><button class="bind-button unbound" title="绑定数据"><i data-lucide="link-2" class="icon-sm"></i></button></div></div>
+          <div class="bindable-property"><label>旋转速度</label><div class="property-input"><div class="property-default"><span>1.2 秒/圈</span><span class="default-tag">默认值</span></div><button class="bind-button" title="编辑数据绑定"><i data-lucide="link-2" class="icon-sm"></i></button></div><div class="runtime-hint"><i class="live-dot"></i><span>当前</span><b>0.9 秒/圈</b><span>来自 motor01.rpm</span></div></div>
+          <div class="section-label"><span>数据联动规则</span><span>复杂条件单独管理</span></div><div class="rules-row"><i data-lucide="git-compare-arrows" class="icon-sm"></i><div><b>高温告警</b><span>temperature ≥ 80 时闪烁并显示红色</span></div><button title="编辑规则"><i data-lucide="chevron-right" class="icon-sm"></i></button></div>
+        </div>
+
+        <div class="inspector-content hidden" id="inspector-communication">
+          <div class="selected-head"><span class="selected-icon"><i data-lucide="activity" class="icon-sm"></i></span><div><b>风机 01 · 当前组件数据状态</b><small>只读总览，修改时定位回属性</small></div></div>
+          <div class="communication-kpis"><div class="communication-kpi"><span>绑定属性</span><b>3</b></div><div class="communication-kpi"><span>正常</span><b style="color:#148066">2</b></div><div class="communication-kpi"><span>延迟</span><b style="color:#b17319">1</b></div></div>
+          <div class="section-label"><span>属性与点位</span><span>最新运行值</span></div>
+          <div class="communication-summary">
+            <div class="communication-row"><div><b>填充颜色</b><small>枚举映射</small></div><div><b>motor01.alarm</b><small>warning · 正常 · 刚刚</small></div><span style="color:#b17319">#e89b28</span><button class="locate-button" title="定位到属性" onclick="switchInspectorByName('property')"><i data-lucide="locate-fixed" class="icon-sm"></i></button></div>
+            <div class="communication-row"><div><b>旋转速度</b><small>数值转换</small></div><div><b>motor01.rpm</b><small>1480 · 正常 · 刚刚</small></div><span>0.9s/圈</span><button class="locate-button" title="定位到属性" onclick="switchInspectorByName('property')"><i data-lucide="locate-fixed" class="icon-sm"></i></button></div>
+            <div class="communication-row"><div><b>告警动画</b><small>条件规则</small></div><div><b>motor01.temperature</b><small>86.2 · 延迟 · 3 秒前</small></div><span>闪烁</span><button class="locate-button" title="定位到属性" onclick="switchInspectorByName('property')"><i data-lucide="locate-fixed" class="icon-sm"></i></button></div>
+          </div>
+          <div class="communication-alert"><i data-lucide="triangle-alert" class="icon-sm"></i><span><b>1 个点位更新延迟</b><br>motor01.temperature 已 3 秒未更新，当前保持最后有效值。</span></div>
+        </div>
+
+        <div class="binding-popover" id="property-binding-popover">
+          <div class="popover-head"><span>绑定“填充颜色”</span><button title="关闭" onclick="togglePropertyBinding()"><i data-lucide="x" class="icon-sm"></i></button></div>
+          <div class="popover-body">
+            <div class="binding-summary"><label>设计默认值</label><div class="select-box"><span class="swatch"></span><b>#19a68f</b><span class="live">断线时使用</span></div></div>
+            <div class="binding-summary"><label>绑定点位</label><div class="select-box"><i data-lucide="link-2" class="icon-sm"></i><b>motor01.alarm</b><span class="live">warning</span><i data-lucide="chevron-down" class="icon-sm"></i></div></div>
+            <div class="binding-summary"><label>映射方式</label><div class="select-box"><b>枚举值映射</b><i data-lucide="chevron-down" class="icon-sm" style="margin-left:auto"></i></div></div>
+            <div class="mapping-table"><div class="mapping-row"><span>点位值</span><span>→</span><span>属性值</span></div><div class="mapping-row"><span>normal</span><span>→</span><span class="color-value"><i class="mini-swatch"></i>#16a36f</span></div><div class="mapping-row"><span>warning</span><span>→</span><span class="color-value"><i class="mini-swatch warning"></i>#e89b28</span></div><div class="mapping-row"><span>alarm</span><span>→</span><span class="color-value"><i class="mini-swatch alarm"></i>#d65252</span></div><div class="mapping-row"><span>offline</span><span>→</span><span class="color-value"><i class="mini-swatch offline"></i>#8a969c</span></div></div>
+            <div class="binding-summary"><label>无数据时</label><div class="select-box"><b>5 秒内保持最后值，之后恢复默认值</b><i data-lucide="chevron-down" class="icon-sm" style="margin-left:auto"></i></div></div>
+            <div class="popover-actions"><button class="danger-link">清除绑定</button><button class="secondary">取消</button><button class="primary">应用</button></div>
+          </div>
+        </div>
+      </aside>
+    </div>
+  </section>
+
+  <div class="decision"><div class="decision-copy"><b>请确认两个核心方向</b><span>协议页面是否足够具体；绑定是否应以“属性行”为主入口。</span></div><div class="options"><div class="option" data-choice="v9-approved" onclick="toggleSelect(this)"><div class="letter">A</div><div class="content"><h3>这版方向正确</h3><p>继续整理成正式设计文档。</p></div></div><div class="option" data-choice="v9-adjust" onclick="toggleSelect(this)"><div class="letter">B</div><div class="content"><h3>仍需调整</h3><p>指出具体协议或属性绑定位置。</p></div></div></div></div>
+</div>
+
+<script src="https://unpkg.com/lucide@0.468.0/dist/umd/lucide.min.js"></script>
+<script>
+  function showProtocol(name, button) {
+    document.querySelectorAll('.protocol-panel').forEach(function (panel) { panel.classList.add('hidden'); });
+    document.querySelectorAll('.protocol-tab').forEach(function (tab) { tab.classList.remove('active'); });
+    document.getElementById('protocol-' + name).classList.remove('hidden');
+    button.classList.add('active');
+  }
+  function togglePropertyBinding() {
+    document.getElementById('property-binding-popover').classList.toggle('hidden');
+  }
+  function switchInspector(name, button) {
+    document.querySelectorAll('.inspector-content').forEach(function (panel) { panel.classList.add('hidden'); });
+    document.querySelectorAll('.inspector-tabs button').forEach(function (tab) { tab.classList.remove('active'); });
+    document.getElementById('inspector-' + name).classList.remove('hidden');
+    button.classList.add('active');
+    if (name !== 'property') document.getElementById('property-binding-popover').classList.add('hidden');
+  }
+  function switchInspectorByName(name) {
+    var buttons = document.querySelectorAll('.inspector-tabs button');
+    switchInspector(name, buttons[0]);
+  }
+  document.addEventListener('DOMContentLoaded', function () {
+    if (window.lucide) window.lucide.createIcons();
+  });
+</script>

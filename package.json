@@ -1,0 +1,23 @@
+{
+  "name": "tc2d",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0",
+    "build": "vite build",
+    "preview": "vite preview --host 0.0.0.0",
+    "test:performance": "node --test scripts/performance-acceptance.test.mjs",
+    "test:text-layout": "node --test scripts/text-layout.test.mjs",
+    "test:stability": "node --test --test-concurrency=1 scripts/runtime-canvas-dirty-queue.test.mjs scripts/editor-model.test.mjs scripts/data-bindings.test.mjs scripts/json-path-binding.test.mjs scripts/source-binding-runtime.test.mjs scripts/source-snapshot-replay-coordinator.test.mjs scripts/source-snapshot-validation.test.mjs scripts/legacy-point-replay-coordinator.test.mjs scripts/json-communication-panel.test.mjs scripts/data-binding-compatibility.test.mjs scripts/point-catalog-search.test.mjs scripts/point-catalog-preparation.test.mjs scripts/point-catalog.test.mjs scripts/workspace-point-sources.test.mjs scripts/data-source-state.test.mjs scripts/data-source-manager-pagination.test.mjs scripts/data-binding-app-wiring.test.mjs scripts/runtime-node-materializer.test.mjs scripts/editor-geometry.test.mjs scripts/editor-interaction.test.mjs scripts/editor-lod.test.mjs scripts/polyline.test.mjs scripts/table-rendering.test.mjs scripts/custom-components.test.mjs scripts/drawing-name.test.mjs scripts/drawing-library.test.mjs scripts/backend-services.test.mjs scripts/minimap-rendering.test.mjs scripts/edge-raster-worker.test.mjs scripts/text-layout.test.mjs scripts/incremental-text-layout.test.mjs scripts/incremental-text-render-wiring.test.mjs scripts/chunked-render-scheduler.test.mjs scripts/canvas-context-gate.test.mjs scripts/minimap-canvas-state-exceptions.test.mjs scripts/document-indexes.test.mjs scripts/editor-performance.test.mjs scripts/history-patches.test.mjs scripts/runtime-data.test.mjs scripts/runtime-update-pipeline.test.mjs scripts/runtime-gateway.test.mjs scripts/runtime-value-format.test.mjs scripts/shared-visual-clock.test.mjs scripts/preview-handoff.test.mjs scripts/preview-frame-freshness.test.mjs scripts/large-selection-transform.test.mjs scripts/preview-bitmap-budget.test.mjs scripts/interaction-commit-barrier.test.mjs scripts/async-operation-barrier.test.mjs scripts/project-preparation.test.mjs scripts/project-json-parser.test.mjs scripts/project-runtime-preparation.test.mjs scripts/workspace-session-store.test.mjs scripts/workspace-session-cache.test.mjs scripts/cancellable-idle-task.test.mjs scripts/app-state-boundaries.test.mjs",
+    "generate:stress": "node scripts/generate-stress-project.mjs"
+  },
+  "dependencies": {
+    "lucide-vue-next": "1.0.0",
+    "vue": "3.5.40"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "6.0.8",
+    "vite": "8.1.5"
+  }
+}

@@ -1,0 +1,149 @@
+<style>
+  .v3 { color:#25343e; }
+  .v3 * { box-sizing:border-box; }
+  .v3 h2 { margin-bottom:6px; }
+  .v3 .lead { margin:0 0 18px; color:#687983; }
+  .compare { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+  .case-title { margin:0 0 8px; font-size:13px; color:#50616c; }
+  .app { border:1px solid #cad3d9; border-radius:6px; overflow:hidden; background:#eef1f3; box-shadow:0 9px 24px rgba(35,50,60,.08); }
+  .top { height:48px; display:flex; align-items:center; gap:7px; padding:0 11px; background:#fff; border-bottom:1px solid #dce2e6; }
+  .brand { min-width:140px; display:flex; align-items:center; gap:8px; font-weight:700; font-size:12px; }
+  .diamond { width:20px; height:20px; border:3px solid #178e7a; transform:rotate(45deg); }
+  .tool { padding:6px 7px; border:1px solid #e0e5e8; border-radius:4px; background:#f7f8f9; color:#61717c; font-size:10px; }
+  .spacer { flex:1; }
+  .body { display:grid; grid-template-columns:126px minmax(220px,1fr) 235px; min-height:425px; }
+  .left,.right { background:#fff; }
+  .left { border-right:1px solid #dce2e6; }
+  .right { border-left:1px solid #dce2e6; }
+  .tabs { height:38px; display:grid; grid-template-columns:repeat(3,1fr); border-bottom:1px solid #e3e8eb; }
+  .tabs.four { grid-template-columns:repeat(4,1fr); }
+  .tab { display:grid; place-items:center; color:#71818b; font-size:10px; border-bottom:2px solid transparent; }
+  .tab.on { color:#0e7b69; border-bottom-color:#178f7b; font-weight:700; }
+  .library { display:grid; grid-template-columns:1fr 1fr; gap:6px; padding:9px; }
+  .shape { height:48px; display:grid; place-items:center; border:1px solid #dce3e7; border-radius:4px; color:#64747e; font-size:9px; }
+  .canvas { position:relative; background-color:#f0f2f3; background-image:linear-gradient(#dce1e4 1px,transparent 1px),linear-gradient(90deg,#dce1e4 1px,transparent 1px); background-size:20px 20px; }
+  .paper { position:absolute; inset:18px; background:#fff; border:1px solid #cbd3d8; }
+  .empty-tip { position:absolute; left:50%; top:46%; transform:translate(-50%,-50%); color:#9aa6ad; font-size:11px; }
+  .fan { position:absolute; left:60px; top:54px; width:95px; height:95px; border:2px solid #198c81; outline:2px solid #178eea; outline-offset:5px; border-radius:50%; background:#eaf7f5; display:grid; place-items:center; }
+  .rotor { width:48px; height:48px; border:8px dotted #178d82; border-radius:50%; display:grid; place-items:center; color:#176d66; font-size:9px; text-align:center; }
+  .pipe { position:absolute; left:180px; top:178px; width:160px; height:28px; border:2px solid #407f9e; background:repeating-linear-gradient(90deg,#deedf3 0 18px,#76b5cf 18px 32px); color:#28647d; font-size:9px; text-align:center; line-height:24px; }
+  .panel { padding:10px; }
+  .panel h3 { margin:0 0 9px; font-size:13px; }
+  .status { display:flex; align-items:center; gap:6px; padding:8px; background:#eef8f5; color:#116f5f; border-left:3px solid #19a675; font-size:10px; }
+  .dot { width:7px; height:7px; border-radius:50%; background:#19a675; display:inline-block; }
+  .source { display:grid; grid-template-columns:auto 1fr auto; gap:7px; align-items:center; padding:9px 2px; border-bottom:1px solid #e8ecef; font-size:10px; }
+  .source b { font-size:10px; }
+  .source small { display:block; color:#84919a; margin-top:2px; }
+  .manage { width:100%; margin-top:10px; padding:7px; border:1px solid #9bcfc5; border-radius:4px; background:#edf8f5; color:#0c7867; font-size:10px; }
+  .hint { margin-top:11px; padding:9px; background:#f4f6f7; color:#72818b; line-height:1.5; font-size:10px; }
+  .selected { display:flex; align-items:center; gap:8px; padding:8px; border:1px solid #d5dde2; border-radius:4px; background:#f8fafb; font-size:10px; }
+  .fan-mini { width:32px; height:32px; border:2px solid #198c81; border-radius:50%; display:grid; place-items:center; color:#16746b; }
+  .bind-head { display:grid; grid-template-columns:70px 1fr; gap:6px; padding:12px 0 5px; color:#83909a; font-size:9px; }
+  .binding { display:grid; grid-template-columns:70px 15px 1fr; gap:5px; align-items:center; padding:7px 0; border-bottom:1px solid #edf0f2; font-size:9px; }
+  .target { color:#314651; font-weight:700; }
+  .arrow { color:#168b78; text-align:center; }
+  .point { padding:6px; border:1px solid #d4dde2; border-radius:3px; background:#fff; color:#536671; }
+  .point em { display:block; color:#16806e; font-style:normal; margin-top:2px; }
+  .add { margin-top:9px; padding:7px; width:100%; border:1px dashed #70b9ac; border-radius:4px; color:#0f7968; background:#fff; font-size:10px; }
+  .live { margin-top:8px; padding:7px; background:#f1f7f5; color:#196b5d; font-size:9px; }
+  .footer { padding:8px 11px; border-top:1px solid #dce2e6; background:#fff; color:#667781; font-size:9px; }
+  .footer b { color:#127361; }
+
+  .manager { margin-top:20px; border:1px solid #cad3d9; border-radius:6px; overflow:hidden; background:#fff; box-shadow:0 9px 24px rgba(35,50,60,.07); }
+  .manager-head { height:52px; display:flex; align-items:center; gap:10px; padding:0 15px; border-bottom:1px solid #dce2e6; }
+  .manager-head b { font-size:15px; }
+  .manager-head small { color:#75858f; }
+  .manager-head button { margin-left:auto; padding:7px 10px; border:1px solid #168b77; border-radius:4px; background:#168b77; color:#fff; }
+  .manager-body { display:grid; grid-template-columns:220px 1fr; min-height:310px; }
+  .source-list { border-right:1px solid #dce2e6; background:#fafbfb; }
+  .source-list h3 { padding:12px; margin:0; font-size:12px; }
+  .source-card { display:grid; grid-template-columns:34px 1fr auto; gap:8px; align-items:center; padding:11px 12px; border-top:1px solid #e8ecef; font-size:10px; }
+  .source-card.on { border-left:3px solid #178f7b; background:#eef8f5; }
+  .type { width:34px; height:34px; display:grid; place-items:center; border:1px solid #cfd9de; border-radius:4px; background:#fff; font-weight:700; color:#455a66; }
+  .source-card small { display:block; margin-top:3px; color:#7b8992; }
+  .details { padding:15px; }
+  .details h3 { margin:0 0 12px; font-size:13px; }
+  .detail-grid { display:grid; grid-template-columns:1fr 1fr; gap:9px 14px; }
+  .field { font-size:10px; }
+  .field span { display:block; margin-bottom:4px; color:#667781; }
+  .input { min-height:32px; padding:8px; border:1px solid #ced8de; border-radius:4px; background:#fff; color:#344a56; }
+  .full { grid-column:1/-1; }
+  .preview { margin-top:11px; padding:9px; border-left:3px solid #19a675; background:#eff8f5; color:#196d5e; font-size:10px; }
+  .protocol-note { margin-top:10px; color:#75858f; font-size:10px; }
+  .examples { display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-top:20px; }
+  .example { border:1px solid #d4dce1; border-radius:6px; overflow:hidden; background:#fff; }
+  .example h3 { margin:0; padding:11px 13px; border-bottom:1px solid #e3e8eb; font-size:12px; }
+  .example-body { padding:11px 13px; }
+  .map { display:grid; grid-template-columns:100px 18px 1fr; gap:7px; align-items:center; padding:7px 0; border-bottom:1px solid #edf0f2; font-size:10px; }
+  .map b { color:#314752; }
+  .map span:last-child { color:#56707b; }
+  .logic { margin-top:18px; padding:13px; border:1px solid #d7dfe4; border-radius:6px; background:#f7f9fa; }
+  .logic strong { display:block; margin-bottom:8px; }
+  .flow { display:flex; align-items:center; justify-content:center; gap:10px; flex-wrap:wrap; }
+  .box { padding:9px 11px; border:1px solid #cdd7dc; border-radius:4px; background:#fff; font-size:10px; text-align:center; }
+  .go { color:#168b78; font-size:18px; }
+  .decision { margin-top:22px; }
+  @media(max-width:1050px){.compare,.examples{grid-template-columns:1fr}.body{grid-template-columns:116px 1fr 230px}.manager-body{grid-template-columns:180px 1fr}}
+</style>
+
+<div class="v3">
+  <h2>方案三：统一管理数据源，组件在“通信”中使用数据</h2>
+  <p class="lead">不新增左侧分类，也不新增顶部按钮。右侧“通信”根据是否选中组件自动切换内容。</p>
+
+  <div class="compare">
+    <section>
+      <h3 class="case-title">状态 A：未选择组件，查看当前图纸的数据源</h3>
+      <div class="app">
+        <div class="top"><div class="brand"><i class="diamond"></i>苔岑2D绘图</div><span class="tool">选择</span><span class="tool">铅笔</span><span class="tool">连线</span><span class="spacer"></span><span class="tool">预览</span></div>
+        <div class="body">
+          <aside class="left"><div class="tabs"><span class="tab">图纸</span><span class="tab on">组件</span><span class="tab">我的</span></div><div class="library"><div class="shape">矩形</div><div class="shape">文本</div><div class="shape">风机</div><div class="shape">表格</div><div class="shape">仪表</div><div class="shape">进度</div></div></aside>
+          <main class="canvas"><div class="paper"><span class="empty-tip">点击组件后配置该组件的数据绑定</span><div class="pipe">流向 →　流向 →</div></div></main>
+          <aside class="right"><div class="tabs four"><span class="tab">属性</span><span class="tab on">通信</span><span class="tab">布局</span><span class="tab">结构</span></div><div class="panel">
+            <h3>当前图纸数据源</h3><div class="status"><i class="dot"></i>3 个数据源连接正常</div>
+            <div class="source"><i class="dot"></i><div><b>车间设备</b><small>MQTT · 286 个点位</small></div><b>正常</b></div>
+            <div class="source"><i class="dot"></i><div><b>生产报表</b><small>MySQL · 500ms 查询</small></div><b>正常</b></div>
+            <div class="source"><i class="dot"></i><div><b>实时告警</b><small>Redis Stream</small></div><b>正常</b></div>
+            <button class="manage">管理全部数据源</button><div class="hint">数据源统一配置一次。组件不会重复保存连接地址、账号、Topic 或 SQL。</div>
+          </div></aside>
+        </div><div class="footer">未选中组件 · “通信”显示图纸级数据连接状态</div>
+      </div>
+    </section>
+
+    <section>
+      <h3 class="case-title">状态 B：选中组件，“通信”显示该组件的绑定</h3>
+      <div class="app">
+        <div class="top"><div class="brand"><i class="diamond"></i>苔岑2D绘图</div><span class="tool">选择</span><span class="tool">铅笔</span><span class="tool">连线</span><span class="spacer"></span><span class="tool">预览</span></div>
+        <div class="body">
+          <aside class="left"><div class="tabs"><span class="tab">图纸</span><span class="tab on">组件</span><span class="tab">我的</span></div><div class="library"><div class="shape">矩形</div><div class="shape">文本</div><div class="shape">风机</div><div class="shape">表格</div><div class="shape">仪表</div><div class="shape">进度</div></div></aside>
+          <main class="canvas"><div class="paper"><div class="fan"><div class="rotor">1480<br>rpm</div></div><div class="pipe">流向 →　流向 →</div></div></main>
+          <aside class="right"><div class="tabs four"><span class="tab">属性</span><span class="tab on">通信</span><span class="tab">布局</span><span class="tab">结构</span></div><div class="panel">
+            <div class="selected"><span class="fan-mini">◉</span><div><b>风机 01</b><br><small>已绑定 4 项数据</small></div></div>
+            <div class="bind-head"><span>目标属性</span><span>数据源 / 数据点</span></div>
+            <div class="binding"><span class="target">运行状态</span><span class="arrow">←</span><span class="point">MQTT · motor.running<em>当前 true</em></span></div>
+            <div class="binding"><span class="target">旋转速度</span><span class="arrow">←</span><span class="point">MQTT · motor.rpm<em>当前 1480</em></span></div>
+            <div class="binding"><span class="target">状态颜色</span><span class="arrow">←</span><span class="point">Redis · motor.alarm<em>当前 warning</em></span></div>
+            <div class="binding"><span class="target">维护文字</span><span class="arrow">←</span><span class="point">SQL · maintenance.next<em>2026-08-01</em></span></div>
+            <button class="add">＋ 添加数据绑定</button><div class="live"><i class="dot"></i>实时预览中 · 只读模式</div>
+          </div></aside>
+        </div><div class="footer">已选中“风机 01” · 同一个组件可同时使用 <b>MQTT、Redis 和 SQL</b></div>
+      </div>
+    </section>
+  </div>
+
+  <section class="manager">
+    <div class="manager-head"><b>数据源管理</b><small>从“通信 → 管理全部数据源”进入，统一配置一次</small><button>＋ 添加数据源</button></div>
+    <div class="manager-body">
+      <aside class="source-list"><h3>全部数据源</h3><div class="source-card on"><span class="type">MQ</span><div><b>车间设备</b><small>MQTT · 正常</small></div><i class="dot"></i></div><div class="source-card"><span class="type">SQL</span><div><b>生产报表</b><small>MySQL · 正常</small></div><i class="dot"></i></div><div class="source-card"><span class="type">RD</span><div><b>实时告警</b><small>Redis Stream · 正常</small></div><i class="dot"></i></div><div class="source-card"><span class="type">HT</span><div><b>能源接口</b><small>HTTP · 正常</small></div><i class="dot"></i></div></aside>
+      <main class="details"><h3>车间设备 · MQTT</h3><div class="detail-grid"><div class="field"><span>连接地址</span><div class="input">mqtt.example.local:1883</div></div><div class="field"><span>连接状态</span><div class="input">已连接 · 延迟 18ms</div></div><div class="field full"><span>订阅主题</span><div class="input">factory/line1/+/status</div></div><div class="field"><span>消息格式</span><div class="input">JSON · 自动识别字段</div></div><div class="field"><span>服务质量</span><div class="input">QoS 1</div></div></div><div class="preview"><i class="dot"></i>测试成功：已识别 temperature、running、rpm 等 286 个数据点</div><div class="protocol-note">切换到 HTTP、SQL、Redis 或 Socket 时，只替换中间的专属配置字段；数据源列表可以同时保持连接。</div></main>
+    </div>
+  </section>
+
+  <div class="examples">
+    <section class="example"><h3>风机组件自动提供这些目标属性</h3><div class="example-body"><div class="map"><b>运行状态</b><span class="arrow">←</span><span>MQTT / running</span></div><div class="map"><b>旋转速度</b><span class="arrow">←</span><span>MQTT / rpm</span></div><div class="map"><b>状态颜色</b><span class="arrow">←</span><span>Redis / alarm</span></div><div class="map"><b>显示文字</b><span class="arrow">←</span><span>SQL / maintenanceTime</span></div></div></section>
+    <section class="example"><h3>表格组件自动提供不同目标属性</h3><div class="example-body"><div class="map"><b>快照覆盖</b><span class="arrow">←</span><span>MySQL / alarmSnapshot</span></div><div class="map"><b>追加新行</b><span class="arrow">←</span><span>MQTT / alarmStream</span></div><div class="map"><b>行状态颜色</b><span class="arrow">←</span><span>Redis / alarmLevel</span></div><div class="map"><b>标题文字</b><span class="arrow">←</span><span>HTTP / reportTitle</span></div></div></section>
+  </div>
+
+  <section class="logic"><strong>最终关系</strong><div class="flow"><span class="box">数据源统一配置<br>连接、认证、测试</span><span class="go">→</span><span class="box">生成统一数据点<br>与协议类型解耦</span><span class="go">→</span><span class="box">选中组件<br>系统列出目标属性</span><span class="go">→</span><span class="box">建立多条绑定<br>实时预览</span></div></section>
+
+  <div class="decision"><h3>这版是否符合“统一配置、组件分别使用”的思路？</h3><div class="options"><div class="option" data-choice="v3-correct" onclick="toggleSelect(this)"><div class="letter">A</div><div class="content"><h3>逻辑正确</h3><p>继续细化通信面板里的添加绑定流程。</p></div></div><div class="option" data-choice="v3-manager" onclick="toggleSelect(this)"><div class="letter">B</div><div class="content"><h3>数据源管理需调整</h3><p>统一管理方向正确，但配置页面仍需要修改。</p></div></div><div class="option" data-choice="v3-binding" onclick="toggleSelect(this)"><div class="letter">C</div><div class="content"><h3>组件绑定需调整</h3><p>选中组件后的目标属性或数据选择仍不够清楚。</p></div></div></div></div>
+</div>

@@ -1,0 +1,219 @@
+<style>
+  .design-board { color: #1f2933; }
+  .design-board * { box-sizing: border-box; }
+  .design-board h2 { margin-bottom: 6px; }
+  .design-board .summary { margin: 0 0 20px; color: #607080; }
+  .app-frame { border: 1px solid #cbd4dc; border-radius: 6px; overflow: hidden; background: #eef1f3; box-shadow: 0 12px 32px rgba(31, 41, 51, .10); }
+  .app-top { height: 54px; display: flex; align-items: center; gap: 12px; padding: 0 14px; background: #fff; border-bottom: 1px solid #dce2e7; }
+  .brand { display: flex; align-items: center; gap: 8px; min-width: 160px; font-weight: 700; }
+  .brand-mark { width: 24px; height: 24px; border: 3px solid #159a84; transform: rotate(45deg); display: inline-block; }
+  .tool-group { display: flex; gap: 4px; color: #4d5e6c; font-size: 12px; }
+  .tool { padding: 6px 8px; border-radius: 4px; background: #f3f5f6; border: 1px solid #e2e7eb; }
+  .tool.active { color: #087d6a; background: #e4f5f1; border-color: #92d1c5; }
+  .top-spacer { flex: 1; }
+  .status-pill { display: inline-flex; align-items: center; gap: 6px; padding: 6px 9px; border-radius: 999px; background: #edf7f3; color: #126c5c; font-size: 12px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: #19a974; display: inline-block; }
+  .app-main { display: grid; grid-template-columns: 205px minmax(440px, 1fr) 278px; min-height: 540px; }
+  .left-panel, .right-panel { background: #fff; }
+  .left-panel { border-right: 1px solid #dce2e7; }
+  .right-panel { border-left: 1px solid #dce2e7; }
+  .panel-tabs { display: grid; grid-template-columns: repeat(4, 1fr); height: 42px; border-bottom: 1px solid #e4e9ed; }
+  .panel-tab { display: grid; place-items: center; font-size: 12px; color: #667684; border-bottom: 2px solid transparent; }
+  .panel-tab.active { color: #0c806d; border-bottom-color: #16a085; font-weight: 600; }
+  .search { margin: 12px; height: 32px; padding: 7px 10px; color: #8a98a3; background: #f5f7f8; border: 1px solid #dfe5e9; border-radius: 4px; font-size: 12px; }
+  .source-head { display: flex; align-items: center; gap: 7px; padding: 9px 13px; font-size: 13px; font-weight: 600; border-top: 1px solid #edf0f2; }
+  .source-head small { margin-left: auto; color: #18a273; }
+  .point { display: grid; grid-template-columns: 1fr auto; gap: 6px; padding: 7px 13px 7px 28px; color: #4f606e; font-size: 12px; }
+  .point:hover { background: #f0f8f6; }
+  .point-value { color: #1c7667; font-variant-numeric: tabular-nums; }
+  .manage-link { margin: 16px 12px; padding: 8px; text-align: center; color: #0d806d; border: 1px solid #afd8d0; border-radius: 4px; font-size: 12px; }
+  .canvas { position: relative; overflow: hidden; min-height: 540px; background-color: #f1f3f4; background-image: linear-gradient(#d9dee2 1px, transparent 1px), linear-gradient(90deg, #d9dee2 1px, transparent 1px); background-size: 24px 24px; }
+  .paper { position: absolute; inset: 28px 32px; background: #fff; border: 1px solid #cfd7dd; box-shadow: 0 3px 9px rgba(31,41,51,.08); }
+  .node { position: absolute; border: 2px solid #647686; background: #f8fafb; color: #26343e; display: grid; place-items: center; font-size: 12px; }
+  .temperature { left: 48px; top: 48px; width: 150px; height: 80px; border-color: #d84a4a; background: #fff1f1; }
+  .temperature strong { font-size: 27px; color: #c93636; }
+  .temperature small { color: #9a3e3e; }
+  .fan { left: 248px; top: 50px; width: 110px; height: 110px; border-radius: 50%; border-color: #31918d; background: #eaf7f5; }
+  .fan-symbol { width: 58px; height: 58px; border: 8px dotted #168c83; border-radius: 50%; display: grid; place-items: center; color: #116d67; font-size: 10px; }
+  .pipe { left: 130px; top: 210px; width: 280px; height: 38px; border-color: #377da0; background: repeating-linear-gradient(90deg, #dceff7 0 22px, #71b6d2 22px 38px); }
+  .table-node { left: 50px; right: 46px; top: 310px; height: 150px; display: block; overflow: hidden; border-color: #70808d; }
+  .table-title { padding: 7px; background: #e9edef; text-align: center; font-weight: 600; }
+  .table-row { display: grid; grid-template-columns: 1.2fr .8fr .8fr; }
+  .table-row span { padding: 6px 8px; border-top: 1px solid #d9e0e4; border-right: 1px solid #d9e0e4; }
+  .table-row.header { background: #f3f5f6; font-weight: 600; }
+  .selection { outline: 2px solid #168eea; outline-offset: 4px; }
+  .binding-badge { position: absolute; top: -12px; right: -12px; background: #168eea; color: #fff; width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; font-size: 11px; }
+  .property-body { padding: 12px; }
+  .property-title { display: flex; align-items: center; gap: 8px; margin: 0 0 10px; font-size: 14px; }
+  .section-row { padding: 10px 0; border-bottom: 1px solid #e9edef; }
+  .section-row.collapsed { display: flex; justify-content: space-between; font-size: 13px; font-weight: 600; }
+  .section-heading { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; font-size: 13px; font-weight: 700; }
+  .section-heading button { border: 0; background: #e7f4f1; color: #0d7b69; padding: 4px 7px; border-radius: 4px; }
+  .field-row { display: grid; grid-template-columns: 74px 1fr; gap: 8px; align-items: center; margin: 8px 0; font-size: 12px; }
+  .mock-select { min-height: 30px; padding: 6px 8px; border: 1px solid #cfd8df; border-radius: 4px; background: #fff; color: #334653; }
+  .live-value { display: flex; align-items: center; gap: 7px; color: #17836f; font-weight: 600; }
+  .rule-line { display: grid; grid-template-columns: 18px 1fr auto; gap: 6px; align-items: center; padding: 8px 0; border-top: 1px solid #eef1f3; font-size: 11px; }
+  .rule-color { width: 15px; height: 15px; border-radius: 3px; background: #e24d4d; }
+  .rule-color.warning { background: #e6a23c; }
+  .rule-color.offline { background: #8a98a3; }
+  .app-footer { height: 34px; display: flex; align-items: center; gap: 18px; padding: 0 14px; background: #fff; border-top: 1px solid #dce2e7; color: #5b6c78; font-size: 11px; }
+  .app-footer b { color: #176f60; }
+  .detail-grid { display: grid; grid-template-columns: 1.05fr .95fr; gap: 16px; margin-top: 20px; }
+  .detail-panel { border: 1px solid #d7dee4; border-radius: 6px; background: #fff; overflow: hidden; }
+  .detail-head { padding: 11px 14px; border-bottom: 1px solid #e4e9ed; font-weight: 700; }
+  .detail-body { padding: 14px; }
+  .mode-switch { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 13px; }
+  .mode { padding: 9px; border: 1px solid #ccd6dd; border-radius: 4px; text-align: center; color: #596b79; }
+  .mode.on { border-color: #54aa9b; color: #0c7867; background: #eef8f6; }
+  .mini-field { display: flex; justify-content: space-between; padding: 7px 0; border-bottom: 1px solid #eef1f3; font-size: 12px; }
+  .mini-field span:last-child { color: #3c5261; font-weight: 600; }
+  .condition { padding: 10px; border-left: 3px solid #d94f4f; background: #fff6f6; font-size: 12px; margin-bottom: 8px; }
+  .condition.warning { border-left-color: #e5a33b; background: #fff9ee; }
+  .condition.offline { border-left-color: #8a98a3; background: #f5f6f7; }
+  .architecture { margin-top: 18px; padding: 14px; border: 1px solid #d7dee4; border-radius: 6px; background: #f8fafb; }
+  .flow { display: grid; grid-template-columns: 1fr 34px 1.15fr 34px 1.15fr 34px 1fr; align-items: center; gap: 6px; }
+  .flow-box { padding: 12px 9px; min-height: 64px; border: 1px solid #cbd5dc; border-radius: 4px; background: #fff; text-align: center; font-size: 12px; }
+  .flow-box strong { display: block; margin-bottom: 4px; }
+  .arrow { text-align: center; color: #168c79; font-size: 22px; }
+  .decision { margin-top: 22px; }
+  @media (max-width: 1000px) {
+    .app-main { grid-template-columns: 165px minmax(340px, 1fr) 245px; }
+    .detail-grid { grid-template-columns: 1fr; }
+    .flow { grid-template-columns: 1fr; }
+    .arrow { transform: rotate(90deg); }
+  }
+</style>
+
+<div class="design-board">
+  <h2>苔岑2D绘图：实时数据绑定 UI 草图</h2>
+  <p class="summary">目标容量：10,000 个绑定组件、20,000 条入口更新/秒、50 个查看者。界面默认保持简单，高级能力按需展开。</p>
+
+  <div class="app-frame">
+    <div class="app-top">
+      <div class="brand"><span class="brand-mark"></span>苔岑2D绘图</div>
+      <div class="tool-group"><span class="tool">选择</span><span class="tool">铅笔</span><span class="tool">连线</span><span class="tool">鹰眼</span></div>
+      <div class="top-spacer"></div>
+      <span class="status-pill"><i class="dot"></i>数据中心 4/4</span>
+      <span class="tool active">实时数据</span>
+      <span class="tool">预览</span>
+    </div>
+
+    <div class="app-main">
+      <aside class="left-panel">
+        <div class="panel-tabs"><span class="panel-tab">图纸</span><span class="panel-tab">组件</span><span class="panel-tab">我的</span><span class="panel-tab active">数据</span></div>
+        <div class="search">搜索数据点...</div>
+        <div class="source-head"><i class="dot"></i>车间 MQTT <small>正常</small></div>
+        <div class="point"><span>motor01.temperature</span><span class="point-value">86.2 ℃</span></div>
+        <div class="point"><span>motor01.running</span><span class="point-value">true</span></div>
+        <div class="point"><span>motor01.rpm</span><span class="point-value">1,480</span></div>
+        <div class="source-head"><i class="dot"></i>生产 SQL <small>500ms</small></div>
+        <div class="point"><span>alarm.current</span><span class="point-value">36 行</span></div>
+        <div class="point"><span>energy.today</span><span class="point-value">8,620</span></div>
+        <div class="source-head"><i class="dot"></i>Redis Stream <small>正常</small></div>
+        <div class="point"><span>events.latest</span><span class="point-value">持续追加</span></div>
+        <div class="manage-link">管理数据源</div>
+      </aside>
+
+      <main class="canvas">
+        <div class="paper">
+          <div class="node temperature selection">
+            <div><strong>86.2</strong> ℃<br><small>温度过高</small></div>
+            <span class="binding-badge">2</span>
+          </div>
+          <div class="node fan"><div class="fan-symbol">1,480<br>rpm</div></div>
+          <div class="node pipe">流向 →　流向 →　流向 →</div>
+          <div class="node table-node">
+            <div class="table-title">实时告警记录</div>
+            <div class="table-row header"><span>时间</span><span>设备</span><span>状态</span></div>
+            <div class="table-row"><span>21:38:12</span><span>电机 01</span><span style="color:#c93636">高温</span></div>
+            <div class="table-row"><span>21:38:08</span><span>阀门 03</span><span style="color:#ca7b10">偏低</span></div>
+            <div class="table-row"><span>21:37:56</span><span>泵站 02</span><span style="color:#16836f">恢复</span></div>
+          </div>
+        </div>
+      </main>
+
+      <aside class="right-panel">
+        <div class="panel-tabs"><span class="panel-tab active">属性</span><span class="panel-tab">通信</span><span class="panel-tab">布局</span><span class="panel-tab">结构</span></div>
+        <div class="property-body">
+          <h3 class="property-title"><i class="dot"></i>温度显示组件</h3>
+          <div class="section-row collapsed"><span>基础属性</span><span>›</span></div>
+          <div class="section-row collapsed"><span>外观与样式</span><span>›</span></div>
+          <div class="section-row">
+            <div class="section-heading"><span>数据绑定（2）</span><button>＋ 添加</button></div>
+            <div class="field-row"><span>主显示值</span><div class="mock-select">motor01.temperature</div></div>
+            <div class="field-row"><span>当前值</span><div class="live-value"><i class="dot"></i>86.2 ℃</div></div>
+            <div class="field-row"><span>格式</span><div class="mock-select">1 位小数 · ℃</div></div>
+            <div class="field-row"><span>刷新策略</span><div class="mock-select">变化时 · 最快 200ms</div></div>
+            <div class="field-row"><span>异常数据</span><div class="mock-select">保留最后值并标记离线</div></div>
+          </div>
+          <div class="section-row">
+            <div class="section-heading"><span>样式规则（3）</span><button>＋ 添加</button></div>
+            <div class="rule-line"><i class="rule-color"></i><span>温度 ≥ 80</span><b>红色 + 闪烁</b></div>
+            <div class="rule-line"><i class="rule-color warning"></i><span>温度 ≥ 60</span><b>黄色</b></div>
+            <div class="rule-line"><i class="rule-color offline"></i><span>数据离线</span><b>灰色</b></div>
+          </div>
+          <div class="section-row collapsed"><span>高级设置</span><span>›</span></div>
+        </div>
+      </aside>
+    </div>
+
+    <div class="app-footer"><span><i class="dot"></i> 数据正常</span><span>订阅 <b>6,000</b> 点位</span><span>入口 <b>18,420</b> 条/秒</span><span>合并后 <b>3,180</b> 条/秒</span><span>可见更新 <b>486</b> 个</span><span style="margin-left:auto">运行监控</span></div>
+  </div>
+
+  <div class="detail-grid">
+    <section class="detail-panel">
+      <div class="detail-head">表格数据：同时支持两种模式</div>
+      <div class="detail-body">
+        <div class="mode-switch"><div class="mode on"><b>快照覆盖</b><br><small>SQL 查询结果整批替换</small></div><div class="mode on"><b>流式追加</b><br><small>MQTT / Redis / Socket 新增行</small></div></div>
+        <div class="mini-field"><span>数据点</span><span>alarm.current / events.latest</span></div>
+        <div class="mini-field"><span>行唯一键</span><span>eventId</span></div>
+        <div class="mini-field"><span>最大保留行</span><span>1,000 行，超出删除最旧行</span></div>
+        <div class="mini-field"><span>排序方式</span><span>时间倒序</span></div>
+        <div class="mini-field"><span>高频保护</span><span>200ms 批量入表 + 虚拟滚动</span></div>
+      </div>
+    </section>
+
+    <section class="detail-panel">
+      <div class="detail-head">简化规则：默认只显示一句“当…则…”</div>
+      <div class="detail-body">
+        <div class="condition"><b>高温</b>　当 温度 ≥ 80　→　红色、闪烁</div>
+        <div class="condition warning"><b>偏高</b>　当 温度 ≥ 60　→　黄色</div>
+        <div class="condition offline"><b>离线</b>　当 数据超过 10 秒未更新　→　灰色</div>
+        <div class="mini-field"><span>多点判断</span><span>按“添加条件”后才出现</span></div>
+        <div class="mini-field"><span>计算公式</span><span>放入折叠的“高级设置”</span></div>
+        <div class="mini-field"><span>防抖与回差</span><span>使用系统默认值，可选展开</span></div>
+      </div>
+    </section>
+  </div>
+
+  <section class="architecture">
+    <div class="detail-head" style="padding:0 0 12px;border:0">数据流：原始消息很多，真正绘制的更新必须受控</div>
+    <div class="flow">
+      <div class="flow-box"><strong>数据源</strong>MySQL / SQL Server<br>Redis / MQTT / Socket</div>
+      <div class="arrow">→</div>
+      <div class="flow-box"><strong>后台统一数据网关</strong>连接池、订阅复用<br>去重、采样、最新值缓存</div>
+      <div class="arrow">→</div>
+      <div class="flow-box"><strong>浏览器单连接</strong>快照 + 变化增量<br>按 key 合并、每帧限时</div>
+      <div class="arrow">→</div>
+      <div class="flow-box"><strong>可见组件</strong>只更新受影响节点<br>画布外只保存最新值</div>
+    </div>
+  </section>
+
+  <div class="decision">
+    <h3>这个层次是否足够简洁？</h3>
+    <div class="options">
+      <div class="option" data-choice="recommended" onclick="toggleSelect(this)">
+        <div class="letter">A</div>
+        <div class="content"><h3>保持两层结构（推荐）</h3><p>属性栏只放日常绑定和简单规则，数据源连接放独立数据中心。</p></div>
+      </div>
+      <div class="option" data-choice="sidebar-only" onclick="toggleSelect(this)">
+        <div class="letter">B</div>
+        <div class="content"><h3>全部放右侧属性栏</h3><p>入口更少，但数据库、MQTT 和表格配置会让属性栏很长。</p></div>
+      </div>
+      <div class="option" data-choice="simpler" onclick="toggleSelect(this)">
+        <div class="letter">C</div>
+        <div class="content"><h3>进一步精简</h3><p>一期只显示数据点、格式和三条样式规则，其他设置使用系统默认值。</p></div>
+      </div>
+    </div>
+  </div>
+</div>

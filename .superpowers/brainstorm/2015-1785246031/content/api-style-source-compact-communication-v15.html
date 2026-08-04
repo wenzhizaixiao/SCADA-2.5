@@ -1,0 +1,354 @@
+<style>
+  .v14 {
+    --brand: #13a68e;
+    --brand-dark: #087868;
+    --brand-soft: #edf8f5;
+    --ink: #263740;
+    --muted: #71818a;
+    --line: #dce4e7;
+    --line-soft: #edf1f2;
+    --soft: #f7f9fa;
+    --warn: #d99023;
+    color: var(--ink);
+    font-family: "Microsoft YaHei", "PingFang SC", Arial, sans-serif;
+  }
+  .v14, .v14 * { box-sizing: border-box; }
+  .v14 h2, .v14 h3, .v14 h4, .v14 p { letter-spacing: 0; }
+  .v14 h2 { margin: 0 0 5px; font-size: 20px; }
+  .v14 .lead { margin: 0 0 15px; color: var(--muted); font-size: 12px; }
+  .v14 button, .v14 input { font-family: inherit; letter-spacing: 0; }
+  .icon { width: 17px; height: 17px; stroke-width: 1.8; }
+  .icon-sm { width: 14px; height: 14px; stroke-width: 1.8; }
+  .hidden { display: none !important; }
+  .design-notes { display: grid; grid-template-columns: repeat(3, 1fr); overflow: hidden; border: 1px solid var(--line); border-radius: 5px; background: var(--line); gap: 1px; }
+  .design-note { padding: 10px 12px; background: #fff; }
+  .design-note b { display: block; margin-bottom: 3px; font-size: 10px; }
+  .design-note span { display: block; color: var(--muted); font-size: 8px; line-height: 1.5; }
+  .section-head { display: flex; align-items: end; justify-content: space-between; gap: 18px; margin: 20px 0 8px; }
+  .section-head h3 { margin: 0; font-size: 15px; }
+  .section-head p { margin: 0; color: var(--muted); font-size: 9px; }
+
+  .source-app { overflow: hidden; border: 1px solid #cad5da; border-radius: 5px; background: #fff; box-shadow: 0 9px 24px rgba(34,52,62,.07); }
+  .source-header { display: flex; align-items: center; height: 54px; padding: 0 13px; border-bottom: 1px solid var(--line); }
+  .source-back, .plain-icon { display: grid; place-items: center; width: 29px; height: 29px; border: 1px solid var(--line); border-radius: 3px; background: #fff; color: #62747d; }
+  .source-title { margin-left: 9px; }
+  .source-title b { display: block; font-size: 13px; }
+  .source-title span { display: block; margin-top: 3px; color: var(--muted); font-size: 7px; }
+  .source-status { display: flex; align-items: center; gap: 14px; margin-left: auto; color: #657780; font-size: 8px; }
+  .source-status strong { color: var(--brand-dark); }
+  .new-source { display: flex; align-items: center; gap: 5px; height: 30px; margin-left: 14px; padding: 0 10px; border: 1px solid var(--brand); border-radius: 3px; background: var(--brand); color: #fff; font-size: 8px; }
+  .source-workbench { display: grid; grid-template-columns: 205px minmax(0, 1fr); height: 535px; }
+  .source-sidebar { min-width: 0; border-right: 1px solid var(--line); background: #fafbfb; }
+  .source-sidebar-head { display: flex; align-items: center; gap: 5px; height: 42px; padding: 7px 8px; border-bottom: 1px solid var(--line); }
+  .source-search { display: flex; align-items: center; gap: 5px; min-width: 0; flex: 1; height: 27px; padding: 0 7px; border: 1px solid var(--line); border-radius: 3px; background: #fff; color: #8a979d; font-size: 7px; }
+  .source-sidebar-label { display: flex; align-items: center; justify-content: space-between; padding: 9px 10px 5px; color: #697b84; font-size: 7px; font-weight: 700; }
+  .source-item { display: grid; grid-template-columns: 35px minmax(0,1fr) 8px; align-items: center; width: 100%; min-height: 52px; padding: 5px 9px; border: 0; border-left: 3px solid transparent; border-bottom: 1px solid var(--line-soft); background: transparent; color: var(--ink); cursor: pointer; text-align: left; }
+  .source-item:hover { background: #f1f6f5; }
+  .source-item.active { border-left-color: var(--brand); background: var(--brand-soft); }
+  .protocol-icon { display: grid; place-items: center; width: 28px; height: 28px; border: 1px solid #ccd8dc; border-radius: 3px; background: #fff; color: #526974; font-size: 6px; font-weight: 800; }
+  .source-item b { display: block; overflow: hidden; font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
+  .source-item small { display: block; overflow: hidden; margin-top: 3px; color: var(--muted); font-size: 6px; text-overflow: ellipsis; white-space: nowrap; }
+  .status-dot { width: 7px; height: 7px; border-radius: 50%; background: #20a780; }
+  .status-dot.warn { background: var(--warn); }
+
+  .source-center { min-width: 0; background: #fff; }
+  .source-selected { display: flex; align-items: center; height: 55px; padding: 0 13px; border-bottom: 1px solid var(--line); }
+  .selected-protocol { display: grid; place-items: center; width: 34px; height: 28px; margin-right: 8px; border: 1px solid #9ccdc4; border-radius: 3px; background: var(--brand-soft); color: var(--brand-dark); font-size: 7px; font-weight: 800; }
+  .selected-copy b { display: block; font-size: 11px; }
+  .selected-copy span { display: block; margin-top: 3px; color: var(--muted); font-size: 7px; }
+  .selected-health { display: flex; align-items: center; gap: 5px; margin-left: auto; color: #168264; font-size: 7px; }
+  .selected-actions { display: flex; gap: 6px; margin-left: 12px; }
+  .source-more { display: grid; place-items: center; width: 29px; height: 29px; border: 1px solid #cbd6db; border-radius: 3px; background: #fff; color: #647680; }
+  .source-tabs { display: flex; height: 37px; padding: 0 12px; border-bottom: 1px solid var(--line); }
+  .source-tab { position: relative; min-width: 78px; border: 0; background: #fff; color: #687982; cursor: pointer; font-size: 8px; }
+  .source-tab.active { color: #263b44; font-weight: 700; }
+  .source-tab.active::after { content: ""; position: absolute; left: 12px; right: 12px; bottom: -1px; height: 2px; background: var(--brand); }
+  .source-detail { height: calc(100% - 92px); overflow: auto; }
+  .config-form { padding: 12px 14px 9px; }
+  .config-section-title { margin: 0 0 8px; font-size: 9px; }
+  .config-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 10px; }
+  .config-field.full { grid-column: 1 / -1; }
+  .config-field label { display: block; margin-bottom: 4px; color: #62747d; font-size: 7px; }
+  .config-value { display: flex; align-items: center; justify-content: space-between; min-height: 31px; padding: 6px 8px; border: 1px solid #ced9de; border-radius: 3px; background: #fff; color: #354b56; font-size: 8px; }
+  .config-value.code { font-family: Consolas, monospace; }
+  .config-value.multiline { min-height: 47px; align-items: flex-start; white-space: pre-line; line-height: 1.5; }
+  .advanced-toggle { display: flex; align-items: center; width: 100%; height: 33px; margin-top: 9px; padding: 0 9px; border: 1px solid var(--line); border-radius: 3px; background: var(--soft); color: #60737d; cursor: pointer; font-size: 8px; text-align: left; }
+  .advanced-toggle span { margin-left: auto; color: var(--muted); font-size: 7px; }
+  .advanced-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 8px; border: 1px solid var(--line); border-top: 0; }
+  .config-actions { display: flex; justify-content: flex-end; gap: 6px; margin-top: 11px; }
+  .secondary, .primary { min-height: 29px; padding: 0 10px; border: 1px solid #cbd6db; border-radius: 3px; background: #fff; color: #526772; font-size: 8px; }
+  .primary { border-color: var(--brand); background: var(--brand); color: #fff; }
+  .test-strip { display: flex; align-items: center; gap: 6px; min-height: 34px; margin: 0 14px 10px; padding: 0 9px; border-left: 3px solid var(--brand); background: var(--brand-soft); color: #527069; font-size: 7px; }
+  .test-strip strong { color: #168264; }
+  .test-strip span:last-child { margin-left: auto; color: var(--muted); }
+  .response-panel { margin: 0 14px 12px; overflow: hidden; border: 1px solid var(--line); border-radius: 3px; }
+  .response-head { display: flex; align-items: center; height: 31px; padding: 0 8px; border-bottom: 1px solid var(--line); background: var(--soft); }
+  .response-head b { font-size: 8px; }
+  .response-head span { margin-left: 7px; color: var(--muted); font-size: 6px; }
+  .response-head button { margin-left: auto; border: 0; background: transparent; color: var(--brand-dark); font-size: 7px; }
+  .response-body { display: grid; grid-template-columns: minmax(0, 1fr) 235px; min-height: 95px; }
+  .response-raw { padding: 8px; background: #27343c; color: #dfece9; font: 7px/1.55 Consolas, monospace; white-space: pre-wrap; }
+  .response-points { border-left: 1px solid var(--line); }
+
+  .debug-panel { min-width: 0; border-left: 1px solid var(--line); background: #fafbfb; }
+  .debug-head { display: flex; align-items: center; height: 43px; padding: 0 11px; border-bottom: 1px solid var(--line); background: #fff; }
+  .debug-head b { font-size: 9px; }
+  .debug-head span { margin-left: auto; color: var(--muted); font-size: 6px; }
+  .debug-body { height: calc(100% - 43px); overflow: auto; padding: 10px; }
+  .health-line { display: flex; align-items: center; gap: 6px; padding-bottom: 9px; border-bottom: 1px solid var(--line); font-size: 8px; }
+  .health-line strong { color: #168264; }
+  .health-line span:last-child { margin-left: auto; color: var(--muted); font-size: 6px; }
+  .debug-label { display: flex; justify-content: space-between; margin: 11px 0 5px; color: #647680; font-size: 7px; }
+  .raw-sample { min-height: 82px; padding: 8px; border-radius: 3px; background: #27343c; color: #dfece9; font: 7px/1.55 Consolas, monospace; white-space: pre-wrap; }
+  .point-list { overflow: hidden; border: 1px solid var(--line); border-radius: 3px; background: #fff; }
+  .point-row { display: grid; grid-template-columns: minmax(0,1fr) 55px; min-height: 30px; align-items: center; padding: 0 7px; border-top: 1px solid var(--line-soft); font-size: 7px; }
+  .point-row:first-child { border-top: 0; background: var(--soft); color: var(--muted); }
+  .point-row b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .point-row span:last-child { text-align: right; }
+  .table-toolbar { display: flex; align-items: center; gap: 6px; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+  .table-search { min-width: 0; flex: 1; height: 28px; padding: 7px; border: 1px solid var(--line); border-radius: 3px; color: var(--muted); font-size: 7px; }
+  .data-table { margin: 0 12px; overflow: hidden; border: 1px solid var(--line); border-radius: 3px; }
+  .data-row { display: grid; grid-template-columns: minmax(120px,1fr) 70px 58px 70px; align-items: center; min-height: 34px; padding: 0 8px; border-top: 1px solid var(--line-soft); font-size: 7px; }
+  .data-row:first-child { border-top: 0; background: var(--soft); color: var(--muted); }
+  .run-log { display: grid; grid-template-columns: 65px 58px 1fr; min-height: 38px; align-items: center; margin: 0 12px; border-bottom: 1px solid var(--line-soft); font-size: 7px; }
+  .run-log .ok { color: #168264; }
+  .metric-grid { display: grid; grid-template-columns: 1fr 1fr; overflow: hidden; border: 1px solid var(--line); border-radius: 3px; background: var(--line); gap: 1px; }
+  .metric { padding: 8px; background: #fff; }
+  .metric span { display: block; color: var(--muted); font-size: 6px; }
+  .metric b { display: block; margin-top: 4px; font-size: 10px; }
+
+  .editor { overflow: hidden; border: 1px solid #cad5da; border-radius: 5px; background: #fff; box-shadow: 0 9px 24px rgba(34,52,62,.07); }
+  .editor-toolbar { display: flex; align-items: stretch; height: 54px; border-bottom: 1px solid var(--line); }
+  .brand { display: flex; align-items: center; gap: 7px; width: 150px; padding: 0 11px; font-size: 10px; font-weight: 700; }
+  .brand-mark { width: 22px; height: 22px; border: 4px solid #1bb49d; transform: rotate(45deg); }
+  .tools { display: flex; }
+  .tool { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; min-width: 48px; border: 0; border-left: 1px solid var(--line-soft); background: #fff; color: #596c76; font-size: 7px; }
+  .tool.active { background: var(--brand-soft); color: var(--brand-dark); }
+  .toolbar-space { flex: 1; }
+  .preview { align-self: center; display: flex; align-items: center; gap: 5px; height: 30px; margin: 0 10px; padding: 0 11px; border: 0; background: #168eea; color: #fff; font-size: 8px; }
+  .editor-body { display: grid; grid-template-columns: 150px minmax(330px,1fr) 255px; height: 565px; }
+  .library { border-right: 1px solid var(--line); }
+  .library-tabs { display: grid; grid-template-columns: repeat(3,1fr); height: 40px; border-bottom: 1px solid var(--line); }
+  .library-tabs span { display: grid; place-items: center; color: #6b7d86; font-size: 8px; }
+  .library-tabs .active { border-bottom: 2px solid var(--brand); color: var(--brand-dark); }
+  .library-search { margin: 8px; padding: 7px; border: 1px solid var(--line); color: #97a3a9; font-size: 7px; }
+  .library-title { padding: 8px 9px; font-size: 8px; font-weight: 700; }
+  .library-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; padding: 0 8px; }
+  .library-item { display: grid; place-items: center; height: 55px; border: 1px solid var(--line-soft); color: #72828b; font-size: 7px; }
+  .canvas { position: relative; overflow: hidden; background-color: #f2f4f5; background-image: linear-gradient(#dfe5e7 1px,transparent 1px),linear-gradient(90deg,#dfe5e7 1px,transparent 1px); background-size: 18px 18px; }
+  .fan { position: absolute; left: 34%; top: 33%; display: grid; place-items: center; width: 115px; height: 115px; border: 4px solid #dd9328; border-radius: 50%; background: #fffaf1; }
+  .fan::before, .fan::after, .fan-blade { content: ""; position: absolute; width: 17px; height: 43px; border-radius: 50% 50% 18% 18%; background: #dfb46f; transform-origin: 50% 43px; }
+  .fan::before { transform: translateY(-31px); }
+  .fan::after { transform: rotate(120deg) translateY(-31px); }
+  .fan-blade { transform: rotate(240deg) translateY(-31px); }
+  .fan-hub { z-index: 2; width: 16px; height: 16px; border-radius: 50%; background: #d0881f; }
+  .fan-label { position: absolute; left: calc(34% + 20px); top: calc(33% + 125px); padding: 4px 7px; background: #128e79; color: #fff; font-size: 7px; }
+  .right-panel-demo { min-width: 0; border-left: 1px solid var(--line); background: #fff; }
+  .right-tabs-demo { display: grid; grid-template-columns: repeat(4,1fr); height: 44px; padding: 0 6px; border-bottom: 1px solid var(--line); }
+  .right-tabs-demo button { position: relative; border: 0; background: #fff; color: #657680; cursor: pointer; font-size: 9px; }
+  .right-tabs-demo button.active { color: #253841; font-weight: 700; }
+  .right-tabs-demo button.active::after { content: ""; position: absolute; left: 10px; right: 10px; bottom: -1px; height: 2px; background: var(--brand); }
+  .tab-badge { display: inline-grid; place-items: center; min-width: 14px; height: 14px; border-radius: 7px; background: #e8efef; color: #5e727b; font-size: 6px; }
+  .right-pane { height: calc(100% - 44px); overflow: auto; }
+  .node-head { display: flex; align-items: center; min-height: 58px; padding: 10px 13px; border-bottom: 1px solid var(--line); }
+  .node-icon { display: grid; place-items: center; width: 30px; height: 30px; margin-right: 8px; border: 1px solid #79beb3; border-radius: 50%; background: var(--brand-soft); color: var(--brand-dark); }
+  .node-head b { display: block; font-size: 9px; }
+  .node-head small { display: block; margin-top: 3px; color: var(--muted); font-size: 6px; }
+  .node-health { margin-left: auto; color: #168264; font-size: 6px; }
+  .comm-summary { display: flex; align-items: center; height: 32px; padding: 0 13px; border-bottom: 1px solid var(--line); color: #657780; font-size: 7px; }
+  .comm-summary span:last-child { margin-left: auto; color: #168264; }
+  .comm-section-title { display: flex; justify-content: space-between; padding: 11px 14px 5px; color: #516670; font-size: 8px; font-weight: 700; }
+  .comm-section-title span { color: var(--muted); font-size: 6px; font-weight: 400; }
+  .comm-row { width: 100%; min-height: 59px; padding: 8px 13px; border: 0; border-bottom: 1px solid var(--line-soft); background: #fff; color: var(--ink); cursor: pointer; text-align: left; }
+  .comm-row:hover { background: #f8fbfa; }
+  .comm-line { display: flex; align-items: center; gap: 5px; }
+  .comm-line b { font-size: 8px; }
+  .comm-result { display: flex; align-items: center; gap: 4px; margin-left: auto; color: #334c56; font-size: 7px; font-weight: 700; }
+  .result-swatch { width: 10px; height: 10px; border: 1px solid rgba(0,0,0,.15); border-radius: 2px; }
+  .comm-source { display: grid; grid-template-columns: auto minmax(0,1fr) 12px; align-items: center; gap: 5px; margin-top: 6px; }
+  .source-tag { padding: 2px 5px; border-radius: 2px; background: #eff3f4; color: #647680; font-size: 6px; }
+  .source-tag.point { background: var(--brand-soft); color: var(--brand-dark); }
+  .comm-source span:nth-child(2) { overflow: hidden; color: var(--muted); font-size: 6px; text-overflow: ellipsis; white-space: nowrap; }
+  .comm-source svg { width: 11px; color: #8a979e; }
+  .detail-head { display: flex; align-items: center; height: 45px; padding: 0 10px; border-bottom: 1px solid var(--line); }
+  .detail-back { display: grid; place-items: center; width: 27px; height: 27px; margin-right: 7px; border: 0; background: #fff; color: #60737d; }
+  .detail-head b { font-size: 9px; }
+  .detail-body { padding: 11px 13px; }
+  .detail-label { margin: 0 0 6px; color: #647680; font-size: 7px; }
+  .source-choice { display: flex; align-items: center; width: 100%; min-height: 34px; margin-bottom: 5px; padding: 0 8px; border: 1px solid var(--line); border-radius: 3px; background: #fff; color: #596d77; font-size: 8px; text-align: left; }
+  .source-choice.active { border-color: #79beb3; background: var(--brand-soft); color: var(--brand-dark); font-weight: 700; }
+  .radio-dot { width: 12px; height: 12px; margin-right: 7px; border: 1px solid #9aabb2; border-radius: 50%; background: #fff; }
+  .source-choice.active .radio-dot { border: 4px solid var(--brand); }
+  .point-selector { display: flex; align-items: center; min-height: 34px; margin-bottom: 11px; padding: 0 8px; border: 1px solid #ced9de; border-radius: 3px; font-size: 7px; }
+  .point-selector b { overflow: hidden; flex: 1; text-overflow: ellipsis; white-space: nowrap; }
+  .value-preview { margin-bottom: 10px; overflow: hidden; border: 1px solid var(--line); border-radius: 3px; }
+  .preview-row { display: flex; align-items: center; min-height: 31px; padding: 0 8px; border-top: 1px solid var(--line-soft); font-size: 7px; }
+  .preview-row:first-child { border-top: 0; }
+  .preview-row span { color: var(--muted); }
+  .preview-row b { margin-left: auto; }
+  .detail-advanced { display: flex; align-items: center; width: 100%; height: 34px; padding: 0 8px; border: 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); background: #fff; color: #5f727c; font-size: 8px; text-align: left; }
+  .detail-advanced span { margin-left: auto; color: var(--muted); }
+  .advanced-copy { padding: 8px; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 6px; line-height: 1.6; }
+  .panel-title { margin: 0; padding: 13px 14px 8px; border-top: 1px solid var(--line-soft); font-size: 10px; }
+  .demo-field { display: flex; align-items: center; justify-content: space-between; min-height: 40px; padding: 5px 14px; color: #717b83; font-size: 8px; }
+  .demo-control { width: 125px; min-height: 29px; padding: 7px; border: 1px solid var(--line); color: #3e535e; text-align: right; }
+  .layout-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; padding: 12px; }
+  .layout-actions button { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 5px; height: 62px; border: 1px solid var(--line); background: #fff; color: #60717a; font-size: 7px; }
+  .structure-row { display: flex; align-items: center; gap: 7px; width: 100%; height: 40px; padding: 0 12px; border: 0; border-bottom: 1px solid var(--line-soft); background: #fff; color: #52646d; font-size: 8px; text-align: left; }
+  .structure-row.active { background: var(--brand-soft); color: var(--brand-dark); }
+  .structure-row span { overflow: hidden; flex: 1; text-overflow: ellipsis; white-space: nowrap; }
+
+  .decision { display: flex; align-items: center; gap: 14px; margin-top: 18px; padding: 11px; border: 1px solid #bfd9d3; border-radius: 5px; background: var(--brand-soft); }
+  .decision-copy { min-width: 300px; }
+  .decision-copy b { display: block; font-size: 10px; }
+  .decision-copy span { display: block; margin-top: 3px; color: #55726b; font-size: 7px; }
+  .decision .options { flex: 1; }
+  @media (max-width: 1120px) {
+    .source-workbench { grid-template-columns: 185px minmax(0,1fr); }
+    .editor-body { grid-template-columns: 130px minmax(300px,1fr) 255px; }
+  }
+</style>
+
+<div class="v14">
+  <h2>方案十五：两栏数据源工作台 + 同宽通信面板</h2>
+  <p class="lead">入口保持不变；连接管理集中到一个工作台，组件通信只保留常用信息，详细配置按需进入二级页面。</p>
+  <div class="design-notes">
+    <div class="design-note"><b>入口保持不变</b><span>继续从顶部工具栏“数据源”进入全局配置，不放入组件面板。</span></div>
+    <div class="design-note"><b>数据源变成单工作台</b><span>像 API 管理工具一样：左侧选连接，右侧编辑，测试响应显示在配置下方。</span></div>
+    <div class="design-note"><b>通信恢复 255px</b><span>与现有属性、布局、结构共用同一容器，低频设置进入二级页。</span></div>
+  </div>
+
+  <div class="section-head"><h3>1. 数据源管理：一个页面完成选择、编辑和测试</h3><p>默认只显示常用字段，高级连接参数折叠</p></div>
+  <section class="source-app">
+    <header class="source-header"><button class="source-back" title="返回图纸"><i data-lucide="arrow-left" class="icon-sm"></i></button><div class="source-title"><b>数据源</b><span>工作空间统一连接</span></div><div class="source-status"><span><strong>5 / 6</strong> 在线</span><span><strong>1,426</strong> 个点位</span></div><button class="new-source"><i data-lucide="plus" class="icon-sm"></i>新建连接</button></header>
+    <div class="source-workbench">
+      <aside class="source-sidebar">
+        <div class="source-sidebar-head"><div class="source-search"><i data-lucide="search" class="icon-sm"></i><span>搜索连接</span></div><button class="plain-icon" title="筛选"><i data-lucide="list-filter" class="icon-sm"></i></button></div>
+        <div class="source-sidebar-label"><span>全部连接</span><span>6</span></div>
+        <button class="source-item active" data-source="mqtt" onclick="selectSource('mqtt',this)"><span class="protocol-icon">MQTT</span><span><b>车间设备</b><small>mqtt://10.20.1.18:1883</small></span><i class="status-dot"></i></button>
+        <button class="source-item" data-source="http" onclick="selectSource('http',this)"><span class="protocol-icon">HTTP</span><span><b>能源接口</b><small>每 1 秒拉取</small></span><i class="status-dot"></i></button>
+        <button class="source-item" data-source="mysql" onclick="selectSource('mysql',this)"><span class="protocol-icon">MYSQL</span><span><b>生产报表</b><small>增量查询</small></span><i class="status-dot"></i></button>
+        <button class="source-item" data-source="mssql" onclick="selectSource('mssql',this)"><span class="protocol-icon">SQL</span><span><b>质检数据库</b><small>Change Tracking</small></span><i class="status-dot"></i></button>
+        <button class="source-item" data-source="redis" onclick="selectSource('redis',this)"><span class="protocol-icon">REDIS</span><span><b>实时告警</b><small>Streams</small></span><i class="status-dot"></i></button>
+        <button class="source-item" data-source="socket" onclick="selectSource('socket',this)"><span class="protocol-icon">WS</span><span><b>PLC 网关</b><small>TCP Socket</small></span><i class="status-dot warn"></i></button>
+      </aside>
+      <main class="source-center">
+        <header class="source-selected"><span class="selected-protocol" id="selected-protocol">MQTT</span><div class="selected-copy"><b id="selected-source-name">车间设备</b><span id="selected-source-desc">设备遥测 · 286 个点位</span></div><span class="selected-health"><i class="status-dot"></i><span id="selected-health">连接在线 · 数据正常</span></span><div class="selected-actions"><button class="secondary">测试连接</button><button class="primary">保存</button><button class="source-more" title="更多操作"><i data-lucide="ellipsis" class="icon-sm"></i></button></div></header>
+        <nav class="source-tabs"><button class="source-tab active" data-manager-tab="config" onclick="selectManagerTab('config',this)">连接配置</button><button class="source-tab" data-manager-tab="points" onclick="selectManagerTab('points',this)">数据点位</button></nav>
+        <div class="source-detail" id="source-detail"></div>
+      </main>
+    </div>
+  </section>
+
+  <div class="section-head"><h3>2. 数据使用：恢复现有属性栏宽度</h3><p>主列表只看来源与结果，点击属性后再设置点位</p></div>
+  <section class="editor">
+    <header class="editor-toolbar"><div class="brand"><span class="brand-mark"></span><span>苔岑2D绘图</span></div><div class="tools"><button class="tool"><i data-lucide="folder-open" class="icon"></i>打开</button><button class="tool"><i data-lucide="save" class="icon"></i>保存</button><button class="tool active"><i data-lucide="mouse-pointer-2" class="icon"></i>选择</button><button class="tool"><i data-lucide="pencil" class="icon"></i>铅笔</button><button class="tool"><i data-lucide="database-zap" class="icon"></i>数据源</button></div><div class="toolbar-space"></div><button class="preview"><i data-lucide="play" class="icon-sm"></i>预览</button></header>
+    <div class="editor-body">
+      <aside class="library"><div class="library-tabs"><span>图纸</span><span class="active">组件</span><span>我的</span></div><div class="library-search">搜索组件</div><div class="library-title">工业设备</div><div class="library-grid"><div class="library-item"><i data-lucide="fan" class="icon"></i>风机</div><div class="library-item"><i data-lucide="gauge" class="icon"></i>仪表</div><div class="library-item"><i data-lucide="circle-dot" class="icon"></i>信号灯</div><div class="library-item"><i data-lucide="workflow" class="icon"></i>管道</div></div></aside>
+      <main class="canvas"><div class="fan"><span class="fan-blade"></span><span class="fan-hub"></span></div><span class="fan-label">风机 01</span></main>
+      <aside class="right-panel-demo">
+        <nav class="right-tabs-demo"><button onclick="showRightTab('property',this)">属性</button><button class="active" onclick="showRightTab('communication',this)">通信 <span class="tab-badge">4</span></button><button onclick="showRightTab('layout',this)">布局</button><button onclick="showRightTab('structure',this)">结构</button></nav>
+        <div class="right-pane hidden" id="right-property"><div class="node-head"><span class="node-icon"><i data-lucide="fan" class="icon-sm"></i></span><div><b>风机 01</b><small>工业设备</small></div></div><h4 class="panel-title">基础属性</h4><div class="demo-field"><span>X</span><div class="demo-control">320</div></div><div class="demo-field"><span>Y</span><div class="demo-control">240</div></div><div class="demo-field"><span>宽度</span><div class="demo-control">160</div></div><div class="demo-field"><span>高度</span><div class="demo-control">160</div></div><h4 class="panel-title">外观与样式</h4><div class="demo-field"><span>填充颜色</span><div class="demo-control">#19a68f</div></div></div>
+        <div class="right-pane" id="right-communication">
+          <div class="comm-list-view" id="comm-list-view">
+            <div class="node-head"><span class="node-icon"><i data-lucide="activity" class="icon-sm"></i></span><div><b>风机 01</b><small>数据使用</small></div><span class="node-health">● 正常</span></div>
+            <div class="comm-summary"><span>4 / 6 项使用点位</span><span>数据正常</span></div>
+            <div class="comm-section-title">外观与样式</div>
+            <button class="comm-row" onclick="openCommDetail('fill')"><div class="comm-line"><b>填充颜色</b><span class="comm-result"><i class="result-swatch" style="background:#dd9328"></i>#dd9328</span></div><div class="comm-source"><span class="source-tag point">点位值</span><span>motor01.alarm</span><i data-lucide="chevron-right"></i></div></button>
+            <button class="comm-row" onclick="openCommDetail('stroke')"><div class="comm-line"><b>边框颜色</b><span class="comm-result"><i class="result-swatch" style="background:#087868"></i>#087868</span></div><div class="comm-source"><span class="source-tag">属性值</span><span>属性页设置</span><i data-lucide="chevron-right"></i></div></button>
+            <button class="comm-row" onclick="openCommDetail('opacity')"><div class="comm-line"><b>透明度</b><span class="comm-result">100%</span></div><div class="comm-source"><span class="source-tag">属性值</span><span>属性页设置</span><i data-lucide="chevron-right"></i></div></button>
+            <div class="comm-section-title">内容与动效</div>
+            <button class="comm-row" onclick="openCommDetail('playing')"><div class="comm-line"><b>播放动画</b><span class="comm-result">开启</span></div><div class="comm-source"><span class="source-tag point">点位值</span><span>motor01.running</span><i data-lucide="chevron-right"></i></div></button>
+            <button class="comm-row" onclick="openCommDetail('duration')"><div class="comm-line"><b>动画周期</b><span class="comm-result">0.9 秒</span></div><div class="comm-source"><span class="source-tag point">点位值</span><span>motor01.rpm</span><i data-lucide="chevron-right"></i></div></button>
+            <button class="comm-row" onclick="openCommDetail('text')"><div class="comm-line"><b>显示文字</b><span class="comm-result">温度 86.2℃</span></div><div class="comm-source"><span class="source-tag point">点位值</span><span>motor01.temperature</span><i data-lucide="chevron-right"></i></div></button>
+          </div>
+          <div class="comm-detail-view hidden" id="comm-detail-view"><div class="detail-head"><button class="detail-back" title="返回通信" onclick="closeCommDetail()"><i data-lucide="arrow-left" class="icon-sm"></i></button><b id="comm-detail-title">填充颜色</b></div><div class="detail-body"><div class="detail-label">数据来源</div><button class="source-choice" data-comm-mode="property" onclick="setCommMode('property')"><i class="radio-dot"></i>使用属性值</button><button class="source-choice active" data-comm-mode="point" onclick="setCommMode('point')"><i class="radio-dot"></i>使用点位值</button><div id="comm-point-config"><div class="detail-label" style="margin-top:11px">绑定点位</div><div class="point-selector"><i data-lucide="link-2" class="icon-sm"></i><b id="comm-point-name">motor01.alarm</b><i data-lucide="chevron-right" class="icon-sm"></i></div><div class="detail-label">当前数据</div><div class="value-preview"><div class="preview-row"><span>原始值</span><b id="comm-raw-value">warning</b></div><div class="preview-row"><span>最终结果</span><b id="comm-final-value">#dd9328</b></div></div><button class="detail-advanced" onclick="toggleCommAdvanced()">高级设置 <span>映射与异常策略 ›</span></button><div class="advanced-copy hidden" id="comm-advanced">值映射：warning → #dd9328<br>异常策略：保持最后值 5 秒，再恢复属性值。</div></div></div></div>
+        </div>
+        <div class="right-pane hidden" id="right-layout"><h4 class="panel-title">画布布局</h4><div class="layout-actions"><button><i data-lucide="align-center-horizontal" class="icon"></i>水平居中</button><button><i data-lucide="align-center-vertical" class="icon"></i>垂直居中</button><button><i data-lucide="bring-to-front" class="icon"></i>置于顶层</button><button><i data-lucide="zoom-in" class="icon"></i>适应画布</button></div></div>
+        <div class="right-pane hidden" id="right-structure"><h4 class="panel-title">图层结构（4）</h4><button class="structure-row active"><i data-lucide="fan" class="icon-sm"></i><span>风机 01</span><small>4</small></button><button class="structure-row"><i data-lucide="workflow" class="icon-sm"></i><span>主管道</span><small>3</small></button><button class="structure-row"><i data-lucide="gauge" class="icon-sm"></i><span>压力表</span><small>2</small></button><button class="structure-row"><i data-lucide="type" class="icon-sm"></i><span>设备标题</span><small>1</small></button></div>
+      </aside>
+    </div>
+  </section>
+
+  <div class="decision"><div class="decision-copy"><b>请确认这次的复杂度与布局</b><span>数据源使用“列表 + 编辑器”两栏；测试响应位于配置下方；通信主页面只展示来源和结果。</span></div><div class="options"><div class="option" data-choice="v15-approved" onclick="toggleSelect(this)"><div class="letter">A</div><div class="content"><h3>这版更合适</h3><p>继续细化协议字段与通信二级页。</p></div></div><div class="option" data-choice="v15-adjust" onclick="toggleSelect(this)"><div class="letter">B</div><div class="content"><h3>仍需调整</h3><p>指出数据源工作台或通信列表的问题。</p></div></div></div></div>
+</div>
+
+<script src="https://unpkg.com/lucide@0.468.0/dist/umd/lucide.min.js"></script>
+<script>
+  var sourceConfigs = {
+    mqtt: { protocol:'MQTT', name:'车间设备', desc:'设备遥测 · 286 个点位', health:'连接在线 · 数据正常', fields:[['Broker 地址','mqtt://10.20.1.18:1883','full code'],['Client ID','tc2d-gateway-line1','code'],['凭据','factory-readonly · 已保存',''],['Keep Alive','60 秒',''],['订阅 Topic','factory/line1/+/status  QoS 1\nfactory/line1/+/telemetry  QoS 0','full multiline']], sample:'{"device":"motor01","rpm":1480,\n "running":true,"alarm":"warning"}', points:[['motor01.rpm','1480'],['motor01.running','true'],['motor01.alarm','warning']], metrics:[['消息','1,240/s'],['延迟','18ms'],['解析失败','0'],['重连','0']] },
+    http: { protocol:'HTTP', name:'能源接口', desc:'定时拉取 · 58 个点位', health:'HTTP 200 · 数据正常', fields:[['请求地址','https://energy-gateway/api/v1/realtime','full code'],['方法 / 周期','GET / 1 秒',''],['鉴权','Bearer Token · 已保存',''],['超时','3 秒',''],['数据路径','$.data.devices[*]','full code']], sample:'{"data":{"power":386.2,\n "today":18342.7,"quality":"good"}}', points:[['energy.power','386.2'],['energy.today','18342.7'],['energy.quality','good']], metrics:[['请求','1/s'],['延迟','42ms'],['错误','0'],['响应','18KB']] },
+    mysql: { protocol:'MYSQL', name:'生产报表', desc:'增量查询 · 412 个点位', health:'连接池正常 · 数据正常', fields:[['后台连接','mysql-prod-read','full code'],['数据库','production','code'],['查询模板','device_snapshot_by_updated_at',''],['轮询周期','1 秒',''],['增量字段','updated_at','full code']], sample:'[{"device":"M01","output":12640,\n "updated_at":"14:32:16"}]', points:[['production.M01.output','12640'],['production.M01.target','13200'],['production.M01.state','run']], metrics:[['查询','1/s'],['P95','31ms'],['读取','356/s'],['慢查询','0']] },
+    mssql: { protocol:'SQL', name:'质检数据库', desc:'Change Tracking · 236 个点位', health:'连接在线 · 数据正常', fields:[['后台连接','mssql-quality-read','full code'],['数据库','Quality','code'],['查询模板','quality_result_changes',''],['轮询周期','500 ms',''],['表 / 视图','dbo.v_LineQuality','full code']], sample:'[{"line":"line1","pass_rate":98.72,\n "sample_count":642}]', points:[['quality.line1.passRate','98.72'],['quality.line1.samples','642'],['quality.line1.state','good']], metrics:[['查询','2/s'],['P95','46ms'],['延迟','83ms'],['死锁','0']] },
+    redis: { protocol:'REDIS', name:'实时告警', desc:'Streams · 128 个点位', health:'节点在线 · 数据正常', fields:[['后台连接','redis-alarm-read','full code'],['Database','2',''],['采集模式','Streams',''],['Stream Key','alarm:events','code'],['Consumer Group','tc2d-runtime','full code']], sample:'{"id":"ALM-0182","device":"motor01",\n "level":"warning","active":true}', points:[['alarm.latest.level','warning'],['alarm.motor01.active','true'],['alarm.latest.id','ALM-0182']], metrics:[['消息','86/s'],['P95','9ms'],['Lag','0'],['Pending','0']] },
+    socket: { protocol:'WS', name:'PLC 网关', desc:'TCP Socket · 306 个点位', health:'重连中 · 暂无数据', fields:[['后台网关','socket-plc-line1','full code'],['Host / Port','10.20.2.30:9001','code'],['报文边界','长度前缀 · 4 字节',''],['心跳','PING\\r\\n · 30 秒',''],['实时网关','wss://runtime-gateway/ws','full code']], sample:'00 00 00 28 7B 22 70 6C 63 22 ...\n{"plc":"L1","state":"run"}', points:[['plc.line1.state','run'],['plc.line1.count','12640'],['plc.line1.quality','offline']], metrics:[['接收','0/s'],['重连','4'],['队列','0'],['格式错误','0']] }
+  };
+  var currentSourceKey = 'mqtt';
+  var currentManagerTab = 'config';
+  function selectSource(key, button) {
+    currentSourceKey = key;
+    currentManagerTab = 'config';
+    document.querySelectorAll('.source-item').forEach(function(item){ item.classList.toggle('active', item === button); });
+    document.querySelectorAll('.source-tab').forEach(function(tab){ tab.classList.toggle('active', tab.dataset.managerTab === 'config'); });
+    renderSource();
+  }
+  function selectManagerTab(tab, button) {
+    currentManagerTab = tab;
+    document.querySelectorAll('.source-tab').forEach(function(item){ item.classList.toggle('active', item === button); });
+    renderSource();
+  }
+  function toggleAdvanced() { document.getElementById('advanced-fields').classList.toggle('hidden'); }
+  function renderSource() {
+    var data = sourceConfigs[currentSourceKey];
+    document.getElementById('selected-protocol').textContent = data.protocol;
+    document.getElementById('selected-source-name').textContent = data.name;
+    document.getElementById('selected-source-desc').textContent = data.desc;
+    document.getElementById('selected-health').textContent = data.health;
+    var detail = document.getElementById('source-detail');
+    var pointRows = '<div class="point-row"><span>解析点位</span><span>当前值</span></div>' + data.points.map(function(point){ return '<div class="point-row"><b>' + point[0] + '</b><span>' + point[1] + '</span></div>'; }).join('');
+    if (currentManagerTab === 'config') {
+      var fields = data.fields.map(function(field){ return '<div class="config-field ' + (field[2].indexOf('full') >= 0 ? 'full' : '') + '"><label>' + field[0] + '</label><div class="config-value ' + field[2].replace('full','') + '">' + field[1] + '</div></div>'; }).join('');
+      detail.innerHTML = '<div class="config-form"><h4 class="config-section-title">常用配置</h4><div class="config-grid">' + fields + '</div><button class="advanced-toggle" onclick="toggleAdvanced()"><i data-lucide="sliders-horizontal" class="icon-sm"></i>&nbsp; 高级配置 <span>默认值 · 连接池、重试、证书等 ›</span></button><div class="advanced-fields hidden" id="advanced-fields"><div class="config-field"><label>失败重试</label><div class="config-value">3 次</div></div><div class="config-field"><label>数据超时</label><div class="config-value">10 秒</div></div></div></div><div class="test-strip"><i class="status-dot"></i><strong>测试成功</strong><span>' + data.health + '</span><span>18ms · 刚刚</span></div><div class="response-panel"><div class="response-head"><b>最近响应</b><span>14:32:16 · 已解析 ' + data.points.length + ' 个示例点位</span><button>查看全部点位 ›</button></div><div class="response-body"><div class="response-raw">' + data.sample + '</div><div class="response-points"><div class="point-list">' + pointRows + '</div></div></div></div>';
+    } else {
+      var rows = '<div class="data-row"><span>点位</span><span>当前值</span><span>质量</span><span>更新时间</span></div>' + data.points.map(function(point){ return '<div class="data-row"><b>' + point[0] + '</b><span>' + point[1] + '</span><span style="color:#168264">正常</span><span>刚刚</span></div>'; }).join('');
+      detail.innerHTML = '<div class="table-toolbar"><div class="table-search">搜索点位名称或来源路径</div><button class="secondary">获取样例</button><button class="primary">添加点位</button></div><div class="test-strip"><i class="status-dot"></i><strong>' + data.desc.match(/\d+/)[0] + ' 个点位</strong><span>全部数据正常</span><span>刚刚更新</span></div><div class="data-table">' + rows + '</div>';
+    }
+    if (window.lucide) window.lucide.createIcons();
+  }
+  var commData = {
+    fill:{title:'填充颜色',point:'motor01.alarm',raw:'warning',result:'#dd9328',mode:'point'},
+    stroke:{title:'边框颜色',point:'motor01.state',raw:'normal',result:'#087868',mode:'property'},
+    opacity:{title:'透明度',point:'motor01.loadRatio',raw:'62',result:'100%',mode:'property'},
+    playing:{title:'播放动画',point:'motor01.running',raw:'true',result:'开启',mode:'point'},
+    duration:{title:'动画周期',point:'motor01.rpm',raw:'1480',result:'0.9 秒',mode:'point'},
+    text:{title:'显示文字',point:'motor01.temperature',raw:'86.2',result:'温度 86.2℃',mode:'point'}
+  };
+  function showRightTab(name, button) {
+    document.querySelectorAll('.right-tabs-demo button').forEach(function(tab){ tab.classList.remove('active'); });
+    document.querySelectorAll('.right-pane').forEach(function(pane){ pane.classList.add('hidden'); });
+    button.classList.add('active');
+    document.getElementById('right-' + name).classList.remove('hidden');
+    closeCommDetail();
+  }
+  function openCommDetail(key) {
+    var data = commData[key];
+    document.getElementById('comm-list-view').classList.add('hidden');
+    document.getElementById('comm-detail-view').classList.remove('hidden');
+    document.getElementById('comm-detail-title').textContent = data.title;
+    document.getElementById('comm-point-name').textContent = data.point;
+    document.getElementById('comm-raw-value').textContent = data.raw;
+    document.getElementById('comm-final-value').textContent = data.result;
+    setCommMode(data.mode);
+  }
+  function closeCommDetail() {
+    document.getElementById('comm-list-view').classList.remove('hidden');
+    document.getElementById('comm-detail-view').classList.add('hidden');
+    document.getElementById('comm-advanced').classList.add('hidden');
+  }
+  function setCommMode(mode) {
+    document.querySelectorAll('.source-choice').forEach(function(choice){ choice.classList.toggle('active', choice.dataset.commMode === mode); });
+    document.getElementById('comm-point-config').classList.toggle('hidden', mode === 'property');
+  }
+  function toggleCommAdvanced() { document.getElementById('comm-advanced').classList.toggle('hidden'); }
+  document.addEventListener('DOMContentLoaded', function(){ renderSource(); if (window.lucide) window.lucide.createIcons(); });
+</script>
