@@ -23,6 +23,20 @@ function samePointIds(left, right) {
   return true
 }
 
+function mergedNodeIds(left, right) {
+  const merged = new Set(left)
+  for (const nodeId of right) merged.add(nodeId)
+  return merged
+}
+
+function mergedNodeIdCount(left, right) {
+  let count = left.size
+  for (const nodeId of right) {
+    if (!left.has(nodeId)) count += 1
+  }
+  return count
+}
+
 /** 维护启用绑定的 pointId 与 nodeId 多对多关系，节点内相同点位只登记一次。 */
 export function createDataBindingIndex() {
   const pointIdsByNodeId = new Map()
@@ -107,7 +121,7 @@ export function createDataBindingIndex() {
     const sourceNodes = sourceKey ? nodeIdsByPointId.get(sourceKey) : null
     if (!direct) return sourceNodes?.values() ?? EMPTY_ITERABLE
     if (!sourceNodes) return direct.values()
-    return new Set([...direct, ...sourceNodes]).values()
+    return mergedNodeIds(direct, sourceNodes).values()
   }
 
   function countFor(rawPointId) {
@@ -119,7 +133,7 @@ export function createDataBindingIndex() {
     const sourceNodes = sourceKey ? nodeIdsByPointId.get(sourceKey) : null
     if (!direct) return sourceNodes?.size ?? 0
     if (!sourceNodes) return direct.size
-    return new Set([...direct, ...sourceNodes]).size
+    return mergedNodeIdCount(direct, sourceNodes)
   }
 
   function keys() {

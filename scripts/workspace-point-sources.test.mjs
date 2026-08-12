@@ -5,6 +5,7 @@ import test from 'node:test'
 
 import { createLocalPointCatalogGateway } from '../src/services/pointCatalogGateway.js'
 import { createWorkspacePointSourceStore } from '../src/services/workspacePointSourceStore.js'
+import { sourceProtocolShortName } from '../src/utils/sourceConnectionList.js'
 
 const appSource = readFileSync(new URL('../src/App.vue', import.meta.url), 'utf8')
 const managerSource = readFileSync(new URL('../src/components/DataSourceManager.vue', import.meta.url), 'utf8')
@@ -1125,9 +1126,10 @@ test('App restores source snapshots while the manager remains connection-lifecyc
   assert.doesNotMatch(appSource, /replayPointCatalogValues\(runtimeDataKeysForNodes\(data\.nodes\)\)/)
   assert.doesNotMatch(appSource, /@changed="refreshPointCatalog"/)
 
-  assert.match(managerSource, /protocolShortName[\s\S]*?MySQL: 'MYSQL'/)
+  assert.equal(sourceProtocolShortName('MySQL'), 'MYSQL')
+  assert.match(managerSource, /sourceProtocolShortName as protocolShortName/)
   assert.match(managerSource, /getSource\(id, \{ includePoints: false \}\)/)
-  assert.match(managerSource, /testSource\(selectedSource\.value\.id, \{ includePoints: false \}\)/)
+  assert.match(managerSource, /testSource\(operationSourceId, \{ includePoints: false \}\)/)
   assert.match(managerSource, /gateway\.removeSource\(source\.id\)/)
   assert.match(managerSource, /persistence\.durable/)
   assert.match(managerSource, /仅在当前页面生效，未持久保存/)

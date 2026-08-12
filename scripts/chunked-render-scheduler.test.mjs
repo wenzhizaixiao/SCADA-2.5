@@ -201,6 +201,72 @@ test('reads a dynamic render budget at the start of every slice', () => {
   assert.equal(scheduler.state.pending, false)
 })
 
+test('schedule and budget callbacks receive the current job context', () => {
+  const manual = createManualSchedule()
+  const clock = createClock()
+  const scheduleCalls = []
+  const budgetCalls = []
+  const payload = { name: 'contextual' }
+  let createdTask
+  const scheduler = createChunkedRenderScheduler({
+    budgetMs(context) {
+      budgetCalls.push({
+        context,
+        generation: context.generation,
+        payload: context.payload,
+        task: context.task
+      })
+      return 1
+    },
+    schedule(callback, context) {
+      scheduleCalls.push({
+        context,
+        generation: context.generation,
+        payload: context.payload,
+        task: context.task
+      })
+      return manual.schedule(callback)
+    },
+    cancel: handle => manual.cancel(handle),
+    now: clock.now,
+    createTask: (requestPayload, generation) => {
+      createdTask = { requestPayload, generation, slices: 0 }
+      return createdTask
+    },
+    runSlice(task) {
+      task.slices += 1
+      clock.advance(1)
+      return task.slices === 2
+    },
+    commit: () => {}
+  })
+
+  assert.equal(budgetCalls.length, 0, 'a context-aware budget must not run before a job exists')
+  assert.equal(scheduler.request(payload), 1)
+  assert.deepEqual(scheduleCalls.map(({ generation, payload: value, task }) => ({ generation, payload: value, task })), [{
+    generation: 1,
+    payload,
+    task: undefined
+  }])
+
+  manual.flushOne()
+  assert.equal(createdTask.slices, 1)
+  assert.equal(scheduleCalls.length, 2)
+  assert.equal(scheduleCalls[1].generation, 1)
+  assert.equal(scheduleCalls[1].payload, payload)
+  assert.equal(scheduleCalls[1].task, createdTask)
+  assert.equal(budgetCalls[0].generation, 1)
+  assert.equal(budgetCalls[0].payload, payload)
+  assert.equal(budgetCalls[0].task, undefined)
+
+  manual.flushAll()
+  assert.equal(budgetCalls[1].task, createdTask)
+  assert.equal(Object.isFrozen(scheduleCalls[0].context), true)
+  assert.equal(Object.isFrozen(scheduleCalls[1].context), true)
+  assert.equal(scheduleCalls[0].context.task, undefined)
+  assert.equal(scheduler.state.pending, false)
+})
+
 test('a superseded job does not create or discard resources before its first slice', () => {
   const manual = createManualSchedule()
   const clock = createClock()
@@ -558,11 +624,19 @@ test('MiniMapPreview connects every large phase to the private chunked render ta
   assert.match(source, /const MIN_RENDER_SLICE_BUDGET_MS = 1/)
   assert.match(source, /const MAX_RENDER_SLICE_BUDGET_MS = 6/)
   assert.match(source, /const RUNTIME_RENDER_SLICE_BUDGET_MS = 2/)
+  assert.match(source, /const RUNTIME_ANIMATION_RENDER_SLICE_BUDGET_MS = 12/)
+  assert.match(source, /const RUNTIME_ANIMATION_MAX_TASK_BURST_MS = 48/)
   assert.match(source, /const RUNTIME_REGION_MERGE_SIZE = 512/)
   assert.match(source, /const RUNTIME_CURSOR_OPERATION_LIMIT = 4096/)
+  assert.match(source, /const TASK_RENDER_MAX_CONSECUTIVE_SLICES = 2/)
   assert.match(source, /function normalizedRenderSliceBudgetMs\(value\)[\s\S]*?return DEFAULT_RENDER_SLICE_BUDGET_MS[\s\S]*?Math\.min\(MAX_RENDER_SLICE_BUDGET_MS, Math\.max\(MIN_RENDER_SLICE_BUDGET_MS, requested\)\)/)
-  assert.match(source, /function scheduleRenderSlice\([\s\S]*?requestIdleCallback\([\s\S]*?setTimeout\(/)
-  assert.match(source, /function cancelRenderSlice\([\s\S]*?cancelIdleCallback\([\s\S]*?clearTimeout\(/)
+  assert.match(source, /function scheduleTaskRender\(callback\)[\s\S]*?new globalThis\.MessageChannel\(\)[\s\S]*?port1\.onmessage[\s\S]*?port2\.postMessage\(id\)/)
+  assert.match(source, /function scheduleTaskRenderSlice\(callback\)[\s\S]*?!renderReady\.value[\s\S]*?scheduleTaskRender\(callback\)[\s\S]*?TASK_RENDER_MAX_CONSECUTIVE_SLICES[\s\S]*?requestAnimationFrame/)
+  assert.match(source, /function runtimeRenderSliceBudget\(context\)[\s\S]*?context\?\.payload\?\.visualAnimationFrame[\s\S]*?RUNTIME_ANIMATION_RENDER_SLICE_BUDGET_MS[\s\S]*?RUNTIME_RENDER_SLICE_BUDGET_MS/)
+  assert.match(source, /function visualAnimationInputPending\(\)[\s\S]*?navigator\?\.scheduling[\s\S]*?isInputPending/)
+  assert.match(source, /function scheduleAnimationRenderSlice\(callback, context\)[\s\S]*?RUNTIME_ANIMATION_MAX_TASK_BURST_MS[\s\S]*?scheduleTaskRender\(callback\)[\s\S]*?requestAnimationFrame/)
+  assert.match(source, /function scheduleRenderSlice\(callback, context\)[\s\S]*?context\?\.payload\?\.visualAnimationFrame\) return scheduleAnimationRenderSlice\(callback, context\)[\s\S]*?props\.renderMode === 'task'[\s\S]*?scheduleTaskRenderSlice\(callback\)[\s\S]*?requestIdleCallback\([\s\S]*?setTimeout\(/)
+  assert.match(source, /function cancelRenderSlice\(handle\)[\s\S]*?taskRenderCallbacks\.delete\(handle\.id\)[\s\S]*?cancelIdleCallback\([\s\S]*?clearTimeout\(/)
   assert.match(source, /function acquireRenderSurface\(width, height, reusable\)[\s\S]*?reusableRenderSurfaces\.pop\(\)[\s\S]*?document\.createElement\('canvas'\)/)
   assert.match(createTask, /acquireRenderSurface\(bitmapWidth, bitmapHeight, reuseSurfaces\)/)
   assert.match(createTask, /surface\.getContext\('2d'\)/)
@@ -586,12 +660,13 @@ test('MiniMapPreview connects every large phase to the private chunked render ta
   assert.match(commit, /commitCanvasSurfaceWithResize\(target, task\.surface,[\s\S]*?createBackup:[\s\S]*?releaseBackup:/)
   assert.match(commit, /finally \{\s*releaseRenderTask\(task\)/)
   assert.match(source, /createChunkedRenderScheduler\(\{[\s\S]*?budgetMs: \(\) => normalizedRenderSliceBudgetMs\(props\.renderBudgetMs\)[\s\S]*?schedule: scheduleRenderSlice[\s\S]*?cancel: cancelRenderSlice[\s\S]*?createTask: createRenderTask[\s\S]*?runSlice: runRenderSlice[\s\S]*?commit: commitRenderTask[\s\S]*?discard: releaseRenderTask,[\s\S]*?onError: \(error, detail\) => reportCanvasRenderError/)
-  assert.match(source, /const runtimeRenderScheduler = createChunkedRenderScheduler\(\{[\s\S]*?budgetMs: RUNTIME_RENDER_SLICE_BUDGET_MS[\s\S]*?createTask: createRuntimeRenderTask[\s\S]*?runSlice: runRuntimeRenderSlice[\s\S]*?commit: commitRuntimeRenderTask[\s\S]*?discard: releaseRuntimeRenderTask,[\s\S]*?onError: \(error, detail\) => reportCanvasRenderError/)
+  assert.match(source, /const runtimeRenderScheduler = createChunkedRenderScheduler\(\{[\s\S]*?budgetMs: runtimeRenderSliceBudget[\s\S]*?createTask: createRuntimeRenderTask[\s\S]*?runSlice: runRuntimeRenderSlice[\s\S]*?commit: commitRuntimeRenderTask[\s\S]*?discard: releaseRuntimeRenderTask,[\s\S]*?onError: \(error, detail\) => reportCanvasRenderError/)
   assert.match(runtimeTask, /createRuntimeRegionAccumulator\(\{[\s\S]*?mergeCellSize: RUNTIME_REGION_MERGE_SIZE[\s\S]*?nodes,[\s\S]*?nodeCursor: 0[\s\S]*?phase: 'regions'/)
   assert.match(runtimeTask, /function prepareRuntimeRegions\(task, deadline\)[\s\S]*?while \(task\.nodeCursor < task\.nodes\.length\)[\s\S]*?regionAccumulator\.add\(task\.nodes\[task\.nodeCursor\]\)[\s\S]*?deadline\.shouldYield\(\)[\s\S]*?regionAccumulator\.createCursor\(\)/)
   assert.doesNotMatch(runtimeTask, /regionAccumulator\.values\(\)/)
   assert.match(runtimeRegion, /task\.regionCursor\?\.next\(\)/)
-  assert.match(runtimeRegion, /task\.spatialIndex\.createQueryCursor\(task\.region, \{ sort: false \}\)[\s\S]*?createRuntimeCandidateCursor\([\s\S]*?createRuntimeQueryCursor\(querySources\)/)
+  assert.match(runtimeRegion, /function runtimeRegionQuerySources\(task,[\s\S]*?for \(const region of regions\)[\s\S]*?task\.spatialIndex\.createQueryCursor\(region, options\)[\s\S]*?task\.drawingSpatialIndex\.createQueryCursor\(region, options\)/)
+  assert.match(runtimeRegion, /function beginRuntimeCandidateCollection\(task,[\s\S]*?createRuntimeCandidateCursor\([\s\S]*?createRuntimeQueryCursor\(runtimeRegionQuerySources\(task,[\s\S]*?regions\)\)/)
   assert.match(runtimeRegion, /task\.candidateWork\.runSlice\(deadline, RUNTIME_CURSOR_OPERATION_LIMIT\)/)
   assert.doesNotMatch(runtimeRegion, /\.query\([^)]*\)[\s\S]*?\.filter\([^)]*\)[\s\S]*?\.sort\(/)
   assert.match(runtimeRegion, /task\.ctx\.drawImage\(\s*task\.base,/)
@@ -604,5 +679,6 @@ test('MiniMapPreview connects every large phase to the private chunked render ta
   assert.match(teardown, /imageRenderTrigger\.dispose\(\)/)
   assert.match(teardown, /replaceCommittedStaticSurface\(null\)/)
   assert.match(teardown, /replaceCommittedCompositeSurface\(null\)/)
+  assert.match(teardown, /taskRenderCallbacks\.clear\(\)[\s\S]*?taskRenderChannel\?\.port1\.close\(\)[\s\S]*?taskRenderChannel\?\.port2\.close\(\)/)
   assert.doesNotMatch(source, /\brenderFrame\b|\brenderTimer\b|\brenderIdle\b/)
 })

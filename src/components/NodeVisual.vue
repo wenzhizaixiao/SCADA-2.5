@@ -5,6 +5,7 @@ import RuntimeValueText from './RuntimeValueText.vue'
 import { normalizedVisualScale } from '../utils/editorGeometry'
 import { resolveTimeValue, timeInputStep, timeInputType } from '../utils/formTime'
 import { acquireVisualClock, releaseVisualClock } from '../composables/useSharedVisualClock'
+import { createCanvasVisualAnimationTimeline, signalLightColor } from '../utils/canvasVisualAnimation'
 import {
   LINE_SHAPE_MIN_INNER_SIZE,
   lineShapeBorderWidth,
@@ -29,12 +30,14 @@ import {
   shouldVirtualizeTable
 } from '../utils/tableVirtualization'
 import { bindingPointIds } from '../models/dataBindingModel.js'
+import { MAX_SIGNAL_COLORS } from '../config/componentBindingSchema.js'
 import {
   hasEnabledRuntimeBinding,
   materializeRuntimeNode,
   runtimeChartPercentages
 } from '../utils/runtimeNodeMaterializer.js'
 import { normalizeRuntimeKey, runtimeKeySignature } from '../utils/runtimeKey.js'
+import { rectangularNodeBorderGeometry } from '../utils/nodeBorderGeometry.js'
 
 const visualOnlyTypes = new Set(['flowPipe', 'rotatingFan', 'signalLight', 'waterTank', 'heartbeat', 'particles'])
 const formVisualTypes = new Set(['table', 'checkbox', 'radio', 'switch', 'formProgress', 'button', 'input', 'select', 'time'])
@@ -242,7 +245,8 @@ const props = defineProps({
   preview: { type: Boolean, default: false },
   interactive: { type: Boolean, default: false },
   runtimeStore: { type: Object, default: null },
-  timeContext: { type: Object, default: null }
+  timeContext: { type: Object, default: null },
+  signalAnimationTimestamp: { type: Number, default: null }
 })
 const emit = defineEmits(['form-change', 'table-cell-view', 'table-edit'])
 const visualInstanceId = getCurrentInstance()?.uid ?? 0
@@ -275,30 +279,43 @@ watch([() => props.runtimeStore, () => props.node.type, () => props.node.dataKey
 
 // 参数级绑定按点位去重订阅。同一点位绑定多个属性时只保留一个响应式引用。
 let runtimePointStore = null
-const runtimePointBindings = new Map()
+let runtimePointBindings = null
 const runtimePointSubscriptionVersion = ref(0)
 
 function releaseRuntimePointBindings() {
-  for (const entry of runtimePointBindings.values()) entry.unsubscribe?.()
-  runtimePointBindings.clear()
+  const changed = Boolean(runtimePointBindings?.size)
+  for (const entry of runtimePointBindings?.values() || []) entry.unsubscribe?.()
+  runtimePointBindings = null
+  return changed
+}
+
+function publishRuntimePointBindingChange(changed) {
+  if (changed) runtimePointSubscriptionVersion.value += 1
 }
 
 function syncRuntimePointBindings() {
   const nextStore = props.runtimeStore
+  let changed = false
   if (runtimePointStore !== nextStore) {
-    releaseRuntimePointBindings()
+    changed = releaseRuntimePointBindings()
     runtimePointStore = nextStore
   }
 
-  const nextPointIds = new Set(bindingPointIds(props.node))
-  for (const [pointId, entry] of runtimePointBindings) {
-    if (nextPointIds.has(pointId)) continue
+  const nextPointIds = bindingPointIds(props.node)
+  // 绝大多数静态节点没有数据绑定，不为它们分配 Map、Set 或递增响应式版本。
+  if (!nextPointIds.length && !runtimePointBindings?.size) return publishRuntimePointBindingChange(changed)
+
+  const nextPointIdSet = new Set(nextPointIds)
+  const bindings = runtimePointBindings || (runtimePointBindings = new Map())
+  for (const [pointId, entry] of bindings) {
+    if (nextPointIdSet.has(pointId)) continue
     entry.unsubscribe?.()
-    runtimePointBindings.delete(pointId)
+    bindings.delete(pointId)
+    changed = true
   }
   if (typeof runtimePointStore?.subscribe === 'function') {
     for (const pointId of nextPointIds) {
-      if (runtimePointBindings.has(pointId)) continue
+      if (bindings.has(pointId)) continue
       const entry = {
         value: shallowRef(runtimePointStore.getValue?.(pointId)),
         unsubscribe: null
@@ -306,15 +323,16 @@ function syncRuntimePointBindings() {
       entry.unsubscribe = runtimePointStore.subscribe(pointId, value => {
         entry.value.value = value
       })
-      runtimePointBindings.set(pointId, entry)
+      bindings.set(pointId, entry)
+      changed = true
     }
   }
-  runtimePointSubscriptionVersion.value += 1
+  publishRuntimePointBindingChange(changed)
 }
 
 function runtimePointValue(pointId) {
   runtimePointSubscriptionVersion.value
-  return runtimePointBindings.get(normalizeRuntimeKey(pointId))?.value.value
+  return runtimePointBindings?.get(normalizeRuntimeKey(pointId))?.value.value
 }
 
 watch(
@@ -330,6 +348,7 @@ const visualNode = computed(() => {
   const source = node.value
   const scaleX = normalizedVisualScale(props.node.visualScaleX, props.node.w)
   const scaleY = normalizedVisualScale(props.node.visualScaleY, props.node.h)
+  if (scaleX === 1 && scaleY === 1) return source
   return {
     ...source,
     w: Math.max(.1, Number(props.node.w) || 1) / scaleX,
@@ -345,6 +364,7 @@ const visualScaleFrameStyle = computed(() => {
     transform: `scale(${scaleX}, ${scaleY})`
   }
 })
+const customBorderGeometry = computed(() => rectangularNodeBorderGeometry(visualNode.value))
 const tableWrapperElement = ref(null)
 const tableGridElement = ref(null)
 const tableWindowOverride = shallowRef(null)
@@ -419,6 +439,7 @@ function syncTableVirtualWindow(wrapper = tableWrapperElement.value) {
 }
 
 function scheduleTableVirtualWindowSync() {
+  if (!tableVirtualized.value) return
   if (tableWindowDisposed || tableWindowFrame || typeof requestAnimationFrame !== 'function') return
   tableWindowFrame = requestAnimationFrame(() => {
     tableWindowFrame = 0
@@ -456,8 +477,9 @@ function releaseTableBottomPin() {
 }
 
 const tableLayoutSignature = computed(() => {
+  const type = node.value.type
+  if (type !== 'table') return type
   const visual = visualNode.value
-  if (visual.type !== 'table') return visual.type
   return [
     visual.w,
     visual.h,
@@ -474,14 +496,18 @@ const tableLayoutSignature = computed(() => {
 
 watch(tableLayoutSignature, () => {
   tableWindowOverride.value = null
+  if (!tableVirtualized.value) return
   nextTick(() => {
+    if (!tableVirtualized.value) return
     syncTableVirtualWindow()
     scheduleTableVirtualWindowSync()
   })
 })
 onMounted(() => {
   tableWindowDisposed = false
+  if (!tableVirtualized.value) return
   nextTick(() => {
+    if (!tableVirtualized.value) return
     syncTableVirtualWindow()
     scheduleTableVirtualWindowSync()
   })
@@ -517,6 +543,32 @@ function handleTableCellKey(event, cell) {
 const videoElement = ref(null)
 const completedVideoPlays = ref(0)
 const videoSessionExhausted = ref(false)
+const imageLoadFailed = ref(false)
+const videoLoadFailed = ref(false)
+
+function handleImageLoad() {
+  imageLoadFailed.value = false
+}
+
+function handleImageLoadError() {
+  imageLoadFailed.value = true
+}
+
+function handleVideoLoadedData() {
+  videoLoadFailed.value = false
+}
+
+function handleVideoLoadError() {
+  videoLoadFailed.value = true
+  videoElement.value?.pause()
+}
+
+watch(() => props.node.imageUrl, () => {
+  imageLoadFailed.value = false
+})
+watch(() => props.node.videoUrl, () => {
+  videoLoadFailed.value = false
+})
 
 function applyVideoSettings({ preserveMuted = false } = {}) {
   const video = videoElement.value
@@ -662,14 +714,66 @@ function handleButtonClick() {
 }
 
 const PROGRESS_CLOCK_FPS = 30
-const SIGNAL_CLOCK_FPS = 10
+const SIGNAL_CLOCK_FPS = 30
 let progressClock = null
 let progressClockStartedAt = 0
 let signalClock = null
-let signalClockStartedAt = 0
+const signalAnimationTimeline = createCanvasVisualAnimationTimeline()
+const signalReducedMotion = ref(false)
+let signalMotionPreference = null
 
 function visualTimestamp() {
   return globalThis.performance?.now?.() ?? Date.now()
+}
+
+// CSS animations use their own compositor clock after mount. A fixed negative
+// delay aligns progressively mounted nodes to the same clock without reactive
+// per-node updates on every frame.
+function hasBuiltInCssAnimation(source) {
+  if (['flowPipe', 'rotatingFan', 'waterTank', 'particles'].includes(source?.type)) {
+    return source.animation === 'flow'
+  }
+  return source?.type === 'heartbeat' && source.animation === 'pulse'
+}
+
+const builtInAnimationActive = computed(() => hasBuiltInCssAnimation(node.value))
+const builtInAnimationDelay = ref(`${
+  builtInAnimationActive.value && node.value.animationPaused !== true
+    ? -visualTimestamp() / 1000
+    : 0
+}s`)
+let previousBuiltInAnimationActive = builtInAnimationActive.value
+watch(builtInAnimationActive, active => {
+  if (active && !previousBuiltInAnimationActive) {
+    builtInAnimationDelay.value = `${node.value.animationPaused === true ? 0 : -visualTimestamp() / 1000}s`
+  }
+  previousBuiltInAnimationActive = active
+}, { flush: 'sync' })
+
+function handleSignalMotionPreferenceChange(event) {
+  const next = Boolean(event?.matches)
+  if (next === signalReducedMotion.value) return
+  const timestamp = signalClock?.value ?? visualTimestamp()
+  signalAnimationTimeline.setSuspended(next, timestamp, [node.value])
+  signalReducedMotion.value = next
+  syncSignalClock()
+}
+
+function setupSignalMotionPreference() {
+  if (props.preview) {
+    signalReducedMotion.value = false
+    signalAnimationTimeline.setSuspended(false, visualTimestamp(), [node.value])
+    return
+  }
+  signalMotionPreference = globalThis.matchMedia?.('(prefers-reduced-motion: reduce)') || null
+  const next = Boolean(signalMotionPreference?.matches)
+  signalReducedMotion.value = next
+  signalAnimationTimeline.setSuspended(next, visualTimestamp(), [node.value])
+  if (signalMotionPreference?.addEventListener) {
+    signalMotionPreference.addEventListener('change', handleSignalMotionPreferenceChange)
+  } else {
+    signalMotionPreference?.addListener?.(handleSignalMotionPreferenceChange)
+  }
 }
 
 function syncProgressClock() {
@@ -707,35 +811,57 @@ const chartProgressPercent = computed(() => {
 })
 const chartBarPercentages = computed(() => runtimeChartPercentages(node.value))
 const boundProgressText = computed(() => Math.round((Number(node.value.progressValue) || 0) * 100) / 100)
+const waterTankPercent = computed(() => Math.max(0, Math.min(100, Number(node.value.progressValue) || 0)))
+const waterTankText = computed(() => Math.round(waterTankPercent.value * 100) / 100)
+
+function particleAnimationDelay(index) {
+  const duration = Math.max(.2, Number(node.value.animationDuration) || 1.5)
+  return `${-Math.max(0, Number(index) - 1) * duration / 8}s`
+}
 
 function progressRadius(node) {
   const radius = Math.max(1, Number(node.progressThickness) || 12) / 2
   return `${node.progressStartShape === 'round' ? radius : 0}px ${node.progressEndShape === 'round' ? radius : 0}px ${node.progressEndShape === 'round' ? radius : 0}px ${node.progressStartShape === 'round' ? radius : 0}px`
 }
 function signalPalette(node) {
-  const count = Math.max(1, Math.min(8, Number(node.signalColorCount) || 2))
+  const count = Math.max(1, Math.min(MAX_SIGNAL_COLORS, Math.trunc(Number(node.signalColorCount) || 2)))
   const colors = Array.isArray(node.signalColors) ? node.signalColors : [node.signalColor || '#21c58e', '#ef5350']
   return Array.from({ length: count }, (_, index) => colors[index] || '#21c58e')
 }
 function syncSignalClock() {
   const source = node.value
   const colors = signalPalette(source)
-  const active = source.animation === 'blink' && !source.animationPaused && colors.length > 1
+  const candidate = source.animation === 'blink'
+    && colors.length > 1
+  const externalTimestamp = props.signalAnimationTimestamp != null
+    && Number.isFinite(Number(props.signalAnimationTimestamp))
+  const active = !signalReducedMotion.value
+    && !externalTimestamp
+    && candidate
+    && source.animationPaused !== true
+  if (!candidate) signalAnimationTimeline.remove(source)
   if (!active) {
+    if (candidate && source.animationPaused === true) {
+      signalAnimationTimeline.resolve(source, signalClock?.value ?? visualTimestamp())
+    }
     if (signalClock) releaseVisualClock(SIGNAL_CLOCK_FPS)
     signalClock = null
     return
   }
-  if (!signalClock) signalClock = acquireVisualClock(SIGNAL_CLOCK_FPS)
-  signalClockStartedAt = signalClock.value || visualTimestamp()
+  if (!signalClock) {
+    signalClock = acquireVisualClock(SIGNAL_CLOCK_FPS)
+  }
+  signalAnimationTimeline.resolve(source, signalClock.value ?? visualTimestamp())
 }
 function currentSignalColor() {
   const source = node.value
   const colors = signalPalette(source)
-  if (!signalClock || colors.length < 2) return colors[0]
-  const interval = Math.max(100, Math.max(.2, Number(source.animationDuration) || 1.5) * 1000 / colors.length)
-  const activeIndex = Math.floor(Math.max(0, signalClock.value - signalClockStartedAt) / interval) % colors.length
-  return colors[activeIndex] || colors[0]
+  if (source.animation !== 'blink' || colors.length <= 1) return colors[0]
+  const externalTimestamp = Number(props.signalAnimationTimestamp)
+  const timestamp = props.signalAnimationTimestamp != null && Number.isFinite(externalTimestamp)
+    ? externalTimestamp
+    : signalClock?.value ?? visualTimestamp()
+  return signalLightColor(source, signalAnimationTimeline.resolve(source, timestamp))
 }
 function pencilPath(node) {
   const points = Array.isArray(node.pencilPoints) ? node.pencilPoints : []
@@ -774,9 +900,15 @@ function polylinePath(node) {
   return `M ${first.x} ${first.y} ${coordinates.slice(1).map(point => `L ${point.x} ${point.y}`).join(' ')}`
 }
 if (props.node.type === 'signalLight') {
+  setupSignalMotionPreference()
   watch(() => {
     const source = node.value
-    return [source.animation, source.animationPaused, source.animationDuration, source.signalColorCount, source.signalColors?.join(',')]
+    const colors = Array.isArray(source.signalColors)
+      ? source.signalColors.slice(0, MAX_SIGNAL_COLORS).join(',')
+      : source.signalColor || ''
+    const externalTimestamp = props.signalAnimationTimestamp != null
+      && Number.isFinite(Number(props.signalAnimationTimestamp))
+    return `${source.animation}|${source.animationPaused === true}|${source.animationDuration}|${source.animationDirection}|${source.signalColorCount}|${colors}|${externalTimestamp}|${signalReducedMotion.value}`
   }, syncSignalClock, { immediate: true })
 }
 if (['progress', 'formProgress'].includes(props.node.type)) {
@@ -792,6 +924,9 @@ onUnmounted(() => {
   releaseRuntimeBinding()
   releaseRuntimePointBindings()
   if (signalClock) releaseVisualClock(SIGNAL_CLOCK_FPS)
+  signalAnimationTimeline.clear()
+  signalMotionPreference?.removeEventListener?.('change', handleSignalMotionPreferenceChange)
+  signalMotionPreference?.removeListener?.(handleSignalMotionPreferenceChange)
   if (progressClock) releaseVisualClock(PROGRESS_CLOCK_FPS)
   if (tableWindowFrame && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(tableWindowFrame)
   videoElement.value?.pause()
@@ -814,7 +949,7 @@ function colorWithOpacity(color, opacity = 1) {
     class="node-body"
     @pointerdown="stopInteractivePointer"
     @dblclick="stopInteractiveDoubleClick"
-    :class="[node.type, `animation-${node.animation || 'none'}`, node.type.startsWith('custom') && `custom-effect-${node.customEffect || 'bounce'}`, { 'border-hidden': node.borderVisible === false, 'motion-paused': node.animationPaused, disabled: node.disabled }]"
+    :class="[node.type, `animation-${node.animation || 'none'}`, node.type.startsWith('custom') && `custom-effect-${node.customEffect || 'bounce'}`, { 'border-hidden': node.borderVisible === false, 'motion-paused': node.animationPaused === true, disabled: node.disabled }]"
     :style="{
       '--shape-fill': colorWithOpacity(node.fill, node.backgroundOpacity ?? 1),
       '--shape-stroke': node.stroke,
@@ -825,12 +960,14 @@ function colorWithOpacity(color, opacity = 1) {
       '--form-progress-height': `${node.progressHeight || 12}px`,
       '--text-stroke-width': textStrokeWidth(node),
       '--text-stroke-color': node.color || '#26323d',
-      '--shape-border-width': `${node.borderWidth ?? 2}px`,
+      '--shape-border-width': `${customBorderGeometry.strokeWidth}px`,
+      '--shape-outer-radius': `${customBorderGeometry.outerRadius}px`,
       '--shape-border-style': node.borderStyle || 'solid',
       '--shape-dash-array': node.borderStyle === 'solid' ? 'none' : `${node.borderStyle === 'dotted' ? Math.max(.1, node.borderDashLength || 2) : Math.max(.1, node.borderDashLength || 8)} ${Math.max(.1, node.borderDashGap || 6)}`,
       '--shape-dash-cap': node.borderStyle === 'dotted' ? 'round' : 'butt',
       '--motion-speed': `${node.animationDuration || 1.5}s`,
       '--motion-direction': node.animationDirection || 'normal',
+      '--built-in-animation-delay': builtInAnimationDelay,
       '--motion-delay': `${node.animationDelay || 0}s`,
       '--motion-easing': node.animationEasing || 'ease-in-out',
       '--motion-iterations': node.animationIterations || 'infinite',
@@ -838,6 +975,7 @@ function colorWithOpacity(color, opacity = 1) {
       '--motion-scale': node.motionScale || 1.18,
       '--motion-rotate': `${node.motionRotate || 360}deg`,
       '--motion-color': node.motionColor || '#16b89a',
+      '--visual-primary-color': node.visualPrimaryColor || '#16b89a',
       background: node.type === 'polyline' ? 'transparent' : colorWithOpacity(node.fill, node.backgroundOpacity ?? 1),
       borderColor: node.stroke,
       borderWidth: 0,
@@ -845,7 +983,7 @@ function colorWithOpacity(color, opacity = 1) {
       boxShadow: node.type === 'polyline' ? 'none' : undefined,
       overflow: node.type === 'polyline' ? 'visible' : undefined,
       color: node.color,
-      borderRadius: node.type === 'lineShape' ? '0' : `${node.radius || 0}px`,
+      borderRadius: node.type === 'lineShape' ? '0' : `${customBorderGeometry.outerRadius}px`,
       opacity: node.opacity ?? 1,
       fontSize: `${node.fontSize || 14}px`,
       fontWeight: fontWeight(node),
@@ -860,10 +998,10 @@ function colorWithOpacity(color, opacity = 1) {
         <line v-if="lineShapeBorderWidth(visualNode) > 0 && lineShapeInnerThickness(visualNode) > 0" data-testid="line-shape-body-fill" :x1="lineShapeBodyInset(visualNode)" :y1="lineShapeHeight(visualNode) / 2" :x2="lineShapeWidth(visualNode) - lineShapeBodyInset(visualNode)" :y2="lineShapeHeight(visualNode) / 2" :stroke="colorWithOpacity(node.fill, node.backgroundOpacity ?? 1)" :stroke-width="lineShapeInnerThickness(visualNode)" :stroke-dasharray="lineShapeBodyDashArray(visualNode)" :stroke-linecap="node.borderStyle === 'dotted' ? 'round' : 'butt'" />
       </template>
     </svg>
-    <svg v-if="node.borderVisible !== false && !['lineShape','pencil','polyline'].includes(node.type) && !formVisualTypes.has(node.type)" class="custom-border" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+    <svg v-if="node.borderVisible !== false && !['lineShape','pencil','polyline'].includes(node.type) && !formVisualTypes.has(node.type)" class="custom-border" :viewBox="node.type === 'circle' || ['triangle','diamond','decision','star','hexagon','arrow'].includes(node.type) ? '0 0 100 100' : `0 0 ${customBorderGeometry.width} ${customBorderGeometry.height}`" preserveAspectRatio="none" aria-hidden="true">
       <circle v-if="node.type === 'circle'" cx="50" cy="50" r="50" />
       <polygon v-else-if="['triangle','diamond','decision','star','hexagon','arrow'].includes(node.type)" :points="({ triangle: '50,0 100,100 0,100', diamond: '50,0 100,50 50,100 0,50', decision: '50,0 100,50 50,100 0,50', star: '50,0 61,34 100,34 68,55 79,92 50,70 21,92 32,55 0,34 39,34', hexagon: '25,0 75,0 100,50 75,100 25,100 0,50', arrow: '0,25 65,25 65,0 100,50 65,100 65,75 0,75' })[node.type]" />
-      <rect v-else x="0" y="0" width="100" height="100" :rx="Math.min(100, node.radius || 0)" />
+      <rect v-else x="0" y="0" :width="customBorderGeometry.width" :height="customBorderGeometry.height" :rx="customBorderGeometry.radius" :ry="customBorderGeometry.radius" />
     </svg>
     <template v-if="node.type === 'pencil'">
       <svg class="pencil-node-visual" viewBox="0 0 1 1" preserveAspectRatio="none" aria-label="铅笔线稿">
@@ -933,13 +1071,13 @@ function colorWithOpacity(color, opacity = 1) {
       <div class="signal-visual"><i :style="{ backgroundColor: currentSignalColor(), opacity: node.signalOpacity ?? 1 }"></i></div>
     </template>
     <template v-else-if="node.type === 'waterTank'">
-      <div class="tank-visual"><i :style="{ height: `${Math.max(0, Math.min(100, Number(node.progressValue) || 0))}%` }"></i><b>{{ boundProgressText }}%</b></div>
+      <div class="tank-visual"><i :style="{ height: `${waterTankPercent}%` }"></i><b>{{ waterTankText }}%</b></div>
     </template>
     <template v-else-if="node.type === 'heartbeat'">
       <HeartPulse class="heartbeat-visual" :size="48" />
     </template>
     <template v-else-if="node.type === 'particles'">
-      <div class="particles-visual"><i v-for="index in 8" :key="index"></i></div>
+      <div class="particles-visual"><i v-for="index in 8" :key="index" :style="{ '--particle-delay': particleAnimationDelay(index) }"></i></div>
     </template>
     <template v-else-if="node.type === 'customMotion'">
       <div class="custom-motion-target custom-shape-visual"><Sparkles :size="34" /></div>
@@ -948,8 +1086,8 @@ function colorWithOpacity(color, opacity = 1) {
       <span class="custom-motion-target custom-text-visual">{{ node.text }}</span>
     </template>
     <template v-else-if="node.type === 'customImageMotion'">
-      <img v-if="node.imageUrl" class="custom-motion-target node-image custom-image-visual" :src="node.imageUrl" alt="" :style="{ objectFit: node.imageFit || 'contain' }" />
-      <div v-else class="custom-motion-target custom-shape-visual"><Image :size="34" /></div>
+      <img v-if="node.imageUrl" class="custom-motion-target node-image custom-image-visual" :class="{ 'is-media-failed': imageLoadFailed }" :data-preview-media-state="imageLoadFailed ? 'error' : undefined" :src="node.imageUrl" alt="" :style="{ objectFit: node.imageFit || 'contain' }" @load="handleImageLoad" @error="handleImageLoadError" @preview-media-error="handleImageLoadError" />
+      <div v-if="!node.imageUrl || imageLoadFailed" class="custom-motion-target custom-shape-visual"><Image :size="34" /></div>
     </template>
     <template v-else-if="node.type === 'customIndicator'">
       <div class="custom-motion-target custom-indicator-visual"><i></i></div>
@@ -958,12 +1096,12 @@ function colorWithOpacity(color, opacity = 1) {
       <Server :size="30" /><div class="status-lights"><i></i><i></i><i></i></div>
     </template>
     <template v-else-if="node.type === 'image'">
-      <img v-if="node.imageUrl" class="node-image" :src="node.imageUrl" alt="" :style="{ objectFit: node.imageFit || 'contain' }" />
-      <Image v-else :size="28" />
+      <img v-if="node.imageUrl" class="node-image" :class="{ 'is-media-failed': imageLoadFailed }" :data-preview-media-state="imageLoadFailed ? 'error' : undefined" :src="node.imageUrl" alt="" :style="{ objectFit: node.imageFit || 'contain' }" @load="handleImageLoad" @error="handleImageLoadError" @preview-media-error="handleImageLoadError" />
+      <Image v-if="!node.imageUrl || imageLoadFailed" :size="28" />
     </template>
     <template v-else-if="node.type === 'video'">
-      <video v-if="node.videoUrl" ref="videoElement" class="node-video" :class="{ 'manual-toggle': preview && node.videoControls === false }" :src="node.videoUrl" :style="{ objectFit: node.videoFit || 'contain' }" :muted="node.videoMuted !== false" :autoplay="preview && node.videoAutoplay" :controls="preview && node.videoControls !== false" :tabindex="preview && node.videoControls === false ? 0 : undefined" :role="preview && node.videoControls === false ? 'button' : undefined" :aria-label="preview && node.videoControls === false ? '播放或暂停视频' : undefined" playsinline preload="metadata" @loadedmetadata="initializeVideoPlayback" @play="handleVideoPlay" @ended="handleVideoEnded" @click="toggleVideoPlayback" @keydown.enter.prevent="toggleVideoPlayback" @keydown.space.prevent="toggleVideoPlayback"></video>
-      <Video v-else :size="30" />
+      <video v-if="node.videoUrl" ref="videoElement" class="node-video" :class="{ 'manual-toggle': preview && node.videoControls === false, 'is-media-failed': videoLoadFailed }" :data-preview-media-state="videoLoadFailed ? 'error' : undefined" :src="node.videoUrl" :style="{ objectFit: node.videoFit || 'contain' }" :muted="node.videoMuted !== false" :autoplay="preview && node.videoAutoplay" :controls="preview && node.videoControls !== false" :tabindex="preview && node.videoControls === false ? 0 : undefined" :role="preview && node.videoControls === false ? 'button' : undefined" :aria-label="preview && node.videoControls === false ? '播放或暂停视频' : undefined" playsinline :preload="preview ? 'auto' : 'metadata'" @loadedmetadata="initializeVideoPlayback" @loadeddata="handleVideoLoadedData" @error="handleVideoLoadError" @play="handleVideoPlay" @ended="handleVideoEnded" @click="toggleVideoPlayback" @keydown.enter.prevent="toggleVideoPlayback" @keydown.space.prevent="toggleVideoPlayback"></video>
+      <Video v-if="!node.videoUrl || videoLoadFailed" :size="30" />
     </template>
     <Cloud v-else-if="node.type === 'cloud'" :size="34" />
     <Network v-else-if="node.type === 'network'" :size="30" />

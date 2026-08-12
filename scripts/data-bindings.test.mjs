@@ -49,8 +49,68 @@ test('binding schema exposes common and component-specific parameters from one w
   assert.equal(bindingParameterFor('checkbox', 'checked')?.valueType, 'boolean')
   assert.equal(bindingParameterFor('input', 'value')?.valueType, 'text')
   assert.equal(bindingParameterFor('progress', 'progressValue')?.valueType, 'number')
+  assert.equal(bindingParameterFor('flowPipe', 'visualPrimaryColor')?.valueType, 'color')
+  assert.deepEqual(
+    { min: bindingParameterFor('waterTank', 'progressValue')?.min, max: bindingParameterFor('waterTank', 'progressValue')?.max },
+    { min: 0, max: 100 }
+  )
   assert.equal(bindingParameterFor('rect', '__proto__'), undefined)
   assert.equal(isBindingTargetAllowed('rect', 'style.fill'), false)
+})
+
+test('signal light communication mirrors the configured color slots and lamp opacity', () => {
+  const node = {
+    type: 'signalLight',
+    signalColorCount: 4,
+    signalColors: ['#21c58e', '#ef5350', '#ffc440', '#168eea'],
+    signalOpacity: 0.8,
+    dataBindings: []
+  }
+  const signalParameters = getBindableParameters(node)
+    .filter(parameter => parameter.group === 'signal')
+    .map(parameter => ({
+      target: parameter.target,
+      label: parameter.label,
+      valueType: parameter.valueType,
+      value: parameter.readStatic(node)
+    }))
+
+  assert.deepEqual(signalParameters, [
+    { target: 'signalColors.0', label: '颜色 1', valueType: 'color', value: '#21c58e' },
+    { target: 'signalColors.1', label: '颜色 2', valueType: 'color', value: '#ef5350' },
+    { target: 'signalColors.2', label: '颜色 3', valueType: 'color', value: '#ffc440' },
+    { target: 'signalColors.3', label: '颜色 4', valueType: 'color', value: '#168eea' },
+    { target: 'signalOpacity', label: '灯光不透明度', valueType: 'number', value: 0.8 }
+  ])
+  assert.equal(bindingParameterFor('signalLight', 'signalColors.7')?.valueType, 'color')
+  assert.equal(bindingParameterFor('signalLight', 'signalColors.8'), undefined)
+  assert.equal(resolveBindingValue(node, 'signalOpacity', 2), 1)
+  assert.equal(resolveBindingValue(node, 'signalOpacity', -1), 0)
+
+  const reducedTargets = getBindableParameters({
+    ...node,
+    signalColorCount: 2,
+    dataBindings: [{ target: 'signalColors.3', pointId: 'signal.fourth' }]
+  }).map(parameter => parameter.target)
+  assert.equal(reducedTargets.includes('signalColors.2'), false)
+  assert.equal(reducedTargets.includes('signalColors.3'), true, 'a hidden configured binding must remain removable')
+})
+
+test('normalizes every bounded signal color target for save and reopen', () => {
+  const node = {
+    type: 'signalLight',
+    dataBindings: [
+      { target: 'signalColors.0', sourceId: 'signal-source', jsonPath: '$.states.run' },
+      { target: 'signalColors.3', sourceId: 'signal-source', jsonPath: '$.states.alarm' },
+      { target: 'signalOpacity', sourceId: 'signal-source', jsonPath: '$.opacity' },
+      { target: 'signalColors.8', sourceId: 'signal-source', jsonPath: '$.invalid' }
+    ]
+  }
+
+  assert.deepEqual(normalizeDataBindings(node), node.dataBindings.slice(0, 3).map(binding => ({
+    ...binding,
+    enabled: true
+  })))
 })
 
 test('keeps an empty text parameter visible when it already has a source JSONPath binding', () => {
@@ -215,6 +275,18 @@ test('data binding index isolates colliding source and legacy keys while bridgin
   assert.equal(index.remove(['source-node']), 1)
   assert.deepEqual([...index.nodeIdsFor(legacyKey)], [])
   assert.equal(index.state.pointCount, 0)
+
+  const overlappingIndex = createDataBindingIndex()
+  overlappingIndex.rebuild([{
+    id: 'overlap-node',
+    type: 'rect',
+    dataBindings: [
+      { target: 'fill', sourceId: 'collision-source', jsonPath: '$.value' },
+      { target: 'stroke', pointId: legacyKey }
+    ]
+  }])
+  assert.deepEqual([...overlappingIndex.nodeIdsFor(legacyKey)], ['overlap-node'])
+  assert.equal(overlappingIndex.countFor(legacyKey), 1)
 })
 
 test('resolves color, number, boolean and text values with static fallback', () => {
@@ -294,6 +366,7 @@ test('resolves an enabled node binding through a point getter without writing th
   const before = structuredClone(node)
 
   assert.equal(resolveNodeBindingValue(node, 'progressValue', pointId => pointId === 'motor.load' ? '68.5' : undefined), 68.5)
+  assert.equal(resolveNodeBindingValue(node, 'progressValue', () => 180), 100)
   assert.deepEqual(node, before)
   assert.equal(resolveNodeBindingValue({ ...node, dataBindings: [{ ...node.dataBindings[0], enabled: false }] }, 'progressValue', () => 90), 25)
 })
@@ -551,6 +624,14 @@ test('project validation accepts canonical bindings and rejects malformed or uns
       { target: 'opacity', sourceId: 'source-http', jsonPath: '$.data.opacity', enabled: false }
     ]
   })))
+  assert.doesNotThrow(() => validateProjectForFrontend(projectWithNode({
+    type: 'signalLight',
+    dataBindings: [
+      { target: 'signalColors.0', sourceId: 'source-http', jsonPath: '$.states.run' },
+      { target: 'signalColors.7', sourceId: 'source-http', jsonPath: '$.states.alarm' },
+      { target: 'signalOpacity', sourceId: 'source-http', jsonPath: '$.opacity' }
+    ]
+  })))
   assert.doesNotThrow(() => validateProjectForFrontend(projectWithNode({ dataKey: 'legacy.only' })))
 
   for (const dataBindings of [
@@ -570,6 +651,14 @@ test('project validation accepts canonical bindings and rejects malformed or uns
       error => error instanceof ProjectValidationError && error.code === 'INVALID_DATA_BINDINGS'
     )
   }
+
+  assert.throws(
+    () => validateProjectForFrontend(projectWithNode({
+      type: 'signalLight',
+      dataBindings: [{ target: 'signalColors.8', pointId: 'bad' }]
+    })),
+    error => error instanceof ProjectValidationError && error.code === 'INVALID_DATA_BINDINGS'
+  )
 
   assert.throws(
     () => validateProjectForFrontend({

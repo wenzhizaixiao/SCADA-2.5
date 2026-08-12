@@ -76,6 +76,34 @@ test('round-trips bounded JSON text and yields when input is pending', async () 
   assert.ok(yields > 0)
 })
 
+test('samples scheduling checkpoints instead of calling native probes for every JSON task', async () => {
+  const source = Array.from({ length: 2_000 }, (_, index) => ({
+    id: index,
+    label: `node-${index}`,
+    visible: index % 2 === 0
+  }))
+  let nowCalls = 0
+  let pendingCalls = 0
+  const encoded = await encodeBoundedJsonText(source, {
+    maxCharacterLength: 1024 * 1024,
+    checkpointTaskInterval: 256,
+    now: () => {
+      nowCalls += 1
+      return 0
+    },
+    isInputPending: () => {
+      pendingCalls += 1
+      return false
+    }
+  })
+
+  assert.equal(encoded.tooLarge, false)
+  assert.deepEqual(JSON.parse(encoded.text), source)
+  assert.ok(pendingCalls > 1, 'large snapshots must remain interruptible')
+  assert.ok(pendingCalls < source.length / 2, 'native input probes must be amortized across JSON tasks')
+  assert.equal(nowCalls, pendingCalls + 1, 'the clock is sampled once per scheduling checkpoint plus startup')
+})
+
 test('cancels bounded JSON text after a yield when freshness or lifecycle expires', async t => {
   for (const mode of ['stale', 'cancelled']) {
     await t.test(mode, async () => {

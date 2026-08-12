@@ -4,6 +4,10 @@ stress-project.json
 *.log
 .DS_Store
 Thumbs.db
+.codex-acceptance/*.png
+.codex-acceptance/*.webp
+.codex-acceptance/*.json
+audit-*.png
 
 # Build and Release Folders
 bin-debug/

@@ -67,6 +67,7 @@ src/
     ├── previewFrameFreshness.js     # 预览文档/请求/提交世代与帧新鲜度门禁
     ├── previewMountBudget.js        # 预览节点复杂度估算与逐帧挂载预算
     ├── pointCatalogPreparation.js   # 大点位目录私有分片准备、取消与原子安装
+    ├── sourceConnectionList.js      # 数据源连接的一次扫描统计、筛选、分组与显示语义
     ├── projectRuntimePreparation.js # 大图完整私有运行索引的 4ms 分片准备与原子交接
     ├── runtimeCanvasDirtyQueue.js   # 运行键到 Canvas 节点的 512 分批队列
     ├── runtimeCanvasRegions.js      # 运行值 Canvas 脏区累加、合并和位图映射
@@ -150,7 +151,9 @@ src/
 }
 ```
 
-`polylinePoints` 按用户落点顺序保存，每两个相邻点组成一段直线，整组点只属于一个 `polyline` 节点；点数上限由 `MAX_POLYLINE_NODE_POINTS` 统一约束。`polylineStyle` 支持 `solid/dashed/dotted`，并复用直线的 `borderDashLength/borderDashGap` 与轮廓字段；旧节点只有 `polylineDash` 时由 `normalizeNode()` 自动迁移。`polylineStartMarker/polylineEndMarker` 分别控制整条路径首端和末端，当前支持 `none` 与 `arrow`；`polylineArrowSize` 以逻辑像素独立控制两端箭头大小，范围为 `1–100`，不得再由 `polylineWidth` 或轮廓宽度实时推导。新节点默认 `8px`；旧节点缺少该字段时先按原公式计算并固化一次，保持历史外观，随后修改线宽不再改变箭头。`polylineLineCap` 支持 `round/butt/square`，`polylineLineJoin` 支持 `round/bevel/miter`。这类节点不是连接两个组件的 `edge`，也不是“基本形状”中的 `lineShape` 直线，三个模型不能互相复用 ID 或端点语义。
+`polylinePoints` 是线段几何的唯一持久化真值，每两个相邻点组成一段，因此分段数始终由 `polylinePoints.length - 1` 推导，不保存重复字段。新线段根据起点和终点默认生成 `4` 个等长段、`5` 个节点；属性栏允许设置 `1–9999` 段，修改已弯折线段时由 `resamplePolylinePoints()` 沿当前折线路径按累计弧长重采样，不会恢复成直线。点数上限由 `MAX_POLYLINE_NODE_POINTS` 统一约束，旧图纸继续直接读取原有点数组，无需版本迁移。
+
+`polylineStyle` 支持 `solid/dashed/dotted`，并复用直线的 `borderDashLength/borderDashGap` 与轮廓字段；旧节点只有 `polylineDash` 时由 `normalizeNode()` 自动迁移。`polylineStartMarker/polylineEndMarker` 分别控制整条路径首端和末端，当前支持 `none` 与 `arrow`；`polylineArrowSize` 以逻辑像素独立控制两端箭头大小，范围为 `1–100`，不得再由 `polylineWidth` 或轮廓宽度实时推导。新节点默认 `8px`；旧节点缺少该字段时先按原公式计算并固化一次，保持历史外观，随后修改线宽不再改变箭头。`polylineLineCap` 支持 `round/butt/square`，`polylineLineJoin` 支持 `round/bevel/miter`。这类节点不是连接两个组件的 `edge`，也不是“基本形状”中的 `lineShape` 直线，三个模型不能互相复用 ID 或端点语义。
 
 节点通过可选的 `groupId` 表示持久化组合关系；相同非空 `groupId` 的节点属于同一组。组合不是额外的容器节点，因此成员仍保留各自坐标、尺寸、类型、图层、旋转角和连线端点。`visualScaleX/visualScaleY` 分别记录组合横向、纵向变换累积到成员内容层的倍率，默认均为 `1`，两者可以不同；解绑只清除成员的 `groupId`，不会删除节点、连线、成员角度或两轴视觉倍率。
 
@@ -229,7 +232,7 @@ Vite 本地图纸服务通过 `drawingRequestBody.js` 和文件读取门禁统�
 
 所有异步组件包任务必须携带 `documentVersion` 和 `interactionGeneration`。`interactionCommitBarrier` 覆盖指针、缩放、滚动、连线和线段起点拖动；跨过任一活动交互的捕获或索引压实只能按 key 延后到干净恢复帧，过期实例发布必须丢弃或按当前代次重试。后台任务不能仅比较文档版本，因为指针按下到抬起之间文档版本可能不变。
 
-`lineShape` 继续注册在“基本形状”，按普通组件添加；`polyline` 只注册在独立“线段”分类。线段必须通过组件库拖拽启动：`dragStartItem()` 写入 `shape=polyline`，`dropItem()` 命中该类型后切换到 `activeTool === 'polyline'`，并把拖拽落点交给 `addPolylinePoint()` 作为草稿第一个节点，不能调用 `addNode()` 创建默认形状。该节点同时显示为固定屏幕尺度的较大起点锚点，草稿期间允许通过 `startPolylineStartPointDrag()` 反复拖动精调。组件库的单击和双击处理都必须忽略 `polyline`，不能激活工具或创建节点；只有草稿启动后的画布双击或 `Enter` 才完成当前线段。完成或取消后按钮不保留激活状态，锚点随草稿清除，下一条线段必须重新拖拽。
+`lineShape` 继续注册在“基本形状”，按普通组件添加；`polyline` 只注册在独立“线段”分类。线段必须通过组件库拖拽启动：`dragStartItem()` 写入 `shape=polyline`，`dropItem()` 命中该类型后切换到 `activeTool === 'polyline'`，并把拖拽落点交给 `addPolylinePoint()` 作为草稿起点，不能调用 `addNode()` 创建默认形状。起点显示为固定屏幕尺度的较大锚点，草稿期间允许通过 `startPolylineStartPointDrag()` 反复拖动精调。下一次画布左键单击确定终点，系统立即生成默认 `4` 个等长段并完成节点，然后切回选择工具；该落点即使位于现有组件上也必须优先完成线段。组件库的单击和双击处理都忽略 `polyline`，完成或取消后锚点随草稿清除，下一条线段必须重新拖拽。
 
 要增加组件：
 
@@ -252,6 +255,7 @@ Vite 本地图纸服务通过 `drawingRequestBody.js` 和文件读取门禁统�
 - `pan`：记录指针起点和画布初始滚动位置。
 - `resize`：记录方向、初始位置、尺寸和旋转角。
 - `rotate`：记录节点中心、起始弧度和初始角度。
+- `polylinePoint`：记录线段节点索引、旋转前框架、局部点数组及 `x/y/w/h/polylinePoints` 字段快照。
 - `draw`：记录当前自由路径 ID。
 
 所有 `pointermove` 由 `requestAnimationFrame` 合并，每个浏览器帧最多更新一次。
@@ -268,7 +272,7 @@ Vite 本地图纸服务通过 `drawingRequestBody.js` 和文件读取门禁统�
 
 `queryNodesInBounds()` 是视口和框选的统一查询入口。普通倍率编辑、原始尺寸预览和全屏预览只挂载视口附近节点；不足 1,500 个节点时保留 `240px` 屏幕缓冲，达到阈值后使用 `96px`，两者都由 `viewportWorldBounds()` 按当前比例换算为逻辑范围。正在移动、缩放或旋转的节点即使暂时越过查询范围也必须保留，避免操作中 DOM 被卸载。框选先从空间索引取得候选，再用 `nodeSelectionBounds()` 做精确相交判断；命中组合后通过预先派生的 `nodesByGroup` 扩展成员，不能为每个命中节点重新扫描全部组件。节点达到 1,200 且倍率不高于 30% 时，编辑器改用整图 Canvas 底图并只为活动对象保留有界 DOM；普通自适应预览同样由分片 Canvas 显示整张图纸，不再挂载全部节点 DOM。
 
-线段草稿使用独立 `polylineDraft`，不借用连续指针操作 `operation`。拖拽松开时写入唯一的起点；第二次及之后每次画布单击把新点追加到有序 `points`，草稿 SVG 立即把上一个点与新点连接。鼠标移动只更新末段预览 `hover`，不能提前持久化节点。画布双击或 `Enter` 调用 `finishPolylineDrawing()`，`polylineFrameFromWorldPoints()` 计算包含线宽和箭头空间的紧边界并把全部世界坐标转为归一化点，最后一次性生成一个普通 `polyline` 节点。完成后必须清除草稿并把 `activeTool` 设回 `select`。`Esc` 和右键取消也执行相同的复位；`Backspace` 每次撤回最后一个落点，点数减为零时立即切回选择。少于两个不同点时不得生成空节点，任一结束路径之后都不能通过空白画布单击直接开始下一条线段。
+线段草稿使用独立 `polylineDraft`，不借用连续指针操作 `operation`。拖拽松开时只写入起点，鼠标移动更新起点到候选终点的预览 `hover`，不能提前持久化节点。下一次画布单击确定终点；两个点距离超过当前命中阈值后，`createEvenlySpacedPolylinePoints()` 生成默认 `4` 段的 `5` 个世界坐标点，并立即调用 `finishPolylineDrawing()`。`polylineFrameFromWorldPoints()` 计算包含线宽和箭头空间的紧边界，把世界坐标转为归一化点并一次性生成普通 `polyline` 节点。完成后必须清除草稿并把 `activeTool` 设回 `select`；`Esc`、右键或只有起点时的 `Backspace` 取消并执行相同复位。少于两个不同点时不得生成空节点，任一结束路径之后都不能通过空白画布单击直接开始下一条线段。
 
 `selectNodes` 使用标准化矩形支持从左上到右下或反向拖动。`nodeSelectionBounds()` 把旋转节点换算为轴对齐视觉边界，`framesIntersect()` 采用相交命中，使组件只要有可见区域进入选择框即可选中；命中任一组合成员后再扩展完整 `groupId`。小于约 3 屏幕像素的移动按空白单击处理。`pointerUp()` 清除临时框，`Esc` 恢复操作开始前的选择。选择工具的普通空白拖动专用于框选，画布平移改由 `Alt + 左键`或鼠标中键进入 `pan`，避免两种手势冲突。
 
@@ -348,7 +352,7 @@ surface 回池前还必须重新调用 `getContext('2d')`；首次任务创建�
 
 Canvas 内部每一层 `save()` 都必须由同一词法作用域的 `try/finally` 配对 `restore()`，包括节点、图片、线稿、线段、设备和边 marker；不能依赖正常返回路径恢复 transform、alpha、dash 或 clip。`createStaticRenderSurface()` 和 `createRenderTask()` 在取得工作面后的创建期任一步骤抛错时，必须先恢复已保存的 context，再把该 surface 标记为不可复用并释放；恢复本身失败也必须隔离该 surface。运行 seed 的 draw/null-context、取消清理中的 restore/reset、几何 static/composite/target context 获取或局部合成异常同样进入统一错误报告和 fallback/权威完整帧恢复，不得让异常越过恢复边界或把坏工作面放回池。`scripts/minimap-canvas-state-exceptions.test.mjs` 以 18 项故障注入锁定这些异常路径。
 
-活动自适应预览必须使用 `render-mode="task"`，`render-budget-ms` 为 `4`。task 调度优先使用 `MessageChannel`，但 `TASK_RENDER_MAX_CONSECUTIVE_SLICES = 2`，每连续两片必须通过可取消的 `requestAnimationFrame` 让浏览器获得绘制机会；无 rAF 时继续 task，无 `MessageChannel` 时回退 `setTimeout(0)`，任何分支都不能改成无预算同步循环。非活动 bootstrap 使用 `idle` 调度和 `2ms` 预算。`createChunkedRenderScheduler()` 的 `budgetMs` 支持 getter，并在每个 slice 开始重新读取；`MiniMapPreview` full scheduler 必须传入 `() => normalizedRenderSliceBudgetMs(props.renderBudgetMs)`，runtime scheduler 保持固定 `2ms`。两个 scheduler 都必须配置 `onError`，先释放失败任务，再统一交给 `reportCanvasRenderError(...)`，不得让调度回调产生未处理异常。`previewFitBitmapPixelBudget` 必须调用 `previewBitmapPixelBudget()`：活动 surface 以 `max(2, min(3, devicePixelRatio))` 为目标倍率，按最终 `stageWidth × stageHeight × fitScale²` 显示面积计算需求并封顶 `MAX_PREVIEW_BITMAP_PIXELS = 8_388_608`；非活动 surface 只作为交接 bootstrap，封顶 `MAX_PREVIEW_BOOTSTRAP_BITMAP_PIXELS = 4_194_304`。小预览不得始终申请最大位图，超大活动视口触及总上限时允许实际倍率有界低于 `2x`，但此时不得把不足倍率的 Canvas 交给用户。`previewFitBootstrapCanRenderSharp` 必须先比较预算计算出的可达像素比与请求值，完整 fit 帧和 edge-only 帧还必须用 X/Y 实际像素比的较小值再次通过 `previewBitmapIsSharp()`；任一不满足时分别保留 DOM 或完整 SVG 清晰回退。低倍率编辑使用独立的 `1_048_576` fallback 与 `12_582_912` detail 预算，不能再归入预览的 419 万像素档。位图像素预算只控制 Canvas 内存与清晰度，绝不能成为 DOM 节点、连线或线稿数量的裁剪条件。
+活动自适应预览以及普通大图首次呈现前的完整兜底帧必须使用 `render-mode="task"`，`render-budget-ms` 为 `4`；后者由 `previewFitInitialRenderUrgent = previewFallbackRequired && !previewPresentationReady` 控制，原子交接后恢复 `idle + 2ms`。task 调度优先使用 `MessageChannel`，但 `TASK_RENDER_MAX_CONSECUTIVE_SLICES = 2`，每连续两片必须通过可取消的 `requestAnimationFrame` 让浏览器获得绘制机会；无 rAF 时继续 task，无 `MessageChannel` 时回退 `setTimeout(0)`，任何分支都不能改成无预算同步循环。`createChunkedRenderScheduler()` 的 `budgetMs` 支持 getter，并在每个 slice 开始重新读取；`MiniMapPreview` full scheduler 必须传入 `() => normalizedRenderSliceBudgetMs(props.renderBudgetMs)`，runtime scheduler 保持固定 `2ms`。预览专用 `MiniMapPreview` 必须启用 `wait-for-images`，按实际绘制记录 `pendingImageUrls`，含占位像素的私有帧只能发送 rejected，不能覆盖可见面；多图 load/error 结算后通过合并触发器只请求一次权威重绘。两个 scheduler 都必须配置 `onError`，先释放失败任务，再统一交给 `reportCanvasRenderError(...)`，不得让调度回调产生未处理异常。`previewFitBitmapPixelBudget` 必须调用 `previewBitmapPixelBudget()`：活动 surface 以 `max(2, min(3, devicePixelRatio))` 为目标倍率，按最终 `stageWidth × stageHeight × fitScale²` 显示面积计算需求并封顶 `MAX_PREVIEW_BITMAP_PIXELS = 8_388_608`；普通尺寸大图的交接帧封顶 `MAX_PREVIEW_BOOTSTRAP_BITMAP_PIXELS = 4_194_304`。小预览不得始终申请最大位图，超大活动视口触及总上限时允许实际倍率有界低于 `2x`，但此时不得把不足倍率的 Canvas 交给用户。`previewFitBootstrapCanRenderSharp` 必须先比较预算计算出的可达像素比与请求值，完整 fit 帧和 edge-only 帧还必须用 X/Y 实际像素比的较小值再次通过 `previewBitmapIsSharp()`；任一不满足时分别保留 DOM 或完整 SVG 清晰回退。低倍率编辑使用独立的 `1_048_576` fallback 与 `12_582_912` detail 预算，不能再归入预览的 419 万像素档。位图像素预算只控制 Canvas 内存与清晰度，绝不能成为 DOM 节点、连线或线稿数量的裁剪条件。
 
 静态边 Worker 在 `incrementalRuntime && max(edgeCount, edgeSpatialIndex.state.entries) >= EDGE_RASTER_WORKER_THRESHOLD(2048)` 时启用；不得再用 `!edgeSourceCursor` 排除空间查询路径。主线程必须继续在 full scheduler 的动态 `2–6ms` 预算内调用 `edgeRasterCommand()` 并建立几何索引。数组路径直接读取现有边；cursor 路径每次 `runSlice` 最多检查 `256` 个 index entries，但在同一 deadline 尚未让步时应继续查询，尽量组成最多 `EDGE_RASTER_WORKER_BATCH_SIZE(512)` 条的 transferable `Float64Array/Uint8Array/Uint16Array`。禁止为启用 Worker 同步收集整个空间索引结果，也禁止把 Vue edge 对象、节点 Map 或完整图纸 postMessage 给 Worker。`edgeRasterDrawing.js` 是主线程 fallback 与 Worker 的唯一共同绘制语义：边顺序、每边 `beginPath/stroke`、dash reset、颜色及起止 marker 必须一致；`drawEdgeRasterCommand()` 必须保存并在完成后恢复调用方原 `lineCap`，不能污染同一 context 的后续图元，也不能为批量 stroke 改变透明叠加或交叉像素。Worker 用 OffscreenCanvas 完成背景与静态边后只转移一个 ImageBitmap；主线程一次复制到 static surface，再继续节点/drawing。
 
@@ -364,7 +368,7 @@ cursor 的 `onMatch` 必须先执行 `task.edges.push(edge)`，再更新 `static
 
 普通原始预览和全屏预览都以 `100%` 显示 `stageWidth × stageHeight` 画布，禁止根据视口放大或缩小，超出内容区的部分由 `.preview-canvas` 提供双向滚动；只有普通自适应预览使用 `Math.min(可用宽度 / 图纸宽度, 可用高度 / 图纸高度)` 等比显示完整画布，并把结果提交给有界像素数的分片 Canvas。全屏入口对包含标题栏和画布的 `previewOverlay` 调用 `requestFullscreen({ navigationUI: 'hide' })`，成功后必须校验 `document.fullscreenElement`；进入全屏时模板通过 `previewFullscreen` 不再挂载普通预览标题栏，`.is-fullscreen` 与原生 `:fullscreen` 规则共同保证画布占满全屏内容区。全屏内不挂载任何退出按钮，统一由浏览器标准 `Esc` 退出。`previewViewportScheduler.js` 把 `fullscreenchange`、`ResizeObserver` 和滚动合并到同一代 rAF；进入或退出原生全屏的首帧没有有效 `contentRect` 时只再等待一帧，第二帧才读取 DOM 尺寸兜底，普通滚动不能被这条全屏等待规则延迟。除 `fullscreenchange` 外，窗口 `resize`、`focus` 和文档 `visibilitychange` 都必须调用幂等的全屏状态校准，以 `document.fullscreenElement === previewOverlay` 修正漏失事件后的状态。`previewViewport` 在原始与全屏模式中跟随真实滚动窗口，确保普通节点、`pencil` 节点、跨屏连线和表单状态连续存在。`ProgressivePreviewNodes` 在每个新世代立即剔除不属于新目标的陈旧 DOM，只保留新旧目标交集并采用当前同 ID 节点引用，再递增挂载缺失节点；滚动不能把仍在视口内的 `NodeVisual`、媒体元素或运行值订阅整批卸载重建，也不能等新目标完整后才释放已经离开目标的旧实例。
 
-`ProgressivePreviewNodes` 的每帧增量不能只按节点数量切批，还要通过 `previewMountBudget.js` 估算挂载成本：普通节点成本固定，选择器成本随选项数增加，表格成本随行列数和表头增加。组件工具默认每批最多 128 个节点且成本预算为 1,024；`App.vue` 主预览显式传入 `batch-size="8"`、`mount-cost-budget="64"`。缺失节点必须对 `shallowRef` 持有的同一数组执行原地 `push` 并 `triggerRef`，禁止每批过滤或复制全部已挂载节点。每次追加后等待 `nextTick`，以实际 DOM 提交耗时调整下一批倍率：低于 `3ms` 加倍，高于 `8ms` 减半，倍率限制在 `1–16`；类型成本与节点数预算仍同时生效。节点列表或预算变化时递增世代并取消旧帧，先同步发布仅含保留交集的数组，再继续扩展缺失节点。正常 fit Canvas 等待阶段 `previewDomNodes` 只能读取当前带缓冲视口；只有 `!previewFitCanUseCanvas || previewFitCanvasFailed` 时才允许 `previewDomFullDocumentRequested` 选择全图。Canvas 失败要先把 `previewDisplayMode` 设为原尺寸 `dom` 保证页面清晰非空，完整渐进挂载的 generation/count 都 ready 后才切到 `dom-fit` 并释放 fit surface。
+`ProgressivePreviewNodes` 的每帧增量不能只按节点数量切批，还要通过 `previewMountBudget.js` 估算挂载成本：普通节点成本固定，选择器成本随选项数增加，表格成本随行列数和表头增加。组件工具默认每批最多 128 个节点且成本预算为 1,024；`App.vue` 主预览显式传入 `batch-size="8"`、`mount-cost-budget="64"`。缺失节点必须追加为新的不可变 `visibleBatches` 项，禁止修改已经作为子组件 prop 发布的批次，也禁止每批过滤或复制全部已挂载节点。每次追加后等待 `nextTick`，以实际 DOM 提交耗时调整下一批倍率；节点倍率上限固定为 `2`，类型成本与节点数预算仍同时生效。节点列表或预算变化时递增世代并取消旧帧，先同步发布仅含保留交集且引用已更新的批次，再追加缺失批次。完成事件必须在 `nextTick` 后核对 generation、源数量和真实 DOM 数量；图片节点还要等待 load/error，live plane 未 ready 时不得呈现。正常 fit Canvas 等待阶段 `previewDomNodes` 只能读取当前带缓冲视口；只有 `!previewFitCanUseCanvas || previewFitCanvasFailed` 时才允许 `previewDomFullDocumentRequested` 选择全图。Canvas 失败要先把 `previewDisplayMode` 设为原尺寸 `dom` 保证页面清晰非空，完整渐进挂载的 generation/count 都 ready 后才切到 `dom-fit` 并释放 fit surface。
 
 `previewFrameFreshness.js` 是 Canvas 交接的独立状态机。fit surface 启动或目标变化后必须通过 `ensurePreviewFitCanvas()` 请求属于当前文档、目标尺寸和渲染计划的权威完整帧；禁止从另一 surface 复制低密度帧作为 bootstrap，也禁止在完整提交前把 available 冒充 fresh。任何表单或文档内容修改必须先调用 `invalidateDocument()` 推进文档世代并使旧帧失效；合并后的完整绘制调用 `requestDocumentRender()` 绑定当前请求世代。当前文档的完整帧原子提交且 `pendingFull=false` 后即可恢复 fresh；运行值事件只允许更新已经提交的同世代帧，不能在文档修改后的完整帧尚未提交时触发 Canvas 显示。一次运行帧提交时即使已有更新的运行值继续排队，也必须允许这个合法帧参与交接，不能因连续 `pendingRuntime` 使 Canvas 永久饥饿；更新值继续在后续 latest-wins 分片中收敛。没有可绘制运行视觉时仍要发出 settled no-op 完成事件。打开、关闭或重新初始化预览必须使旧世代失效。
 
@@ -407,13 +411,15 @@ faithful 低倍率 detail 允许通过 `readableCanvasFontSize()` 把屏幕文�
 
 ### 线段组件
 
-线段的用户入口只存在于独立“线段”分类，“基本形状”中的直线入口及 `lineShape` 行为保持不变。草稿只能由组件库拖拽落点启动；启动后，后续落点无论位于画布空白、普通组件、锁定组件还是旧线稿区域，都必须先转交 `addPolylinePoint()`，确保落点不被已有节点层级阻断。草稿层 `.polyline-draft-layer` 位于普通节点之上，使用有序 `<polyline>` 同步显示所有已落点以及最后一个悬停预览点；每新增一个有效点，前一落点到当前落点的直线必须立即可见。该层整体和路径继续禁用指针事件，只有第一个圆点使用 `.polyline-start-point` 恢复命中；起点半径按 `7 / zoom` 绘制，大于其他节点的 `4 / zoom`，保证不同缩放下仍清晰可拖拽。
+线段的用户入口只存在于独立“线段”分类，“基本形状”中的直线入口及 `lineShape` 行为保持不变。草稿只能由组件库拖拽落点启动；启动后，下一次画布左键落点无论位于空白、普通组件、锁定组件还是旧线稿区域，都必须先转交 `addPolylinePoint()`，确保终点不被已有节点层级阻断。草稿层 `.polyline-draft-layer` 位于普通节点之上，只显示起点到当前悬停终点的直线预览。该层整体和路径继续禁用指针事件，只有起点圆点使用 `.polyline-start-point` 恢复命中；起点半径按 `7 / zoom` 绘制，保证不同缩放下仍清晰可拖拽。
 
-起点拖动使用 `polylineStartPointDrag` 保存 `pointerId` 和命中目标，`startPolylineStartPointDrag()` 必须阻止事件继续冒泡并捕获指针，避免锚点按下被 `addPolylinePoint()` 当作新落点。`movePolylineStartPoint()` 仅通过 `polylinePointFromEvent()` 更新 `polylineDraft.points[0]`；禁止调用 `push()`、`splice()` 或修改后续节点。该坐标转换与普通线段落点共用当前网格吸附，事件带 `altKey` 时临时跳过吸附。`pointerup`、`pointercancel` 和窗口失焦必须调用 `endPolylineStartPointDrag()` 释放指针捕获并移除窗口监听，但保留仍未完成的草稿及其起点锚点；完成、取消、撤回到零点、切换图纸和组件卸载还必须继续清除草稿，不能留下悬空拖动状态。
+起点拖动使用 `polylineStartPointDrag` 保存 `pointerId` 和命中目标，`startPolylineStartPointDrag()` 必须阻止事件继续冒泡并捕获指针，避免锚点按下被 `addPolylinePoint()` 当作终点。`movePolylineStartPoint()` 仅通过 `polylinePointFromEvent()` 更新 `polylineDraft.points[0]` 和悬停预览；禁止新增草稿点。该坐标转换与终点落点共用当前网格吸附，事件带 `altKey` 时临时跳过吸附。`pointerup`、`pointercancel` 和窗口失焦必须调用 `endPolylineStartPointDrag()` 释放指针捕获并移除窗口监听，但保留仍未完成的草稿及其起点锚点；完成、取消、`Backspace`、切换图纸和组件卸载还必须继续清除草稿，不能留下悬空拖动状态。
 
 `NodeVisual.vue` 通过 `polylinePath()` 把归一化点转换为单个 `M/L` SVG 路径，并以 `vector-effect="non-scaling-stroke"` 保持线宽语义。实线、虚线和点线由 `polylineStyle` 决定，虚线长度与间隔复用 `borderDashLength/borderDashGap`；线条本体透明度由 `polylineOpacity` 控制，轮廓继续复用 `borderVisible/stroke/borderWidth`。首尾箭头 marker ID 必须同时包含节点 ID 和渲染实例 ID，避免编辑、预览、“我的”缩略图或同节点多实例同时存在时互相引用。`MiniMapPreview.vue` 使用同一组归一化点、线型、分段参数、轮廓、端点和首尾箭头语义绘制鹰眼。编辑与预览的 `v-memo` 必须包含全部线段字段，属性修改后应立即刷新所有视图。
 
-完成节点进入统一 `nodes` 集合后，移动、八方向缩放、旋转、锁定、复制粘贴、图层、组合、添加到“我的”、撤销重做、保存恢复和预览全部复用普通节点链路。`normalizeNode()` 应限制点坐标、点数、线宽、线型、透明度、箭头、端点和连接值，并把旧 `polylineDash` 迁移为新的三态 `polylineStyle`；导入容量检查必须把 `polylinePoints` 与铅笔及旧线稿点数共同计入项目上限。起点锚点只属于临时草稿层，不进入完成节点或图纸数据；切换图纸、恢复历史、切换到其他工具或重置会话时必须先结束锚点拖动并清除未完成 `polylineDraft`，不能把草稿写入图纸 JSON。
+完成节点进入统一 `nodes` 集合后，移动、八方向缩放、旋转、锁定、复制粘贴、图层、组合、添加到“我的”、撤销重做、保存恢复和预览全部复用普通节点链路。单选、选择工具且未锁定时，`.polyline-point-editor` 为 `polylinePoints` 的全部端点和中间点显示固定屏幕尺寸手柄；命中区和圆点按 `zoom` 反向补偿，八向缩放和旋转入口继续保留。控制层必须用固定数量的聚合 SVG path 绘制和命中节点，按下时再查找最近节点，不能为最多 10,000 个点逐点创建 DOM。拖点先把世界坐标按节点角度逆旋转到局部坐标，再由 `reframePolylineNode()` 重算旋转框架及归一化点；未拖节点的世界坐标必须保持不变，拖出旧框或画布边界也不能夹回。一次连续拖动只记录一条 `fields` 历史，字段固定为 `x/y/w/h/polylinePoints`，同时更新空间索引、编辑 LOD、鹰眼和预览。
+
+`normalizeNode()` 应限制点坐标、点数、线宽、线型、透明度、箭头、端点和连接值，并把旧 `polylineDash` 迁移为新的三态 `polylineStyle`；导入容量检查必须把 `polylinePoints` 与铅笔及旧线稿点数共同计入项目上限。起点锚点只属于临时草稿层，不进入完成节点或图纸数据；切换图纸、恢复历史、切换到其他工具或重置会话时必须先结束锚点拖动并清除未完成 `polylineDraft`，不能把草稿写入图纸 JSON。
 
 ### 表单数据与事件
 
@@ -516,6 +522,39 @@ enqueueRuntimeData([
 ```
 
 “数据源”页面只管理连接生命周期；“通信”面板把组件参数保存为 `{ target, sourceId, jsonPath, enabled }`。`pointCatalogGateway` 提供 `listSources/getSourceSnapshot/subscribeSnapshots` 契约，`sourceBindingRuntime` 对相同 `sourceId + jsonPath` 去重求值，再把稳定派生键交给 `runtimeGateway` 和 `useRuntimeData`。接入真实 WebSocket、MQTT、HTTP、SQL 或 Redis 时，应在 `src/services/backend.js` 替换数据源适配器，不能在组件、属性面板或画布事件中创建协议连接。大响应应在 Worker 解析后通过 `ingestSourceSnapshot(..., { takeOwnership: true })` 移交；共享快照只读，调用方不得修改。
+
+`DataSourceManager.vue` 不再分别用多个 computed 扫描连接数组。唯一的 `sourceListModel` 调用 `createSourceConnectionListModel()`，在一次 `for...of` 中生成未受筛选影响的 `stats`、`protocolCounts`，以及按原顺序保留连接引用的 `filtered/groups`。搜索字段统一包含名称、endpoint、协议全称和 `TCP/WS/SQL/MYSQL` 等显示简称、状态文字及连接类别；状态筛选把离线与错误合并为“异常”，停用优先于来源上报状态，协议筛选可以与搜索和状态叠加。新增筛选条件时必须继续在该模型中一次完成，不能在模板或新的 computed 中重新全表过滤、统计或复制来源记录。
+
+连接行按 `source.id` 保持稳定身份，并分为“连接配置”和“接口 Demo”；Demo 组初始折叠，存在搜索词时组视图强制展开。筛选不得调用 `selectSource()` 或 `fillDraft()`，否则会丢失尚未保存的右侧表单。当前 ID 不在筛选结果时只显示定位提示；`revealSelectedSource()` 清空搜索、状态和协议筛选后展开对应组。状态必须同时显示文字，不能只依赖颜色；七类协议使用固定且可区分的标记配色。`680px` 以下只切换为上方连接清单、下方配置区的单列布局，连接生命周期和草稿状态保持同一套逻辑。
+
+保存、保存并测试、删除和选择详情都是带来源身份的异步边界：操作开始后必须固定发起时的 `source.id` 并锁定冲突操作，不能在等待期间把结果提交到后来选中的连接。保存或测试等待期间，整个可编辑配置 `fieldset` 必须禁用，避免异步回包覆盖期间的新输入。切换连接、新建和关闭管理页前必须确认未保存草稿；筛选和定位不触发该确认。连接变更成功后若列表刷新失败，应分别报告“变更已成功”和“刷新失败”，不能把已成功的变更误报为失败。全局提示区域必须位于加载、空态和详情分支之外；列表或详情加载失败时既要保留具体错误，也要显示对应空态。选择详情只有在加载成功后才能提交，加载失败时继续保留原详情。两个弹窗必须管理初始焦点、Tab 循环、Escape 分层关闭和焦点恢复；极短视口允许工作区纵向滚动，确保配置区和操作按钮仍可访问。
+
+内置接口 Demo 只属于本地数据源目录：MQTT、HTTP、MySQL、SQL Server、Redis、Socket 和 WebSocket 各有颜色、数值两个 Demo。顶层 `value` 和 `$.value` 是稳定主值契约；公共字段包含 `protocol`、类型字段 `kind`、`status`、`metric`、`label`、`enabled` 和 `updatedAt`。颜色样例另有 `palette/states`，数值样例另有 `unit/metrics/series`，两类都提供标准 `table={ columns, rows }`。每条样例正文必须保持确定性、小于 `4 KiB`，表格只提供少量行，不能把 Demo 变成长时间序列或大响应。旧七条示例连接的 ID、数据结构和 JSONPath 必须保持不变。旧默认工作空间只允许执行一次只增不改的 Demo 目录迁移；迁移版本随来源元数据持久化，后续不得因刷新或重启复活用户已经删除的 Demo。不得为 Demo 在组件中新增专用请求或类型分支。
+
+代码定义样例的回退必须验证来源身份；删除内置 Demo 后以相同 ID 创建的用户连接不能继承旧样例。协议或连接配置变化时必须清空旧 `lastResponse.preview` 并持久化样例脱离标记，连接测试只能发布新配置对应的数据或有界点位样例，不能把旧协议正文重新标为 `good`。目录刷新如需保存迁移，必须在替换活动目录和发布快照之前完成保存；保存拒绝时目录、快照和事件保持原状。
+
+所有组件的通信页都通过 `parameterDataFormatGuide()` 按参数类型展示默认返回结构。颜色、数值、布尔和文本推荐把主值放在 `value` 并选择 `$.value`；表格推荐放在 `table` 并选择 `$.table`，同时展示行对象数组和 `{ columns, rows }` 两种合法结构。格式指南的样例必须通过 `directBindingCompatibility()`，新增参数类型时同时更新兼容规则、格式指南和回归测试，不能在单个组件中硬编码另一套说明。
+
+信号灯是数组属性与通信项对应的受控例外。`componentBindingSchema.js` 导出统一上限 `MAX_SIGNAL_COLORS=8`：`signalColorCount` 只决定当前节点显示多少个颜色项，实际绑定目标固定为 `signalColors.0` 至 `signalColors.7`，`signalOpacity` 是范围为 `0..1` 的独立数值目标。按节点生成通信参数时，颜色索引小于当前 `signalColorCount` 的项目正常显示；索引已经存在绑定时，即使随后减少颜色数量也必须继续显示，直到解除绑定。不得直接按当前数组长度删除或静默丢弃高位关系。旧图纸的 `signalColor` 继续作为 `signalColors.0` 的静态回退。
+
+运行时由 `sourceBindingRuntime` 为每个 `sourceId + jsonPath` 生成稳定键，同一来源的多个状态路径可以分别驱动不同灯位，不会互相覆盖。`runtimeNodeMaterializer` 只在存在有效颜色覆盖时浅拷贝一次调色板，并在复制前限制为前 `8` 项；颜色继续经过统一安全转换，非法值、无结果和不可用质量回退对应静态灯位。`signalOpacity` 使用 schema 的数值上下界转换。物化结果只交给 `NodeVisual` 和 Canvas 渲染器，禁止写回原始 `node.signalColors`、`node.signalOpacity`、图纸 JSON 或撤销历史。信号灯轮换监听使用由动画配置和前 `8` 个有效颜色组成的稳定签名；不透明度或其他无关运行值更新不得重置信号灯颜色相位。
+
+表格数据的标准绑定契约为：
+
+```json
+{
+  "columns": [
+    { "key": "device", "title": "设备" },
+    { "key": "value", "title": "数值" }
+  ],
+  "rows": [
+    { "device": "风机 A", "value": 1480 },
+    { "device": "风机 B", "value": 1520 }
+  ]
+}
+```
+
+JSONPath 应优先指向完整数据集，例如 Demo 的 `$.table`，这样可以保留 `columns[].title`。`$.table.rows` 也受支持，但会从行内容推断列名；`columns` 可省略，对象行按键、数组行按最大宽度推断，标量行生成单列“值”。单元格应优先使用 string、number、boolean 或 null 等标量。运行时最多物化 50 行、12 列；复杂值沿用统一格式化预算：最多 4 层、12 个对象键、12 个数组项、48 个总条目和 256 个输出字符。测试必须固定 14 条 Demo 的 `$.value` 兼容性、丰富字段类型、标准 `table` 结构、`$.table` 标题/行物化、`$.table.rows` 推断以及刷新、测试连接和迁移后的样例稳定性。
 
 `workspacePointSourceStore` 默认使用 IndexedDB `tc2d-point-sources/workspace-point-sources`：每个工作空间发布一个 v2 manifest，点位默认按 `256` 条 structured-clone shard 保存。写入顺序必须是“新 revision 全部分块成功 → 发布 manifest → 清理旧 revision”；任一步骤失败都保留上一 durable manifest，并让当前页最新状态进入 memory-only，不能用半套分片替换旧快照。manifest 的 `pointChunkMaxItems` 是持久契约，缺失时只按历史 `256` 读取；chunk key 必须包含 workspace/source、随机 store namespace、单调 revision 和 sequence，恢复时校验归属、顺序、重复引用、块数量、块上限与总点数。默认 `load/save/saveSource/removeSource/remove` 在 `navigator.locks` 可用时全部请求 `tc2d-point-sources:<encodedWorkspaceId>` 独占锁，并在锁内强制刷新 durable manifest 与有效 chunk key 缓存；非 memory-only 路径不得复用锁外缓存，否则另一标签页已回收的 shard 会被旧 manifest 再次引用。锁 API 不可用或请求尚未进入回调即失败时只保留页内队列降级，不能宣称严格跨标签互斥；锁回调已经开始后抛错必须向调用方传播，禁止重复执行操作。旧 localStorage v1/v2 仅在 IndexedDB commit 成功后删除。每 4 次 IDB 操作使用 `scheduler.yield()`，不支持时 `setTimeout(0)`，不得等待 rAF 才继续持久化。
 
@@ -651,7 +690,7 @@ Worker 返回的是已经校验、迁移和归一化的项目数据，不是可�
 - `package.json` 的直接依赖必须使用已验证的明确版本并与 `package-lock.json` 一致，禁止使用 `latest`。Vue 和界面运行库放在 `dependencies`，Vite 及其插件放在 `devDependencies`；调整依赖后至少执行 `npm ls --depth=0`、离线安全审计、稳定性测试、性能测试和生产构建。
 - `vite.config.js` 必须同时保留前置 `cleanBuildOutputPlugin()` 与 `build.emptyOutDir: true`。插件只在 `configResolved()` 中解析一次实际 outDir；删除前先用 `relative(PROJECT_ROOT, outputDirectory)` 拒绝项目根目录本身和词法越界，再比较 `realpath(PROJECT_ROOT)` 与 `nearestExistingRealPath(outputDirectory)` 拒绝符号链接/现存祖先逃逸，只有通过两道边界才能递归清理。最终生产构建应独立顺序执行，并确认 `dist/index.html` 只引用本轮哈希且 `dist/assets/` 没有旧构建残留；并发代理或开发服务生成的临时产物不能作为交付构建。
 - 文本排布回归必须覆盖连续空格 JSON 往返、非法 `textLayout` 回退横向、DOM 的 `break-spaces/vertical-rl`、两处 `v-memo` 依赖，以及 MiniMap Canvas 横排换行、按字素竖排和空格推进。低倍率可读字号必须复用原字号生成的行/列基线，并覆盖横排、竖排、组合缩放和宽高约束；正文超过 `512` 字符时还要覆盖 full/dense/sparse 三路、每 `32` 次操作检查 deadline、单片 `8,192` 次硬上限、布局完成前不推进游标、取消/异常清理与 geometry 权威完整帧降级。浏览器还需检查长横排与长竖排在编辑、预览、鹰眼、“我的”缩略图及保存重开的一致性。
-- 线段的目录归属、拖拽启动、逐点状态机、起点锚点拖动与完整清理、网格吸附及 `Alt` 临时取消吸附、结束后复位选择、紧边界归一化、三态线型、首尾箭头和多视图渲染由 `scripts/polyline.test.mjs` 及编辑器交互测试共同覆盖；直线仍在基本形状、线段单独成类、组件库单击/双击不启动线段、拖动起点不新增节点必须作为回归契约保留。
+- 线段的目录归属、拖拽起点、单击终点自动完成、默认四等分、起点锚点拖动与完整清理、网格吸附及 `Alt` 临时取消吸附、结束后复位选择、段数弧长重采样、旋转节点拖拽重包围框、单次字段历史、三态线型、首尾箭头和多视图渲染由 `scripts/polyline.test.mjs` 及编辑器交互测试共同覆盖；直线仍在基本形状、线段单独成类、组件库单击/双击不启动线段、拖动起点不新增节点必须作为回归契约保留。
 - 大图性能回归必须覆盖 10,000 节点空间查询、大空白范围、节点 Map 尾部代理登记、时间/图层/空间/连线邻接索引的批次更新、双游标层级预留、删除/撤销同步、滚轮临时范围只扩不缩、新区域先挂载再合成、`96ms` 单次提交、单一 `--inverse-zoom`、嵌套渲染键缓存、卸载指针帧清理、结构面板倒序窗口化，以及鹰眼/低倍率编辑/自适应预览 Canvas 的分片、动态预算、世代取消、原子提交、尺寸变化失败回滚、局部运行值脏区和调度/提交异常释放；Canvas 故障注入还必须覆盖嵌套 `save()/restore()` 的 `try/finally`、创建期恢复、运行 seed 与几何 context/合成异常、坏 surface 隔离及权威完整帧恢复。运行值还要覆盖每 RAF `1 × 512`、重复 ID、整数批边界空终批、视口外 no-op、sparse front/back 轮换、sparse/dense 自动切换、私有工作面、条带 seed、dense replay、时间节点 dense 入口、几何取消后的 runtime replay，以及 union clip 单次 copy 在异常前不清除可见面。预览还必须覆盖第 513 个及其后节点、超阈值连线/线稿不丢失、DOM 世代保留新旧视口交集、纯 Canvas、最多 `24` 条的安全尾段、尾段夹带静态 node/drawing、超过 `16` 个 node 或 `128` 成本以及 24 条内无法覆盖 live 节点时的完整 DOM 回退、双排除集合、持久 live plane、无跨 surface 低密度启动帧、render plan 精确匹配、Canvas context 故障回退和非活动 surface/committed plan 释放。不能为方便改回每帧全量扫描、冻结目标视口所需节点、每次增删重建 Map、扫描全图求新层级、复制完整倒序图层、滚轮逐帧写 Vue `zoom`、Canvas 单回调绘制全图、字段命令序列化整图、预览实体硬截断、不验证图层与预算就混合 Canvas/DOM、在覆盖层重复 edges/drawings 或模板直接序列化嵌套数据。
 - 边 Worker 回归必须证明 packed batch 与主线程 `drawEdgeRasterCommand()` 的完整调用序列一致，覆盖调用后恢复原 `lineCap`、Float64/Uint8/Uint16 transfer list、边数组或空间索引 `entries` 达到 2,048 的门槛、cursor 每次最多 256 个 index operations 且同一时间片尽量组成 512 条命令、顺序与 marker/dash 语义、单 active job、start/batch/finish 三阶段 8 秒失联、supersede/cancel、迟到 bitmap 关闭、Worker/消息/协议/合成失败回退及组件卸载释放。空间查询故障用例必须证明已收集 `task.edges` 从头重放后继续剩余 cursor，结果无遗漏、无重复。edge-only 完整提交还要断言不会保留无用的 static/composite 双离屏面。浏览器要在 20,000 条静态连线首次自适应预览和原始尺寸 edge-only 窗口中记录 Long Task，并把 Worker 帧与强制主线程基准做像素比较；不得用合并透明边 stroke 或跳过连线换取数字。
 - 编辑挂载与连线密度回归必须覆盖：首屏超过 `128` 个节点时按 `8/64` 预算渐进 DOM，打开预览取消编辑帧，关闭预览及持久 LOD 退出重新渐进接管；普通倍率视口边超过 `1,024` 条时只把边切到 Canvas，节点和线稿 DOM 数量及交互保持完整，SVG 活动边最多 `128` 条，`renderNodes/renderDrawings=false` 在 full/runtime/geometry 路径都不绘制实体，模式 key 阻止旧帧提交。高出度节点还要证明 `countFor()` 在超过 `128` 后先于邻接枚举退出，指针帧几何和 overlay 都有相同上限，松手后才以私有索引分片重建并原子替换，强制重建不能被“无 segment”短路。
@@ -664,7 +703,7 @@ Worker 返回的是已经校验、迁移和归一化的项目数据，不是可�
 - 图纸 I/O 回归必须覆盖 `TC2D_MAX_DRAWING_BYTES` 默认值和小上限替身、声明长度与 chunked 超限 `413`、压缩体拒绝、单缓冲读取、metadata/ETag 正缓存、确定性 `422` 负缓存及 stat 变化重验；共享容量测试必须同时覆盖顶层与模板路径点、单条 polyline 10,000 点、重复 ID、模板几何和悬空连线。会话回归至少往返 4 个工作空间，并验证 `64KiB` Blob/`4ms` 编码与 `4KiB` 字符串切片、输入让步、小 envelope clone、旧 object 兼容、customHandle 路径恢复和克隆降级、单 key put 失败保留旧记录、编码中/put 前 freshness、store close 取消、IndexedDB 故障、并发旧保存迟到、保存途中再编辑使在途版本令牌失效、坏会话逐张过滤、脏 LRU 不淘汰、idle 回调取消与迟到拒绝、timer 降级、`8ms` 预算/输入/操作门禁、`2.5s` timeout，以及显式文件保存/切换绕过 idle gate 并等待持久化。切换回归还必须覆盖活动指针、线段起点拖动、待提交缩放、滚动和连接状态的收束，等待交互与 async-operation 双屏障、DOM `inert`/透明 shield/键盘与指针状态门禁、媒体读取和 bundle 结算、恢复完成前不可编辑及异常后的 `finally` 解锁。大 JSON 解析回归必须覆盖 Worker 正常、不可用、创建/发送失败、崩溃和消息错误后的主线程降级，以及卸载后 Worker/pending/fallback 拒绝写回且不误删合法 localStorage。
 - 图纸仓储回归还必须断言列表、读取、保存、删除和 HEAD 五个请求全部使用 `timeoutMs: 0`；HEAD 对合法、结构无效和超大小普通文件返回存在，对缺失文件返回 `404`，但拒绝目录、符号链接和越界路径。删除失败后的列表过滤不能解绑会话，只有明确 `404` 或 HEAD 确认缺失才可解绑。名称状态同时覆盖后端大小写语义下的库内“同名冲突”和两个未保存会话“同名目标”，并显示规范化完整目标路径。
 - 大 JSON 准备回归必须覆盖 `parseAndPrepare` 在 Worker 中完成解析、容量/引用校验、版本迁移和模型归一化；分块协议要验证 envelope、四个集合顺序、`128` 项/`1MiB` 边界、单个超大实体标记、sequence/start/count/complete 及错误拒绝。Worker 全部故障分支的主线程降级结果必须与同一 operation 一致，不能只比较裸 `JSON.parse`。`project-runtime-preparation.test.mjs` 还必须覆盖完整私有运行 bundle、多片推进、被新文档取代时取消、调度不可用降级，以及完成前不发布半套索引、完成后一次安装的契约。
-- 6,016 节点浏览器性能验收必须在可见前台标签页完成，并分别通过编辑态和预览态，不能用一个结果代替另一个。编辑态要求持续数据刷新期间的拖入、连线、属性编辑、大选区变换和 Undo/Redo 都立即反馈，60Hz 帧间隔 P95 `<16.7ms`、Long Task `=0`、最终值收敛且对象立即可继续编辑；预览态要求原始尺寸、自适应、浏览器原生全屏分别达到相同帧与 Long Task 门槛，三种模式均非空、顺序正确，原始尺寸与全屏保留全部交互，自适应按“纯 Canvas / 安全有界尾段 hybrid / 完整 DOM 回退”选择并确保 edge、node、drawing 各只绘制一次。正式 `sacada测试.json` 是 `36,037,698 bytes`、6,016 节点、0 个非空 `dataKey`；挂数场景只能在内存临时副本逐节点绑定唯一键并按 `500ms` 全量刷新，禁止为了压测修改正式文件。上一版整页重载浏览器基线（非当前终验）为：编辑态 `97.3s` 的 P95 `14.1ms`；原始尺寸 `34.6s` 的 P95 `14.2ms`；自适应 `43.3s` 的 P95 `14.1ms`；原生全屏 `39.9s` 的 P95 `14.2ms`，四项 Long Task 均为 `0`。当时另确认文字输入到下一帧 `2.2ms`、拖入/属性/连线成功；原始尺寸和全屏运行值抽样均 `40/40` 变化，自适应 Canvas 非白屏且像素哈希随刷新变化，原生全屏满足 `document.fullscreenElement === previewOverlay`。这些数据只保留为上一版对照；本轮必须重新整页重载并验证请求像素比门禁、Canvas 正常等待仅保留视口 DOM、失败后原尺寸 DOM 到 `dom-fit` 的完整渐进交接、陈旧 DOM 立即释放和 `1–16` 倍自适应批次。原始尺寸与全屏还要确认 Canvas surface 已释放，自适应还要验证 context 故障回退后非空。浏览器自身的原生全屏界面切换和 rAF 暂停不计入应用稳态 P95。正式文件单次 Node 读取 `70.64ms`、`JSON.parse` `177.78ms` 只属于旧主线程基线；当前打开路径必须由 `projectJson.worker.js` 解析，且不得把打开阶段耗时混入交互 P95。修改组件包、交互屏障、大选区、历史、运行格式化、预览位图或交接调度后必须整页重载并重测全部四项。
+- 6,016 节点浏览器性能验收必须在可见前台标签页完成，并分别通过编辑态和预览态，不能用一个结果代替另一个。编辑态要求持续数据刷新期间的拖入、连线、属性编辑、大选区变换和 Undo/Redo 都立即反馈，60Hz 帧间隔 P95 `<16.7ms`、Long Task `=0`、最终值收敛且对象立即可继续编辑；预览态要求原始尺寸、自适应、浏览器原生全屏分别达到相同帧与 Long Task 门槛，三种模式均非空、顺序正确，原始尺寸与全屏保留全部交互，自适应按“纯 Canvas / 安全有界尾段 hybrid / 完整 DOM 回退”选择并确保 edge、node、drawing 各只绘制一次。正式 `sacada测试.json` 是 `36,037,698 bytes`、6,016 节点、0 个非空 `dataKey`；挂数场景只能在内存临时副本逐节点绑定唯一键并按 `500ms` 全量刷新，禁止为了压测修改正式文件。上一版整页重载浏览器基线（非当前终验）为：编辑态 `97.3s` 的 P95 `14.1ms`；原始尺寸 `34.6s` 的 P95 `14.2ms`；自适应 `43.3s` 的 P95 `14.1ms`；原生全屏 `39.9s` 的 P95 `14.2ms`，四项 Long Task 均为 `0`。当时另确认文字输入到下一帧 `2.2ms`、拖入/属性/连线成功；原始尺寸和全屏运行值抽样均 `40/40` 变化，自适应 Canvas 非白屏且像素哈希随刷新变化，原生全屏满足 `document.fullscreenElement === previewOverlay`。这些数据只保留为上一版对照；本轮必须重新整页重载并验证请求像素比门禁、首次普通大图由 `task + 4ms` 生成兜底、图片占位帧不提交、Canvas 正常等待仅保留视口 DOM、失败后原尺寸 DOM 到 `dom-fit` 的完整渐进交接、陈旧 DOM 立即释放和节点批次最大 `2` 倍。原始尺寸与全屏还要确认完整 Canvas 仅作为大图滚动换代兜底，自适应还要验证 context 故障回退后非空。浏览器自身的原生全屏界面切换和 rAF 暂停不计入应用稳态 P95。正式文件单次 Node 读取 `70.64ms`、`JSON.parse` `177.78ms` 只属于旧主线程基线；当前打开路径必须由 `projectJson.worker.js` 解析，且不得把打开阶段耗时混入交互 P95。修改组件包、交互屏障、大选区、历史、运行格式化、预览位图或交接调度后必须整页重载并重测全部四项。
 - 上述“安全有界尾段 hybrid”要求从最高层向下最多读取 `24` 个条目即可覆盖全部 live 节点，尾段 node 不超过 `16` 个且挂载成本总计不超过 `128`；Canvas 以匹配的 `renderPlanKey/excludedNodeIds/excludedDrawingIds`、freshness 和请求像素比原子提交，持久 live plane ready 后才切换显示。正常 Canvas 等待只保留视口 DOM，Canvas 不适用或失败才渐进完整 DOM；失败先显示原尺寸 DOM，完整 generation ready 后再进入 `dom-fit`。关闭、原始、全屏释放 committed plan，Canvas context 故障回退 DOM，全屏漏失事件由 resize/focus/visibilitychange 校准。
 - 测试数量、源码行数和构建模块数随功能持续变化，文档不维护容易过期的固定数字。验收时记录 `npm run test:performance`、`npm run test:stability` 和 `npm run build` 的当次完整结果；`test:stability` 必须保留 `--test-concurrency=1`，用于隔离测试文件之间的 CPU 争用，不能借此放宽用例内部性能门槛。需要统计仓库规模时重新计算，不能沿用旧数字。
 - 文档模型变化必须同步更新统一图纸文件读写、恢复缓存和本文件。
@@ -675,7 +714,7 @@ Worker 返回的是已经校验、迁移和归一化的项目数据，不是可�
 - 可交互 DOM 节点视觉统一放入 `NodeVisual.vue`，不要在预览模板复制实现；低倍率编辑与自适应整图概览由 `MiniMapPreview.vue` 按同一持久字段 faithful 绘制，并必须保留对应的视觉一致性测试。
 - 高频值统一进入 `useRuntimeData`，不要进入撤销栈。
 - 新增或删除 `nodes/edges/drawings` 时使用 `recordEntityInsertion()` 或 `recordEntityRemoval()`；修改现有实体字段时使用 `recordFieldsHistory()` 或针对命令的字段记录；图层顺序和模板列表使用各自差异条目。任何普通编辑命令都不得恢复整图 JSON 快照。实体差异恢复必须同步节点、时间、运行值、空间、连线邻接和图层索引以及 Canvas 版本。
-- 组件变换等连续指针交互继续复用 `operation` 和逐帧调度，不要直接绑定无边界的高频响应式写入；线段的离散落点使用 `polylineDraft`，仅悬停预览进入逐帧刷新。草稿起点锚点属于局部临时交互，使用 `polylineStartPointDrag` 和指针捕获隔离落点事件，并在全部退出路径统一移除窗口监听。
+- 组件变换等连续指针交互继续复用 `operation` 和逐帧调度，不要直接绑定无边界的高频响应式写入；完成线段的节点拖拽使用 `polylinePoint` 操作和字段历史。线段创建期使用 `polylineDraft` 保存起点与候选终点，只有悬停预览进入逐帧刷新；草稿起点锚点属于局部临时交互，使用 `polylineStartPointDrag` 和指针捕获隔离终点事件，并在全部退出路径统一移除窗口监听。
 - 多选状态只保存节点 ID，不进入图纸 JSON；持久化组合关系只使用节点 `groupId`。
 - “我的”模板必须随图纸统一序列化；实例化时重新生成全部实体 ID，并只重建模板内部连线。
 - 节点位置约束必须按旋转后的可见边界计算，所有组件四方向均允许部分越界；每轴保留量统一为 `min(24, visualSpan / 2, stageSpan / 2)`。组合、模板实例和保存恢复必须复用集合归一化，禁止逐节点夹取位置。

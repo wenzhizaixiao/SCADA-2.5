@@ -1,11 +1,13 @@
 <script setup>
-import { computed, onMounted, ref, shallowRef } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef } from 'vue'
 import {
   AlertCircle,
   Cable,
   CheckCircle2,
+  ChevronRight,
   Database,
   Globe2,
+  ListFilter,
   Pencil,
   Plus,
   RefreshCw,
@@ -20,6 +22,14 @@ import {
   POINT_SOURCE_CONFIG_FIELDS,
   POINT_SOURCE_PROTOCOLS
 } from '../services/pointCatalogGateway'
+import {
+  createSourceConnectionListModel,
+  isInterfaceDemoSource,
+  sourceEffectiveStatus as effectiveSourceStatus,
+  sourceListDisplayName,
+  sourceProtocolShortName as protocolShortName,
+  sourceStatusLabel as statusLabel
+} from '../utils/sourceConnectionList'
 
 const props = defineProps({
   gateway: { type: Object, required: true },
@@ -32,8 +42,13 @@ const sources = ref([])
 const selectedSource = shallowRef(null)
 const selectedSourceId = ref('')
 const sourceDraft = ref({ name: '', enabled: true, config: {} })
+const sourceDraftBaseline = ref('')
 const sourceQuery = ref('')
+const sourceStatusFilter = ref('all')
+const sourceProtocolFilter = ref('all')
+const collapsedSourceGroups = ref(new Set(['demos']))
 const loading = ref(true)
+const selectingSourceId = ref('')
 const saving = ref(false)
 const testing = ref(false)
 const deleting = ref(false)
@@ -42,34 +57,157 @@ const successMessage = ref('')
 const createDialogOpen = ref(false)
 const createDraft = ref({ name: '', protocol: 'MQTT' })
 const createError = ref('')
+const managerShellElement = ref(null)
+const managerCloseButton = ref(null)
+const createDialogElement = ref(null)
+const createNameInput = ref(null)
 let selectionGeneration = 0
+let previouslyFocusedElement = null
+let createDialogTrigger = null
 
-const filteredSources = computed(() => {
-  const query = sourceQuery.value.trim().toLocaleLowerCase('zh-CN')
-  if (!query) return sources.value
-  return sources.value.filter(source => [source.name, source.protocol, source.endpoint]
-    .some(value => String(value || '').toLocaleLowerCase('zh-CN').includes(query)))
-})
+const SOURCE_STATUS_FILTERS = Object.freeze([
+  { id: 'all', label: '全部' },
+  { id: 'online', label: '在线' },
+  { id: 'issues', label: '异常' },
+  { id: 'disabled', label: '停用' }
+])
 
-const sourceStats = computed(() => ({
-  online: sources.value.filter(source => source.enabled !== false && source.status === 'online').length,
-  total: sources.value.length,
-  errors: sources.value.filter(source => source.enabled !== false && ['offline', 'error'].includes(source.status)).length
+const sourceListModel = computed(() => createSourceConnectionListModel(sources.value, {
+  query: sourceQuery.value,
+  status: sourceStatusFilter.value,
+  protocol: sourceProtocolFilter.value
 }))
+const sourceStats = computed(() => sourceListModel.value.stats)
+const sourceProtocolOptions = computed(() => {
+  const counts = sourceListModel.value.protocolCounts
+  const known = POINT_SOURCE_PROTOCOLS.filter(protocol => counts.has(protocol))
+  const knownSet = new Set(known)
+  const extra = [...counts.keys()].filter(protocol => protocol && !knownSet.has(protocol)).sort()
+  return [...known, ...extra]
+})
+const hasSourceFilters = computed(() => (
+  Boolean(sourceQuery.value.trim())
+  || sourceStatusFilter.value !== 'all'
+  || sourceProtocolFilter.value !== 'all'
+))
+const selectedSourceFilteredOut = computed(() => (
+  Boolean(selectedSourceId.value)
+  && !sourceListModel.value.filteredIds.has(selectedSourceId.value)
+))
 
 const configFields = computed(() => POINT_SOURCE_CONFIG_FIELDS[selectedSource.value?.protocol] || [])
+const sourceInteractionLocked = computed(() => (
+  Boolean(selectingSourceId.value) || saving.value || testing.value || deleting.value
+))
+const sourceDraftDirty = computed(() => (
+  Boolean(selectedSource.value)
+  && sourceDraftSnapshot(sourceDraft.value) !== sourceDraftBaseline.value
+))
 
-function protocolShortName(protocol) {
-  return ({ 'SQL Server': 'SQL', WebSocket: 'WS', Socket: 'TCP', MySQL: 'MYSQL' })[protocol] || String(protocol || '').slice(0, 5).toUpperCase()
+function sourceGroupIsCollapsed(groupId) {
+  if (sourceQuery.value.trim()) return false
+  return collapsedSourceGroups.value.has(groupId)
 }
 
-function effectiveSourceStatus(source) {
-  if (source?.enabled === false) return 'disabled'
-  return source?.status || 'unknown'
+function toggleSourceGroup(groupId) {
+  const next = new Set(collapsedSourceGroups.value)
+  if (next.has(groupId)) next.delete(groupId)
+  else next.add(groupId)
+  collapsedSourceGroups.value = next
 }
 
-function statusLabel(status) {
-  return ({ online: '在线', offline: '离线', testing: '测试中', error: '异常', disabled: '已停用' })[status] || '未知'
+function expandSourceGroupFor(sourceId) {
+  const source = sources.value.find(item => item.id === sourceId)
+  const groupId = isInterfaceDemoSource(source) ? 'demos' : 'connections'
+  if (!collapsedSourceGroups.value.has(groupId)) return
+  const next = new Set(collapsedSourceGroups.value)
+  next.delete(groupId)
+  collapsedSourceGroups.value = next
+}
+
+function clearSourceFilters() {
+  sourceQuery.value = ''
+  sourceStatusFilter.value = 'all'
+  sourceProtocolFilter.value = 'all'
+}
+
+function sourceStatusFilterCount(filterId) {
+  if (filterId === 'online') return sourceStats.value.online
+  if (filterId === 'issues') return sourceStats.value.errors
+  if (filterId === 'disabled') return sourceStats.value.disabled
+  return sourceStats.value.total
+}
+
+function revealSelectedSource() {
+  clearSourceFilters()
+  expandSourceGroupFor(selectedSourceId.value)
+}
+
+function sourceDraftSnapshot(draft) {
+  const config = draft?.config && typeof draft.config === 'object'
+    ? Object.fromEntries(Object.keys(draft.config).sort().map(key => [key, draft.config[key]]))
+    : {}
+  return JSON.stringify({
+    name: String(draft?.name || ''),
+    enabled: draft?.enabled !== false,
+    config
+  })
+}
+
+function sourceDraftPatch() {
+  return {
+    name: sourceDraft.value.name.trim(),
+    enabled: sourceDraft.value.enabled,
+    config: { ...sourceDraft.value.config }
+  }
+}
+
+function confirmDiscardSourceDraft() {
+  if (!sourceDraftDirty.value) return true
+  return window.confirm('当前连接有未保存的修改，继续操作将放弃这些修改。')
+}
+
+function requestSelectSource(id) {
+  if (sourceInteractionLocked.value || id === selectedSourceId.value) return
+  if (!confirmDiscardSourceDraft()) return
+  selectSource(id)
+}
+
+function requestCloseManager() {
+  if (sourceInteractionLocked.value || !confirmDiscardSourceDraft()) return
+  emit('close')
+}
+
+function closeCreateDialog() {
+  if (saving.value) return
+  const focusTarget = createDialogTrigger
+  createDialogTrigger = null
+  createDialogOpen.value = false
+  nextTick(() => focusTarget?.focus?.())
+}
+
+function handleManagerEscape() {
+  if (createDialogOpen.value) closeCreateDialog()
+  else requestCloseManager()
+}
+
+function trapManagerFocus(event) {
+  const root = createDialogOpen.value ? createDialogElement.value : managerShellElement.value
+  if (!root) return
+  const focusable = [...root.querySelectorAll(
+    'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+  )].filter(element => element.getClientRects().length > 0)
+  if (!focusable.length) return
+  const first = focusable[0]
+  const last = focusable[focusable.length - 1]
+  const active = document.activeElement
+  if (event.shiftKey && (active === first || !root.contains(active))) {
+    event.preventDefault()
+    last.focus()
+  } else if (!event.shiftKey && (active === last || !root.contains(active))) {
+    event.preventDefault()
+    first.focus()
+  }
 }
 
 function formatDate(value) {
@@ -86,11 +224,13 @@ function clearNotice() {
 }
 
 function fillDraft(source) {
-  sourceDraft.value = {
+  const nextDraft = {
     name: source?.name || '',
     enabled: source?.enabled !== false,
     config: { ...(source?.config || {}) }
   }
+  sourceDraft.value = nextDraft
+  sourceDraftBaseline.value = sourceDraftSnapshot(nextDraft)
 }
 
 function mergeSourceMetadata(current, updated) {
@@ -113,27 +253,54 @@ function showPersistenceResult(persistence, durableMessage) {
   return false
 }
 
-async function refreshSources(preferredId = selectedSourceId.value) {
+async function refreshSources(preferredId = selectedSourceId.value, options = {}) {
   const nextSources = await props.gateway.listSources()
   sources.value = nextSources
   if (!nextSources.length) {
+    selectionGeneration += 1
+    selectingSourceId.value = ''
     selectedSourceId.value = ''
     selectedSource.value = null
     fillDraft(null)
-    return
+    return true
   }
   const nextId = nextSources.some(source => source.id === preferredId) ? preferredId : nextSources[0].id
-  if (nextId !== selectedSourceId.value || !selectedSource.value) await selectSource(nextId)
+  if (nextId !== selectedSourceId.value || !selectedSource.value) return selectSource(nextId, options)
+  return true
 }
 
-async function selectSource(id) {
+async function selectSource(id, options = {}) {
   const generation = ++selectionGeneration
-  selectedSourceId.value = id
-  clearNotice()
-  const source = await props.gateway.getSource(id, { includePoints: false })
-  if (generation !== selectionGeneration || selectedSourceId.value !== id) return
-  selectedSource.value = source
-  fillDraft(source)
+  selectingSourceId.value = id
+  expandSourceGroupFor(id)
+  if (options.clearNotice !== false) clearNotice()
+  try {
+    const source = await props.gateway.getSource(id, { includePoints: false })
+    if (generation !== selectionGeneration || selectingSourceId.value !== id) return false
+    if (!source) throw new Error('连接不存在或无法读取')
+    selectedSourceId.value = id
+    selectedSource.value = source
+    fillDraft(source)
+    return true
+  } catch (error) {
+    if (generation !== selectionGeneration || selectingSourceId.value !== id) return false
+    errorMessage.value = error?.message || '无法读取连接配置'
+    return false
+  } finally {
+    if (generation === selectionGeneration) selectingSourceId.value = ''
+  }
+}
+
+async function refreshSourcesAfterMutation(preferredId, completedMessage) {
+  try {
+    const refreshed = await refreshSources(preferredId, { clearNotice: false })
+    if (refreshed === false) throw new Error(errorMessage.value || '无法读取最新连接列表')
+    return true
+  } catch (error) {
+    successMessage.value = ''
+    errorMessage.value = `${completedMessage}，但连接列表刷新失败：${error?.message || '未知错误'}`
+    return false
+  }
 }
 
 function validateDraft() {
@@ -162,25 +329,25 @@ function validateDraft() {
 }
 
 async function saveSource() {
-  if (!selectedSource.value || saving.value || testing.value) return
+  if (!selectedSource.value || sourceInteractionLocked.value) return
   clearNotice()
   const invalid = validateDraft()
   if (invalid) {
     errorMessage.value = invalid
     return
   }
+  const operationSourceId = selectedSource.value.id
+  const draftPatch = sourceDraftPatch()
   saving.value = true
   try {
-    const updated = await props.gateway.updateSource(selectedSource.value.id, {
-      name: sourceDraft.value.name.trim(),
-      enabled: sourceDraft.value.enabled,
-      config: { ...sourceDraft.value.config }
-    }, { includePoints: false })
-    selectedSource.value = mergeSourceMetadata(selectedSource.value, updated)
-    fillDraft(selectedSource.value)
-    await refreshSources(updated.id)
+    const updated = await props.gateway.updateSource(operationSourceId, draftPatch, { includePoints: false })
+    if (selectedSourceId.value === operationSourceId) {
+      selectedSource.value = mergeSourceMetadata(selectedSource.value, updated)
+      fillDraft(selectedSource.value)
+    }
     showPersistenceResult(updated.persistence, '连接配置已保存')
     emit('changed', { type: 'source-saved', source: updated })
+    await refreshSourcesAfterMutation(selectedSourceId.value || operationSourceId, '连接配置已更新')
   } catch (error) {
     errorMessage.value = error?.message || '保存失败'
   } finally {
@@ -189,48 +356,70 @@ async function saveSource() {
 }
 
 async function testConnection() {
-  if (!selectedSource.value || saving.value || testing.value) return
+  if (!selectedSource.value || sourceInteractionLocked.value) return
   clearNotice()
   const invalid = validateDraft()
   if (invalid) {
     errorMessage.value = invalid
     return
   }
+  const operationSourceId = selectedSource.value.id
+  const draftPatch = sourceDraftPatch()
+  let prepared = null
   testing.value = true
   try {
-    const prepared = await props.gateway.updateSource(selectedSource.value.id, {
-      name: sourceDraft.value.name.trim(),
-      enabled: sourceDraft.value.enabled,
-      config: { ...sourceDraft.value.config }
-    }, { includePoints: false })
-    selectedSource.value = mergeSourceMetadata(selectedSource.value, prepared)
-    const result = await props.gateway.testSource(selectedSource.value.id, { includePoints: false })
-    const metadata = await props.gateway.getSource(selectedSource.value.id, { includePoints: false })
-    selectedSource.value = mergeSourceMetadata(selectedSource.value, metadata || result.source)
-    fillDraft(selectedSource.value)
-    await refreshSources(selectedSource.value.id)
+    prepared = await props.gateway.updateSource(operationSourceId, draftPatch, { includePoints: false })
+    if (selectedSourceId.value === operationSourceId) {
+      selectedSource.value = mergeSourceMetadata(selectedSource.value, prepared)
+      fillDraft(selectedSource.value)
+    }
+    const result = await props.gateway.testSource(operationSourceId, { includePoints: false })
+    let metadata = null
+    try {
+      metadata = await props.gateway.getSource(operationSourceId, { includePoints: false })
+    } catch {}
+    const testedSource = mergeSourceMetadata(prepared, metadata || result.source)
+    if (selectedSourceId.value === operationSourceId) {
+      selectedSource.value = mergeSourceMetadata(selectedSource.value, testedSource)
+      fillDraft(selectedSource.value)
+    }
     if (result.ok) successMessage.value = result.response.message
     else errorMessage.value = result.response.message
     if (!result.persistence?.durable) {
       const memoryOnly = '测试结果仅在当前页面生效，未持久保存；刷新页面后将恢复为上次成功保存的配置'
       errorMessage.value = errorMessage.value ? `${errorMessage.value}；${memoryOnly}` : memoryOnly
     }
-    emit('changed', { type: 'source-tested', source: selectedSource.value, ok: result.ok })
+    emit('changed', { type: 'source-tested', source: testedSource, ok: result.ok })
+    await refreshSourcesAfterMutation(selectedSourceId.value || operationSourceId, '连接测试已完成')
   } catch (error) {
-    errorMessage.value = error?.message || '连接测试失败'
+    if (prepared) {
+      successMessage.value = ''
+      const memoryOnly = prepared.persistence?.durable
+        ? ''
+        : '；配置仅在当前页面生效，刷新后将恢复为上次成功保存的配置'
+      errorMessage.value = `连接配置已更新，但连接测试失败：${error?.message || '未知错误'}${memoryOnly}`
+      emit('changed', { type: 'source-saved', source: prepared })
+      await refreshSourcesAfterMutation(selectedSourceId.value || operationSourceId, '连接配置已更新')
+    } else {
+      errorMessage.value = error?.message || '连接测试失败'
+    }
   } finally {
     testing.value = false
   }
 }
 
 function openCreateDialog() {
+  if (sourceInteractionLocked.value || !confirmDiscardSourceDraft()) return
+  createDialogTrigger = document.activeElement
   clearNotice()
   createDraft.value = { name: '', protocol: 'MQTT' }
   createError.value = ''
   createDialogOpen.value = true
+  nextTick(() => createNameInput.value?.focus())
 }
 
 async function createSource() {
+  if (sourceInteractionLocked.value) return
   const name = createDraft.value.name.trim()
   if (!name) {
     createError.value = '连接名称不能为空'
@@ -240,32 +429,46 @@ async function createSource() {
   saving.value = true
   try {
     const source = await props.gateway.createSource({ name, protocol: createDraft.value.protocol })
+    clearSourceFilters()
     createDialogOpen.value = false
-    await refreshSources(source.id)
     showPersistenceResult(source.persistence, '新连接已创建，请完善配置')
     emit('changed', { type: 'source-created', source })
+    await refreshSourcesAfterMutation(source.id, '新连接已创建')
   } catch (error) {
     createError.value = error?.message || '新建连接失败'
   } finally {
     saving.value = false
+    if (!createDialogOpen.value) {
+      const focusTarget = createDialogTrigger
+      createDialogTrigger = null
+      nextTick(() => focusTarget?.focus?.())
+    }
   }
 }
 
 async function removeSource(source = selectedSource.value) {
-  if (!source || saving.value || testing.value || deleting.value) return
+  if (!source || sourceInteractionLocked.value) return
   if (!window.confirm(`确定删除数据连接“${source.name}”吗？\n使用该连接动态数据的组件将恢复为属性中的静态值。`)) return
   clearNotice()
+  const deletingSelected = selectedSourceId.value === source.id
+  const nextVisible = sourceListModel.value.filtered.find(item => item.id !== source.id)
+  const nextAvailable = sources.value.find(item => item.id !== source.id)
+  const preferredId = deletingSelected ? (nextVisible?.id || nextAvailable?.id || '') : selectedSourceId.value
   deleting.value = true
   try {
     const removed = await props.gateway.removeSource(source.id)
     if (!removed?.removed) throw new Error('数据连接已不存在')
-    if (selectedSourceId.value === source.id) {
+    sources.value = sources.value.filter(item => item.id !== source.id)
+    if (deletingSelected) {
+      selectionGeneration += 1
+      selectingSourceId.value = ''
       selectedSource.value = null
       selectedSourceId.value = ''
+      fillDraft(null)
     }
-    await refreshSources()
     showPersistenceResult(removed.persistence, '数据连接已删除')
     emit('changed', { type: 'source-removed', source })
+    await refreshSourcesAfterMutation(preferredId, '数据连接已删除')
   } catch (error) {
     errorMessage.value = error?.message || '删除连接失败'
   } finally {
@@ -274,19 +477,27 @@ async function removeSource(source = selectedSource.value) {
 }
 
 onMounted(async () => {
+  previouslyFocusedElement = document.activeElement
   try {
     await refreshSources(props.initialSourceId)
   } catch (error) {
     errorMessage.value = error?.message || '无法读取数据源'
   } finally {
     loading.value = false
+    await nextTick()
+    managerCloseButton.value?.focus()
   }
+})
+
+onBeforeUnmount(() => {
+  const focusTarget = previouslyFocusedElement
+  nextTick(() => focusTarget?.isConnected && focusTarget.focus?.())
 })
 </script>
 
 <template>
-  <div class="data-source-overlay" role="dialog" aria-modal="true" aria-labelledby="data-source-manager-title">
-    <section class="manager-shell">
+  <div class="data-source-overlay" role="dialog" aria-modal="true" aria-labelledby="data-source-manager-title" @keydown.tab="trapManagerFocus" @keydown.esc.stop.prevent="handleManagerEscape">
+    <section ref="managerShellElement" class="manager-shell">
       <header class="manager-header">
         <div class="manager-title">
           <span class="title-icon"><Database /></span>
@@ -297,88 +508,146 @@ onMounted(async () => {
           <span><b>{{ sourceStats.total }}</b> 个连接</span>
           <span :class="{ warning: sourceStats.errors }"><b>{{ sourceStats.errors }}</b> 异常</span>
         </div>
-        <button class="icon-button manager-close" type="button" title="关闭数据源管理" aria-label="关闭数据源管理，返回图纸" @click="emit('close')">
+        <button ref="managerCloseButton" class="icon-button manager-close" type="button" title="关闭数据源管理" aria-label="关闭数据源管理，返回图纸" :disabled="sourceInteractionLocked" @click="requestCloseManager">
           <X />
         </button>
       </header>
 
       <div class="manager-workbench">
         <aside class="source-sidebar">
-          <button class="sidebar-create-button" type="button" @click="openCreateDialog"><Plus />新建连接</button>
-          <div class="sidebar-search">
+          <button class="sidebar-create-button" type="button" :disabled="sourceInteractionLocked" @click="openCreateDialog"><Plus />新建连接</button>
+          <div class="sidebar-search" data-testid="source-search">
             <Search aria-hidden="true" />
-            <input v-model="sourceQuery" type="search" placeholder="搜索连接" aria-label="搜索连接">
+            <input v-model="sourceQuery" type="search" placeholder="搜索名称、地址、协议或状态" aria-label="搜索连接">
           </div>
-          <div class="sidebar-caption"><span>全部连接</span><b>{{ filteredSources.length }}</b></div>
-          <div class="source-list">
-            <div
-              v-for="source in filteredSources"
-              :key="source.id"
-              class="source-item"
-              :class="{ active: selectedSourceId === source.id }"
+          <div class="source-status-filters" role="group" aria-label="按连接状态筛选">
+            <button
+              v-for="filter in SOURCE_STATUS_FILTERS"
+              :key="filter.id"
+              type="button"
+              :class="{ active: sourceStatusFilter === filter.id }"
+              :aria-pressed="sourceStatusFilter === filter.id"
+              @click="sourceStatusFilter = filter.id"
             >
+              <span>{{ filter.label }}</span><b>{{ sourceStatusFilterCount(filter.id) }}</b>
+            </button>
+          </div>
+          <div class="source-protocol-filter">
+            <ListFilter aria-hidden="true" />
+            <label class="visually-hidden" for="source-protocol-filter">按协议筛选</label>
+            <select id="source-protocol-filter" v-model="sourceProtocolFilter" aria-label="按协议筛选">
+              <option value="all">全部协议</option>
+              <option v-for="protocol in sourceProtocolOptions" :key="protocol" :value="protocol">
+                {{ protocol }} ({{ sourceListModel.protocolCounts.get(protocol) }})
+              </option>
+            </select>
+            <button v-if="hasSourceFilters" type="button" title="清除全部筛选" aria-label="清除全部筛选" @click="clearSourceFilters"><X /></button>
+          </div>
+          <div class="sidebar-caption">
+            <span>筛选结果</span>
+            <b data-testid="source-result-count" role="status" aria-live="polite" aria-atomic="true">{{ sourceListModel.filtered.length }} / {{ sourceStats.total }}</b>
+          </div>
+          <div v-if="selectedSourceFilteredOut" class="filtered-selection-notice" role="status" aria-live="polite">
+            <span>当前编辑的连接已被筛选隐藏</span>
+            <button type="button" @click="revealSelectedSource">定位当前连接</button>
+          </div>
+          <div class="source-list" data-testid="source-list" role="list" aria-label="数据连接">
+            <section v-for="group in sourceListModel.groups" v-show="group.items.length" :key="group.id" class="source-group" role="group" :aria-labelledby="`source-group-heading-${group.id}`">
               <button
+                :id="`source-group-heading-${group.id}`"
                 type="button"
-                class="source-item-select"
-                :aria-current="selectedSourceId === source.id ? 'true' : undefined"
-                :title="`打开连接：${source.name}`"
-                @click="selectSource(source.id)"
+                class="source-group-heading"
+                :aria-expanded="!sourceGroupIsCollapsed(group.id)"
+                :aria-controls="`source-group-${group.id}`"
+                @click="toggleSourceGroup(group.id)"
               >
-                <span class="protocol-mark" :data-protocol="source.protocol">{{ protocolShortName(source.protocol) }}</span>
-                <span class="source-item-copy"><b>{{ source.name }}</b><small>{{ source.endpoint || '尚未配置连接地址' }}</small></span>
-                <i class="status-dot" :class="effectiveSourceStatus(source)" :title="statusLabel(effectiveSourceStatus(source))"></i>
+                <ChevronRight :class="{ expanded: !sourceGroupIsCollapsed(group.id) }" />
+                <span>{{ group.label }}</span>
+                <b>{{ group.items.length }}</b>
               </button>
-              <span class="source-item-actions">
-                <button
-                  type="button"
-                  class="source-item-manage"
-                  :title="`编辑连接：${source.name}`"
-                  :aria-label="`编辑连接：${source.name}`"
-                  @click="selectSource(source.id)"
+              <div :id="`source-group-${group.id}`" class="source-group-items">
+                <div
+                  v-if="!sourceGroupIsCollapsed(group.id)"
+                  v-for="source in group.items"
+                  :key="source.id"
+                  class="source-item"
+                  :class="{ active: selectedSourceId === source.id, selecting: selectingSourceId === source.id }"
+                  :data-source-id="source.id"
+                  :data-status="effectiveSourceStatus(source)"
+                  data-testid="source-row"
+                  role="listitem"
                 >
-                  <Pencil />
-                </button>
-                <button
-                  type="button"
-                  class="source-item-manage source-item-delete"
-                  :title="`删除连接：${source.name}`"
-                  :aria-label="`删除连接：${source.name}`"
-                  :disabled="testing || saving || deleting"
-                  @click="removeSource(source)"
-                >
-                  <Trash2 />
-                </button>
-              </span>
+                  <button
+                    type="button"
+                    class="source-item-select"
+                    :aria-current="selectedSourceId === source.id ? 'true' : undefined"
+                    :title="`打开连接：${source.name}`"
+                    :disabled="sourceInteractionLocked"
+                    @click="requestSelectSource(source.id)"
+                  >
+                    <span class="protocol-mark" :data-protocol="source.protocol">{{ protocolShortName(source.protocol) }}</span>
+                    <span class="source-item-copy"><b>{{ sourceListDisplayName(source) }}</b><small :title="source.endpoint || '尚未配置连接地址'">{{ source.endpoint || '尚未配置连接地址' }}</small></span>
+                    <span class="source-item-status" :class="effectiveSourceStatus(source)" :title="statusLabel(effectiveSourceStatus(source))"><i></i><span>{{ statusLabel(effectiveSourceStatus(source)) }}</span></span>
+                  </button>
+                  <span class="source-item-actions">
+                    <button
+                      type="button"
+                      class="source-item-manage"
+                      :title="`编辑连接：${source.name}`"
+                      :aria-label="`编辑连接：${source.name}`"
+                      :disabled="sourceInteractionLocked"
+                      @click="requestSelectSource(source.id)"
+                    >
+                      <Pencil />
+                    </button>
+                    <button
+                      type="button"
+                      class="source-item-manage source-item-delete"
+                      :title="`删除连接：${source.name}`"
+                      :aria-label="`删除连接：${source.name}`"
+                      :disabled="sourceInteractionLocked"
+                      @click="removeSource(source)"
+                    >
+                      <Trash2 />
+                    </button>
+                  </span>
+                </div>
+              </div>
+            </section>
+            <div v-if="!sourceListModel.filtered.length" class="empty-sidebar">
+              <span>没有匹配的连接</span>
+              <button v-if="hasSourceFilters" type="button" @click="clearSourceFilters">清除筛选</button>
             </div>
-            <div v-if="!filteredSources.length" class="empty-sidebar">没有匹配的连接</div>
           </div>
         </aside>
 
         <main class="source-main">
+          <header v-if="!loading && selectedSource" class="source-heading">
+            <span class="source-heading-icon"><Wifi v-if="selectedSource.protocol === 'MQTT'" /><Globe2 v-else-if="['HTTP','WebSocket'].includes(selectedSource.protocol)" /><Cable v-else-if="selectedSource.protocol === 'Socket'" /><Server v-else /></span>
+            <div class="source-heading-copy">
+              <div><h3>{{ selectedSource.name }}</h3><span class="protocol-label">{{ selectedSource.protocol }}</span></div>
+              <small>{{ selectedSource.endpoint || '尚未配置连接地址' }} · {{ selectedSource.enabled ? '已启用' : '已停用' }}</small>
+            </div>
+            <span class="health-label" :class="effectiveSourceStatus(selectedSource)"><i></i>{{ statusLabel(effectiveSourceStatus(selectedSource)) }}</span>
+            <div class="heading-actions">
+              <button class="secondary-button" type="button" :disabled="sourceInteractionLocked" @click="testConnection"><RefreshCw :class="{ spin: testing }" />{{ testing ? '测试中' : '保存并测试连接' }}</button>
+              <button class="primary-button" type="button" :disabled="sourceInteractionLocked" @click="saveSource"><Save />{{ saving ? '保存中' : '保存' }}</button>
+            </div>
+          </header>
+
+          <div class="notice-area" aria-live="polite" aria-atomic="true">
+            <div v-if="errorMessage" class="notice error" role="alert"><AlertCircle />{{ errorMessage }}<button type="button" title="关闭提示" aria-label="关闭提示" @click="errorMessage = ''"><X /></button></div>
+            <div v-else-if="successMessage" class="notice success" role="status"><CheckCircle2 />{{ successMessage }}<button type="button" title="关闭提示" aria-label="关闭提示" @click="successMessage = ''"><X /></button></div>
+          </div>
+
           <div v-if="loading" class="loading-state"><RefreshCw class="spin" />正在读取数据源</div>
           <div v-else-if="!selectedSource" class="empty-main">
-            <Server /><b>暂无数据源</b><button class="primary-button" type="button" @click="openCreateDialog"><Plus />新建连接</button>
+            <Server />
+            <b>{{ errorMessage ? (sources.length ? '连接详情加载失败' : '数据源读取失败') : '暂无数据源' }}</b>
+            <small v-if="errorMessage">{{ sources.length ? '请从左侧重新选择连接' : '请稍后重新打开数据源管理' }}</small>
+            <button class="primary-button" type="button" :disabled="sourceInteractionLocked" @click="openCreateDialog"><Plus />新建连接</button>
           </div>
-          <template v-else>
-            <header class="source-heading">
-              <span class="source-heading-icon"><Wifi v-if="selectedSource.protocol === 'MQTT'" /><Globe2 v-else-if="['HTTP','WebSocket'].includes(selectedSource.protocol)" /><Cable v-else-if="selectedSource.protocol === 'Socket'" /><Server v-else /></span>
-              <div class="source-heading-copy">
-                <div><h3>{{ selectedSource.name }}</h3><span class="protocol-label">{{ selectedSource.protocol }}</span></div>
-                <small>{{ selectedSource.endpoint || '尚未配置连接地址' }} · {{ selectedSource.enabled ? '已启用' : '已停用' }}</small>
-              </div>
-              <span class="health-label" :class="effectiveSourceStatus(selectedSource)"><i></i>{{ statusLabel(effectiveSourceStatus(selectedSource)) }}</span>
-              <div class="heading-actions">
-                <button class="secondary-button" type="button" :disabled="testing || saving" @click="testConnection"><RefreshCw :class="{ spin: testing }" />{{ testing ? '测试中' : '测试连接' }}</button>
-                <button class="primary-button" type="button" :disabled="testing || saving" @click="saveSource"><Save />{{ saving ? '保存中' : '保存' }}</button>
-              </div>
-            </header>
-
-            <div class="notice-area" aria-live="polite">
-              <div v-if="errorMessage" class="notice error"><AlertCircle />{{ errorMessage }}<button type="button" title="关闭提示" aria-label="关闭提示" @click="errorMessage = ''"><X /></button></div>
-              <div v-else-if="successMessage" class="notice success"><CheckCircle2 />{{ successMessage }}<button type="button" title="关闭提示" aria-label="关闭提示" @click="successMessage = ''"><X /></button></div>
-            </div>
-
-            <div class="source-detail config-detail">
+          <fieldset v-else class="source-detail config-detail" :disabled="sourceInteractionLocked" :aria-busy="sourceInteractionLocked">
               <section class="status-band" aria-label="连接状态">
                 <div><span>连接状态</span><b :class="effectiveSourceStatus(selectedSource)">{{ statusLabel(effectiveSourceStatus(selectedSource)) }}</b></div>
                 <div><span>最近测试</span><b>{{ formatDate(selectedSource.lastResponse?.at) }}</b></div>
@@ -417,19 +686,18 @@ onMounted(async () => {
                 </div>
                 <time v-if="selectedSource.lastResponse">{{ formatDate(selectedSource.lastResponse.at) }} · {{ selectedSource.lastResponse.durationMs }} ms</time>
               </section>
-            </div>
-          </template>
+          </fieldset>
         </main>
       </div>
     </section>
 
-    <div v-if="createDialogOpen" class="dialog-backdrop" @pointerdown.self="createDialogOpen = false">
-      <form class="create-dialog" @submit.prevent="createSource">
-        <header><h3>新建数据连接</h3><button type="button" title="关闭" aria-label="关闭" @click="createDialogOpen = false"><X /></button></header>
+    <div v-if="createDialogOpen" class="dialog-backdrop" @pointerdown.self="closeCreateDialog">
+      <form ref="createDialogElement" class="create-dialog" role="dialog" aria-modal="true" aria-labelledby="create-data-source-title" @submit.prevent="createSource">
+        <header><h3 id="create-data-source-title">新建数据连接</h3><button type="button" title="关闭" aria-label="关闭新建连接" :disabled="saving" @click="closeCreateDialog"><X /></button></header>
         <div v-if="createError" class="dialog-error" role="alert"><AlertCircle />{{ createError }}</div>
-        <label><span>连接名称</span><input v-model="createDraft.name" type="text" maxlength="80" autofocus placeholder="例如：车间设备"></label>
+        <label><span>连接名称</span><input ref="createNameInput" v-model="createDraft.name" type="text" maxlength="80" autofocus placeholder="例如：车间设备"></label>
         <label><span>协议类型</span><select v-model="createDraft.protocol"><option v-for="protocol in POINT_SOURCE_PROTOCOLS" :key="protocol" :value="protocol">{{ protocol }}</option></select></label>
-        <footer><button class="secondary-button" type="button" @click="createDialogOpen = false">取消</button><button class="primary-button" type="submit" :disabled="saving"><Plus />创建连接</button></footer>
+        <footer><button class="secondary-button" type="button" :disabled="saving" @click="closeCreateDialog">取消</button><button class="primary-button" type="submit" :disabled="saving"><Plus />创建连接</button></footer>
       </form>
     </div>
   </div>
@@ -455,6 +723,16 @@ input,
 select,
 textarea {
   font: inherit;
+}
+
+.visually-hidden {
+  width: 1px;
+  height: 1px;
+  position: absolute;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 
 .manager-shell {
@@ -627,19 +905,21 @@ textarea {
 .manager-workbench {
   min-height: 0;
   display: grid;
-  grid-template-columns: 276px minmax(0, 1fr);
+  grid-template-columns: 320px minmax(0, 1fr);
 }
 
 .source-sidebar {
   min-height: 0;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
   border-right: 1px solid #dfe4e7;
   background: #f7f9fa;
 }
 
 .sidebar-create-button {
   height: 36px;
+  min-height: 36px;
   margin: 12px 12px 0;
   display: flex;
   align-items: center;
@@ -649,6 +929,7 @@ textarea {
   background: #129b82;
   color: #fff;
   cursor: pointer;
+  flex: none;
   font-weight: 600;
 }
 
@@ -657,19 +938,26 @@ textarea {
   background: #0c876f;
 }
 
+.sidebar-create-button:disabled {
+  opacity: .55;
+  cursor: wait;
+}
+
 .sidebar-create-button svg {
   width: 16px;
 }
 
 .sidebar-search {
   height: 36px;
-  margin: 8px 12px 9px;
+  min-height: 36px;
+  margin: 8px 12px;
   padding: 0 10px;
   display: flex;
   align-items: center;
   gap: 7px;
   border: 1px solid #dbe1e4;
   background: #fff;
+  flex: none;
 }
 
 .sidebar-search:focus-within {
@@ -691,13 +979,119 @@ textarea {
   color: #29363e;
 }
 
+.source-status-filters {
+  height: 34px;
+  min-height: 34px;
+  margin: 0 12px 8px;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  border: 1px solid #dbe1e4;
+  background: #fff;
+  flex: none;
+}
+
+.source-status-filters button {
+  min-width: 0;
+  padding: 0 5px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  border: 0;
+  border-left: 1px solid #e1e6e8;
+  background: transparent;
+  color: #5f6d75;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.source-status-filters button:first-child {
+  border-left: 0;
+}
+
+.source-status-filters button:hover {
+  background: #f1f7f6;
+  color: #176f60;
+}
+
+.source-status-filters button.active {
+  background: #def2ed;
+  color: #087461;
+  font-weight: 600;
+}
+
+.source-status-filters b {
+  color: inherit;
+  font-size: 9px;
+  font-weight: 600;
+}
+
+.source-protocol-filter {
+  height: 34px;
+  min-height: 34px;
+  margin: 0 12px 4px;
+  padding-left: 9px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid #dbe1e4;
+  background: #fff;
+  flex: none;
+}
+
+.source-protocol-filter:focus-within {
+  border-color: #18a48c;
+  box-shadow: 0 0 0 2px #18a48c19;
+}
+
+.source-protocol-filter > svg {
+  width: 15px;
+  flex: none;
+  color: #7d8990;
+}
+
+.source-protocol-filter select {
+  min-width: 0;
+  height: 100%;
+  flex: 1;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: #3e4d56;
+  font-size: 11px;
+}
+
+.source-protocol-filter button {
+  width: 30px;
+  height: 100%;
+  display: grid;
+  place-items: center;
+  flex: none;
+  border: 0;
+  border-left: 1px solid #e1e6e8;
+  background: #fafbfb;
+  color: #69777f;
+  cursor: pointer;
+}
+
+.source-protocol-filter button:hover {
+  background: #eef7f5;
+  color: #087461;
+}
+
+.source-protocol-filter button svg {
+  width: 13px;
+}
+
 .sidebar-caption {
-  height: 30px;
+  height: 28px;
+  min-height: 28px;
   padding: 0 14px;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  color: #7e8a91;
+  color: #5f6d75;
+  flex: none;
   font-size: 11px;
 }
 
@@ -705,15 +1099,92 @@ textarea {
   font-weight: 500;
 }
 
+.filtered-selection-notice {
+  margin: 0 8px 7px;
+  padding: 7px 8px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid #ecd6a7;
+  background: #fff9ec;
+  color: #77571e;
+  flex: none;
+  font-size: 10px;
+}
+
+.filtered-selection-notice span {
+  min-width: 0;
+  flex: 1;
+}
+
+.filtered-selection-notice button,
+.empty-sidebar button {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #087461;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
 .source-list {
   min-height: 0;
+  flex: 1 1 auto;
   overflow: auto;
   padding-bottom: 12px;
+  border-top: 1px solid #e2e7e9;
+}
+
+.source-group-heading {
+  width: 100%;
+  height: 32px;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 0 13px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border: 0;
+  border-bottom: 1px solid #e2e7e9;
+  background: #eef2f3;
+  color: #52616a;
+  font-size: 11px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+
+.source-group-heading:hover {
+  background: #e8eeef;
+  color: #24343d;
+}
+
+.source-group-heading svg {
+  width: 14px;
+  flex: none;
+  transition: transform .15s ease;
+}
+
+.source-group-heading svg.expanded {
+  transform: rotate(90deg);
+}
+
+.source-group-heading b {
+  min-width: 22px;
+  margin-left: auto;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: #fff;
+  color: #67757d;
+  font-size: 9px;
+  text-align: center;
 }
 
 .source-item {
   width: 100%;
-  height: 64px;
+  height: 66px;
   padding-right: 7px;
   display: grid;
   grid-template-columns: minmax(0, 1fr) 62px;
@@ -733,13 +1204,17 @@ textarea {
   background: #e8f6f3;
 }
 
+.source-item.selecting {
+  background: #eef6f5;
+}
+
 .source-item-select {
   min-width: 0;
   width: 100%;
   height: 100%;
   padding: 0 5px 0 9px;
   display: grid;
-  grid-template-columns: 44px minmax(0, 1fr) 10px;
+  grid-template-columns: 44px minmax(0, 1fr) 55px;
   align-items: center;
   gap: 9px;
   border: 0;
@@ -754,23 +1229,64 @@ textarea {
   outline-offset: -2px;
 }
 
+.source-item-select:disabled {
+  cursor: wait;
+}
+
 .protocol-mark {
   width: 42px;
   height: 30px;
   display: grid;
   place-items: center;
   overflow: hidden;
-  border: 1px solid #bedbd5;
+  border: 1px solid #cbd5da;
   border-radius: 4px;
   background: #fff;
-  color: #107f6c;
+  color: #53656f;
   font-size: 9px;
   font-weight: 700;
 }
 
-.source-item:nth-child(2n) .protocol-mark {
-  border-color: #c8d8e7;
-  color: #356d99;
+.protocol-mark[data-protocol="MQTT"] {
+  border-color: #9ed5ca;
+  background: #f1fbf8;
+  color: #087763;
+}
+
+.protocol-mark[data-protocol="HTTP"] {
+  border-color: #afcde6;
+  background: #f3f8fc;
+  color: #28648f;
+}
+
+.protocol-mark[data-protocol="WebSocket"] {
+  border-color: #b8c0e6;
+  background: #f5f6fc;
+  color: #4c5fa0;
+}
+
+.protocol-mark[data-protocol="Socket"] {
+  border-color: #d9c08f;
+  background: #fcf8ef;
+  color: #815f1d;
+}
+
+.protocol-mark[data-protocol="MySQL"] {
+  border-color: #a9d2d0;
+  background: #f1f9f8;
+  color: #246f6d;
+}
+
+.protocol-mark[data-protocol="SQL Server"] {
+  border-color: #c6bae0;
+  background: #f8f5fc;
+  color: #66508e;
+}
+
+.protocol-mark[data-protocol="Redis"] {
+  border-color: #e0b7b2;
+  background: #fcf5f4;
+  color: #944a43;
 }
 
 .source-item-copy {
@@ -792,26 +1308,61 @@ textarea {
 }
 
 .source-item-copy small {
-  color: #8b969d;
+  color: #5f6d75;
   font-size: 10px;
 }
 
-.status-dot {
-  width: 8px;
-  height: 8px;
+.source-item-status {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 5px;
+  color: #68767e;
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.source-item-status i {
+  width: 7px;
+  height: 7px;
+  flex: none;
   border-radius: 50%;
-  background: #9aa4aa;
+  background: #929da3;
 }
 
-.status-dot.online {
-  background: #12a47f;
+.source-item-status.online {
+  color: #087461;
 }
 
-.status-dot.testing {
-  background: #d4982c;
+.source-item-status.online i {
+  background: #0b987a;
 }
 
-.status-dot.error {
+.source-item-status.testing {
+  color: #8b5d13;
+}
+
+.source-item-status.testing i {
+  background: #c4841e;
+}
+
+.source-item-status.offline,
+.source-item-status.disabled,
+.source-item-status.unknown {
+  color: #66747c;
+}
+
+.source-item-status.offline i,
+.source-item-status.disabled i,
+.source-item-status.unknown i {
+  background: #7f8b92;
+}
+
+.source-item-status.error {
+  color: #ad4139;
+}
+
+.source-item-status.error i {
   background: #d85d51;
 }
 
@@ -869,7 +1420,11 @@ textarea {
 
 .empty-sidebar {
   padding: 25px 12px;
-  color: #919ba1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  color: #66747c;
   font-size: 12px;
   text-align: center;
 }
@@ -877,15 +1432,15 @@ textarea {
 .source-main {
   min-width: 0;
   min-height: 0;
-  display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr);
+  display: flex;
+  flex-direction: column;
   background: #fff;
 }
 
 .loading-state,
 .empty-main {
-  grid-row: 1 / -1;
-  height: 100%;
+  min-height: 0;
+  flex: 1;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -900,6 +1455,11 @@ textarea {
 
 .empty-main {
   flex-direction: column;
+}
+
+.empty-main small {
+  color: #8a969d;
+  font-size: 12px;
 }
 
 .source-heading {
@@ -1055,6 +1615,10 @@ textarea {
 
 .source-detail {
   min-height: 0;
+  min-width: 0;
+  flex: 1;
+  margin: 0;
+  border: 0;
   overflow: auto;
 }
 
@@ -1356,6 +1920,11 @@ textarea {
   cursor: pointer;
 }
 
+.create-dialog header button:disabled {
+  opacity: .5;
+  cursor: wait;
+}
+
 .create-dialog header svg {
   width: 16px;
 }
@@ -1406,13 +1975,24 @@ textarea {
   }
 }
 
+@media (prefers-reduced-motion: reduce) {
+  .spin {
+    animation: none;
+  }
+
+  .source-group-heading svg,
+  .enabled-row i::after {
+    transition: none;
+  }
+}
+
 @media (max-width: 900px) {
   .manager-summary span:nth-child(3) {
     display: none;
   }
 
   .manager-workbench {
-    grid-template-columns: 230px minmax(0, 1fr);
+    grid-template-columns: 288px minmax(0, 1fr);
   }
 
   .source-heading {
@@ -1445,7 +2025,19 @@ textarea {
   }
 
   .manager-workbench {
-    grid-template-columns: 170px minmax(0, 1fr);
+    grid-template-columns: 1fr;
+    grid-template-rows: clamp(250px, 44vh, 360px) minmax(260px, 1fr);
+    overflow-y: auto;
+  }
+
+  .source-sidebar {
+    min-height: 250px;
+    border-right: 0;
+    border-bottom: 1px solid #dfe4e7;
+  }
+
+  .source-main {
+    min-height: 260px;
   }
 
   .sidebar-create-button {
@@ -1453,19 +2045,26 @@ textarea {
     margin-left: 8px;
   }
 
+  .sidebar-search,
+  .source-status-filters,
+  .source-protocol-filter {
+    margin-right: 8px;
+    margin-left: 8px;
+  }
+
   .source-item {
-    grid-template-columns: minmax(0, 1fr) 58px;
-    padding-right: 4px;
+    grid-template-columns: minmax(0, 1fr) 62px;
+    padding-right: 7px;
   }
 
   .source-item-select {
-    grid-template-columns: 36px minmax(0, 1fr) 8px;
-    gap: 6px;
-    padding-left: 6px;
+    grid-template-columns: 44px minmax(0, 1fr) 55px;
+    gap: 9px;
+    padding-left: 9px;
   }
 
   .protocol-mark {
-    width: 34px;
+    width: 42px;
   }
 
   .source-heading-icon,

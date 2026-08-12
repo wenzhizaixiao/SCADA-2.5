@@ -969,6 +969,21 @@ test('LOD DOM overlay remains bounded for full-document selections', () => {
   assert.deepEqual(new Set(smallSelection), new Set(['a', 'b']))
 })
 
+test('new LOD nodes remain in the DOM until an authoritative Canvas frame commits', async () => {
+  const source = await readFile(new URL('../src/App.vue', import.meta.url), 'utf8')
+  const appendNodes = source.match(/function appendNodes\(source = \[\]\) \{[\s\S]*?\n\}/)?.[0] || ''
+  const retainInserted = source.match(/function retainInsertedEditorLodNodes\(source = \[\]\) \{[\s\S]*?\n\}/)?.[0] || ''
+  const renderComplete = source.match(/function handleEditorLodRenderComplete\(event\) \{[\s\S]*?\n\}/)?.[0] || ''
+  const renderedNodes = source.match(/const editorRenderedNodes = computed\(\(\) => \{[\s\S]*?\n\}\)/)?.[0] || ''
+
+  assert.match(source, /const editorLodPendingInsertionNodeIds = shallowRef\(\[\]\)/)
+  assert.match(appendNodes, /retainInsertedEditorLodNodes\(inserted\)/)
+  assert.match(retainInserted, /EDITOR_LOD_MAX_OVERLAY_NODES/)
+  assert.match(retainInserted, /markEditorLodDirty\(\)/)
+  assert.match(renderedNodes, /editorLodPendingInsertionNodeIds\.value/)
+  assert.match(renderComplete, /event\?\.pendingFull !== true[\s\S]*?editorLodPendingInsertionNodeIds\.value = \[\]/)
+})
+
 test('LOD edge overlay uses adjacency, stays bounded, and prioritizes the newest edge', () => {
   const edges = Array.from({ length: 800 }, (_, index) => ({ id: `edge-${index}`, from: 'a', to: `n-${index}` }))
   const latestEdge = { id: 'edge-latest', from: 'a', to: 'b' }
@@ -1147,6 +1162,7 @@ test('App routes low-zoom Canvas pointer actions through existing editor handler
   assert.match(source, /const editorLodCanvasRendersEntities = computed\(\(\) => !editorEdgeOnlyLodActive\.value \|\| editorProgressiveDomActive\.value\)/)
   assert.match(source, /const editorRenderPaused = computed\(\(\) => showPreview\.value\)/)
   assert.match(source, /v-if="editorLodActive" v-show="!editorRenderPaused"[^>]+class="editor-lod-surface"[\s\S]*?<MiniMapPreview[^>]+render-mode="frame"/)
+  assert.match(source, /ref="editorLodCanvas"[^>]+:active="!editorRenderPaused"/)
   assert.match(source, /<MiniMapPreview[^>]+geometry-interactive[^>]+@geometry-complete="handleEditorLodGeometryComplete"/)
   assert.match(source, /if \(editorRenderPaused\.value\) return \[\][\s\S]*?if \(!editorLodActive\.value \|\| !editorLodCanvasRendersEntities\.value\) return visibleNodes\.value/)
   const edgeOverlay = source.match(/const editorLodEdgeEntries = computed\([\s\S]*?(?=\nconst renderedEdgeEntries)/)?.[0] || ''
@@ -1181,6 +1197,7 @@ test('App routes low-zoom Canvas pointer actions through existing editor handler
   assert.match(styles, /\.canvas\.grid\.grid-dot \.stage:not\(\.editor-lod-stage\)/)
   assert.doesNotMatch(styles, /\.canvas\.grid\.grid-(?:line|dot)\s+\.stage(?:\s*,|\s*\{)/)
   assert.match(source, /class="editor-lod-background"[\s\S]*?<MiniMapPreview[^>]+class="editor-lod-canvas"[^>]+background="transparent"/)
+  assert.match(source, /class="editor-lod-canvas"[^>]+:minimum-screen-stroke-size="\.75"[^>]+render-mode="frame"[^>]+incremental-runtime geometry-interactive faithful/)
   assert.match(styles, /\.editor-lod-surface > \.editor-lod-background \{[^}]*z-index:\s*0;/)
   assert.match(styles, /\.editor-lod-surface > \.editor-lod-canvas \{[^}]*z-index:\s*1;/)
   assert.match(styles, /\.editor-lod-surface > \.editor-lod-detail-window \{[^}]*z-index:\s*2;/)
@@ -1201,7 +1218,7 @@ test('App routes low-zoom Canvas pointer actions through existing editor handler
   assert.match(source, /function handleEditorLodDetailRenderError\(\) \{[\s\S]*?editorLodDetailFresh\.value = false[\s\S]*?detailCoverBounds[\s\S]*?completeEditorLodGeometryLayer\(session\.sessionId, 'detail', \{ failed: true \}\)/)
   assert.match(source, /function settleEditorLodGeometrySession\(sessionId, session\)[\s\S]*?session\?\.detailFailed[\s\S]*?editorLodDetailReady\.value = false[\s\S]*?editorLodDetailCommittedFrame\.value = null[\s\S]*?clearEditorLodGeometryVisualState[\s\S]*?queueEditorLodRecovery/)
   assert.match(source, /function markEditorLodDirty\(\) \{[\s\S]*?editorLodContentRevision\.value \+= 1[\s\S]*?invalidateEditorLodDetail\(\)[\s\S]*?editorLodRenderFrame = requestAnimationFrame/)
-  assert.match(source, /function handleEditorLodDetailRenderComplete\(event\) \{\s*if \(event\?\.kind !== 'full' \|\| event\.pendingFull \|\| event\.renderPlanKey !== editorLodDetailPlanKey\.value\) return/)
+  assert.match(source, /function handleEditorLodDetailRenderComplete\(event\) \{\s*syncEditorLodAnimationTimestamp\(editorLodDetailAnimationTimestamp, event\)\s*if \(event\?\.kind !== 'full' \|\| event\.pendingFull \|\| event\.renderPlanKey !== editorLodDetailPlanKey\.value\) return/)
   assert.match(source, /const editorLodRemovalCoverRegions = shallowRef\(\[\]\)/)
   assert.match(source, /const editorLodRemovalFallbackReady = ref\(false\)/)
   assert.match(source, /const EDITOR_LOD_DETAIL_CLIP_SUPPORTED = Boolean\([\s\S]*?globalThis\.CSS\?\.supports\?\.\([\s\S]*?'clip-path',[\s\S]*?'polygon\(0 0, 100% 0, 100% 100%, 0 100%\)'/)
@@ -1303,6 +1320,10 @@ test('editor DOM recovery stays progressive across preview and persistent LOD ha
     source.indexOf('async function openPreview'),
     source.indexOf('watch([stageWidth, stageHeight, previewAutoFit]')
   )
+  const presentPreparedPreview = source.slice(
+    source.indexOf('function presentPreparedPreview'),
+    source.indexOf('function finishPreviewDomHandoff')
+  )
 
   assert.match(persistentExitWatch, /watch\(editorPersistentLodActive, \(active, previous\) => \{[\s\S]*?active \|\| previous !== true[\s\S]*?restartEditorProgressiveDomMount\(\)/)
   assert.match(persistentExitWatch, /\{ flush: 'sync' \}\)/)
@@ -1311,11 +1332,15 @@ test('editor DOM recovery stays progressive across preview and persistent LOD ha
   const closeUnpause = closePreview.indexOf('showPreview.value = false')
   assert.ok(closeRestart >= 0 && closeRestart < closeUnpause)
 
-  const openPause = openPreview.indexOf('pauseEditorLodRendering()')
-  const openCancelProgressive = openPreview.indexOf('clearEditorProgressiveDomMount()')
-  const openPauseEditor = openPreview.indexOf('showPreview.value = true')
-  assert.ok(openPause >= 0 && openPause < openCancelProgressive)
-  assert.ok(openCancelProgressive < openPauseEditor)
+  const presentPause = presentPreparedPreview.indexOf('pauseEditorLodRendering()')
+  const presentCancelProgressive = presentPreparedPreview.indexOf('clearEditorProgressiveDomMount()')
+  const presentReady = presentPreparedPreview.indexOf('previewPresentationReady.value = true')
+  assert.ok(presentPause >= 0 && presentPause < presentCancelProgressive)
+  assert.ok(presentCancelProgressive < presentReady)
+
+  const openPreparing = openPreview.indexOf('previewPresentationReady.value = false')
+  const openShow = openPreview.indexOf('showPreview.value = true')
+  assert.ok(openPreparing >= 0 && openPreparing < openShow)
 })
 
 test('App keeps LOD failures sticky and recovers each Canvas from an acknowledged full generation', async () => {
@@ -1567,9 +1592,9 @@ test('preview pauses unfinished editor LOD geometry without leaving a completion
     source.indexOf('function pauseEditorLodRendering'),
     source.indexOf('function syncEditorLodDetailBounds')
   )
-  const openPreview = source.slice(
-    source.indexOf('async function openPreview'),
-    source.indexOf('watch([stageWidth, stageHeight, previewAutoFit]')
+  const presentPreparedPreview = source.slice(
+    source.indexOf('function presentPreparedPreview'),
+    source.indexOf('function finishPreviewDomHandoff')
   )
 
   assert.match(cancel, /editorLodCanvas\.value\?\.cancelGeometryInteraction\?\.\(session\?\.sessionId\)/)
@@ -1580,7 +1605,7 @@ test('preview pauses unfinished editor LOD geometry without leaving a completion
   assert.match(cancel, /editorLodCanvasReady\.value = false/)
   assert.match(cancel, /resetEditorLodDetail\(\)/)
   assert.match(pause, /cancelEditorLodRendering\(reason\)[\s\S]*?primeEditorLodBootstrap\(\)/)
-  assert.match(openPreview, /if \(operation\.value\) pointerUp\(\)[\s\S]*?pauseEditorLodRendering\(\)[\s\S]*?showPreview\.value = true/)
+  assert.match(presentPreparedPreview, /pauseEditorLodRendering\(\)[\s\S]*?clearEditorProgressiveDomMount\(\)[\s\S]*?previewPresentationReady\.value = true/)
 })
 
 test('MiniMap LOD geometry uses bounded local patches and authoritative full acknowledgements', async () => {

@@ -9,6 +9,7 @@ import {
 } from '../src/config/componentCatalog.js'
 import {
   baseNodeOptions,
+  builtInVisualPrimaryColor,
   normalizeEdge,
   normalizeNode,
   normalizeTableMerges
@@ -46,6 +47,81 @@ test('returns independent catalog and node default state', () => {
   assert.equal(secondNode.signalColors[0], '#21c58e')
   assert.deepEqual(secondNode.pencilPoints, [])
   assert.deepEqual(secondNode.tableMerges, [])
+})
+
+test('node normalization bounds imported signal palettes to the supported eight colors', () => {
+  const signalColors = Array.from({ length: 100_000 }, (_, index) => `#${index.toString(16).padStart(6, '0').slice(-6)}`)
+  const node = normalizeNode({ type: 'signalLight', signalColorCount: 8, signalColors })
+
+  assert.equal(node.signalColors.length, 8)
+  assert.deepEqual(node.signalColors, signalColors.slice(0, 8))
+  assert.notStrictEqual(node.signalColors, signalColors)
+})
+
+test('node normalization validates animation settings and completes short signal palettes', () => {
+  const signal = normalizeNode({
+    type: 'signalLight',
+    animation: 'flow',
+    animationDuration: -4,
+    animationDirection: 'sideways',
+    animationPaused: 'false',
+    signalOpacity: 9,
+    signalColorCount: 3.8,
+    signalColors: ['#123456']
+  })
+
+  assert.equal(signal.animation, 'none')
+  assert.equal(signal.animationDuration, .2)
+  assert.equal(signal.animationDirection, 'normal')
+  assert.equal(signal.animationPaused, false)
+  assert.equal(signal.signalOpacity, 1)
+  assert.equal(signal.signalColorCount, 3)
+  assert.deepEqual(signal.signalColors, ['#123456', '#ef5350', '#ffc440'])
+
+  const bounded = normalizeNode({
+    type: 'waterTank',
+    animation: 'flow',
+    animationDuration: 99,
+    animationDirection: 'reverse',
+    animationPaused: 'true',
+    signalOpacity: -2,
+    signalColorCount: 99,
+    signalColors: ['#111111', '', null]
+  })
+  assert.equal(bounded.animation, 'flow')
+  assert.equal(bounded.animationDuration, 5)
+  assert.equal(bounded.animationDirection, 'reverse')
+  assert.equal(bounded.animationPaused, true)
+  assert.equal(bounded.signalOpacity, 0)
+  assert.equal(bounded.signalColorCount, 8)
+  assert.equal(bounded.signalColors.length, 8)
+  assert.deepEqual(bounded.signalColors.slice(0, 4), ['#111111', '#ef5350', '#ffc440', '#168eea'])
+
+  assert.equal(normalizeNode({ type: 'heartbeat', animation: 'flow' }).animation, 'none')
+  assert.equal(normalizeNode({ type: 'rect', animation: 'float' }).animation, 'float')
+  assert.equal(normalizeNode({ type: 'rect', animation: 'invalid' }).animation, 'none')
+  assert.equal(normalizeNode({ type: 'rect', animationDuration: Number.NaN }).animationDuration, 1.5)
+  assert.equal(normalizeNode({ type: 'rect', animationDirection: 'alternate-reverse' }).animationDirection, 'normal')
+})
+
+test('normalizes built-in visual colors and water level without changing legacy defaults', () => {
+  const tank = normalizeNode({
+    type: 'waterTank',
+    progressValue: 135
+  })
+
+  assert.equal(tank.progressValue, 100)
+  assert.equal(tank.visualPrimaryColor, '#3bb9df')
+  assert.equal(normalizeNode({ type: 'heartbeat' }).visualPrimaryColor, '#ef5350')
+  assert.equal(normalizeNode({ type: 'particles', visualPrimaryColor: ' #123456 ' }).visualPrimaryColor, '#123456')
+  assert.equal(builtInVisualPrimaryColor('flowPipe'), '#16b89a')
+})
+
+test('built-in visual property controls expose only settings that render', () => {
+  assert.match(appSource, /visualPrimaryColor:\s*builtInVisualPrimaryColor\(type\)/)
+  assert.match(appSource, /data-testid="visual-primary-color"/)
+  assert.match(appSource, /'flowPipe','rotatingFan','signalLight','waterTank','heartbeat','particles'/)
+  assert.match(appSource, /Math\.trunc\(Number\(value\) \|\| 2\)/)
 })
 
 test('normalizes legacy media, time, font, and pencil fields', () => {

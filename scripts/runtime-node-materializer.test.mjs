@@ -75,6 +75,19 @@ test('materializes source and legacy bindings independently when their display k
   assert.equal(effective.fill, '#f59e0b')
 })
 
+test('materializes a built-in effect body color without mutating its document style', () => {
+  const node = {
+    type: 'flowPipe',
+    visualPrimaryColor: '#16b89a',
+    dataBindings: [{ target: 'visualPrimaryColor', pointId: 'pipe.state', enabled: true }]
+  }
+  const before = structuredClone(node)
+  const effective = materializeRuntimeNode(node, pointGetter(new Map([['pipe.state', 'alarm']])))
+
+  assert.equal(effective.visualPrimaryColor, '#ef4444')
+  assert.deepEqual(node, before)
+})
+
 test('maps documented status values and rejects arbitrary English color strings', () => {
   assert.equal(runtimeColor('alarm', '#000'), '#ef4444')
   assert.equal(runtimeColor('ERROR', '#000'), '#ef4444')
@@ -184,6 +197,64 @@ test('materializes component-specific values and chart percentages', () => {
   assert.deepEqual(runtimeChartPercentages(chart), [50, 100, 25])
 })
 
+test('materializes signal colors and lamp opacity without mutating the document palette', () => {
+  const node = {
+    type: 'signalLight',
+    signalColorCount: 4,
+    signalColors: ['#21c58e', '#ef5350', '#ffc440', '#168eea'],
+    signalOpacity: 1,
+    dataBindings: [
+      { target: 'signalColors.0', sourceId: 'signal-source', jsonPath: '$.states.run' },
+      { target: 'signalColors.1', sourceId: 'signal-source', jsonPath: '$.states.invalid' },
+      { target: 'signalColors.3', sourceId: 'signal-source', jsonPath: '$.states.alarm' },
+      { target: 'signalOpacity', sourceId: 'signal-source', jsonPath: '$.opacity' }
+    ]
+  }
+  const before = structuredClone(node)
+  const effective = materializeRuntimeNode(node, pointGetter(new Map([
+    [sourceBindingRuntimeKey('signal-source', '$.states.run'), 'warning'],
+    [sourceBindingRuntimeKey('signal-source', '$.states.invalid'), 'not-a-color'],
+    [sourceBindingRuntimeKey('signal-source', '$.states.alarm'), '#123abc'],
+    [sourceBindingRuntimeKey('signal-source', '$.opacity'), 0.35]
+  ])))
+
+  assert.notStrictEqual(effective.signalColors, node.signalColors)
+  assert.deepEqual(effective.signalColors, ['#f59e0b', '#ef5350', '#ffc440', '#123abc'])
+  assert.equal(effective.signalOpacity, 0.35)
+  assert.deepEqual(node, before)
+})
+
+test('bounds signal palette cloning for hostile imported arrays', () => {
+  const signalColors = Array.from({ length: 100_000 }, (_, index) => `color-${index}`)
+  const node = {
+    type: 'signalLight',
+    signalColorCount: 8,
+    signalColors,
+    dataBindings: [{ target: 'signalColors.7', pointId: 'signal.last' }]
+  }
+  const effective = materializeRuntimeNode(node, pointGetter(new Map([
+    ['signal.last', 'warning']
+  ])))
+
+  assert.equal(effective.signalColors.length, 8)
+  assert.equal(effective.signalColors[7], '#f59e0b')
+  assert.equal(node.signalColors.length, 100_000)
+  assert.strictEqual(node.signalColors, signalColors)
+})
+
+test('keeps a legacy single signal color when runtime data is unavailable', () => {
+  const node = {
+    type: 'signalLight',
+    signalColor: '#123456',
+    signalColorCount: 1,
+    dataBindings: [{ target: 'signalColors.0', pointId: 'signal.offline' }]
+  }
+  const effective = materializeRuntimeNode(node, () => undefined)
+
+  assert.deepEqual(effective.signalColors, ['#123456'])
+  assert.equal(node.signalColors, undefined)
+})
+
 test('keeps chart extraction within a fixed budget for 100k-row and wide arrays', () => {
   const wideRowSource = new Array(100_000)
   for (let index = 0; index < MAX_RUNTIME_CHART_BARS - 1; index += 1) wideRowSource[index] = '无效'
@@ -252,7 +323,7 @@ test('NodeVisual initializes the table layout signature without shadowing the ef
   const source = await readFile(new URL('../src/components/NodeVisual.vue', import.meta.url), 'utf8')
   const signatureBlock = source.match(/const tableLayoutSignature = computed\(\(\) => \{([\s\S]*?)\n\}\)/)?.[1] || ''
 
-  assert.match(signatureBlock, /const visual = visualNode\.value/)
+  assert.match(signatureBlock, /const type = node\.value\.type[\s\S]*?if \(type !== 'table'\) return type[\s\S]*?const visual = visualNode\.value/)
   assert.doesNotMatch(signatureBlock, /if \(node\.value[^\n]+\)\s*return[^\n]+\n\s*const node\s*=/)
 })
 
@@ -262,12 +333,25 @@ test('NodeVisual preserves branded source keys when reading parameter bindings',
   const sourceKey = sourceBindingRuntimeKey('source-a', '$.value')
 
   assert.match(source, /import \{ normalizeRuntimeKey, runtimeKeySignature \} from '\.\.\/utils\/runtimeKey\.js'/)
-  assert.match(lookupBlock, /runtimePointBindings\.get\(normalizeRuntimeKey\(pointId\)\)\?\.value\.value/)
+  assert.match(lookupBlock, /runtimePointBindings\?\.get\(normalizeRuntimeKey\(pointId\)\)\?\.value\.value/)
   assert.doesNotMatch(lookupBlock, /String\(pointId/)
   assert.match(source, /runtimeKeySignature\(bindingPointIds\(props\.node\)\)/)
   assert.doesNotMatch(source, /bindingPointIds\(props\.node\)\.join/)
   assert.match(source, /runtimePointStore\.subscribe\(pointId, value =>/)
+  assert.match(source, /let runtimePointBindings = null/)
+  assert.match(source, /if \(!nextPointIds\.length && !runtimePointBindings\?\.size\) return/)
   assert.match(source, /unsubscribeRuntimeBinding = nextStore\.subscribe\(nextKey, value =>/)
   assert.doesNotMatch(source, /runtimePointStore\.acquire|runtimeBindingStore\?\.release/)
   assert.notEqual(runtimeKeySignature([sourceKey]), runtimeKeySignature([String(sourceKey)]))
+})
+
+test('NodeVisual does not restart an active signal clock for each runtime palette update', async () => {
+  const source = await readFile(new URL('../src/components/NodeVisual.vue', import.meta.url), 'utf8')
+  const syncBlock = source.match(/function syncSignalClock\(\) \{([\s\S]*?)\n\}/)?.[1] || ''
+  const signalWatch = source.match(/if \(props\.node\.type === 'signalLight'\) \{([\s\S]*?)\n\}/)?.[1] || ''
+
+  assert.match(syncBlock, /externalTimestamp = props\.signalAnimationTimestamp != null[\s\S]*?if \(!signalClock\) \{[\s\S]*?signalClock = acquireVisualClock\(SIGNAL_CLOCK_FPS\)[\s\S]*?\}/)
+  assert.doesNotMatch(syncBlock, /signalClockStartedAt/)
+  assert.match(signalWatch, /source\.signalColors\.slice\(0, MAX_SIGNAL_COLORS\)\.join\(','\)/)
+  assert.doesNotMatch(signalWatch, /return \[/)
 })

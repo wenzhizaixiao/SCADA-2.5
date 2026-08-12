@@ -1,5 +1,6 @@
 <script setup>
-import { onBeforeUnmount, ref, watch } from 'vue'
+import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { acquireVisualClock, releaseVisualClock } from '../composables/useSharedVisualClock'
 import { edgeEndpointsForNodes } from '../utils/edgeGeometry'
 import {
   LINE_SHAPE_MIN_INNER_SIZE,
@@ -60,9 +61,11 @@ import {
   createRuntimeQueryCursor,
   createRuntimeRegionAccumulator,
   runtimeBitmapRect,
-  runtimeNodeBitmapRect
+  runtimeNodeBitmapRect,
+  runtimeNodeRegion
 } from '../utils/runtimeCanvasRegions'
 import {
+  RUNTIME_DENSE_NODE_THRESHOLD,
   createRuntimeBitmapCoverageTracker,
   shouldUseDenseRuntime
 } from '../utils/runtimeCanvasStrategy'
@@ -77,12 +80,33 @@ import {
   readableCanvasFontSize
 } from '../utils/canvasTextReadability'
 import { previewFrameCommitRequested } from '../utils/previewFrameFreshness'
+import {
+  canvasVisualAnimationFramePlan,
+  canvasVisualDetailSize,
+  createCanvasVisualAnimationTimeline,
+  flowPipeDashOffset,
+  heartbeatAnimationScale,
+  isCanvasVisualAnimationCandidate,
+  isCanvasVisualAnimationNode,
+  particleAnimationState,
+  rotatingFanAngle,
+  signalLightColor,
+  waterTankAnimationState,
+  waterTankWaveColor
+} from '../utils/canvasVisualAnimation'
 import { bindingPointIds } from '../models/dataBindingModel'
 import {
   hasEnabledRuntimeBinding,
   materializeRuntimeNode,
   runtimeChartPercentages
 } from '../utils/runtimeNodeMaterializer'
+import { sharedPreviewImageCache } from '../utils/sharedPreviewImageCache'
+import {
+  canvasVisualAtlasBlitData,
+  drawCanvasVisualAtlasBlits,
+  mapCanvasVisualAtlasInstances,
+  packCanvasVisualAtlas
+} from '../utils/canvasVisualAtlas'
 
 const props = defineProps({
   nodes: { type: Array, default: () => [] },
@@ -121,6 +145,8 @@ const props = defineProps({
   pixelRatio: { type: Number, default: 0 },
   renderBudgetMs: { type: Number, default: 2 },
   renderMode: { type: String, default: 'idle', validator: value => ['idle', 'frame', 'task'].includes(value) },
+  waitForImages: { type: Boolean, default: false },
+  respectReducedMotion: { type: Boolean, default: true },
   active: { type: Boolean, default: true },
   testId: { type: String, default: 'minimap-preview' },
   ariaLabel: { type: String, default: '鹰眼组件缩略图' }
@@ -136,13 +162,46 @@ const committedCssHeight = ref(0)
 const committedRenderPlanKey = ref('')
 const canvasContextGate = createCanvasContextGate()
 const imageCache = new Map()
+let deferredImageUrls = new Set()
 const reusableRenderSurfaces = []
+const reusableVisualSpriteSurfaces = []
+let reusableVisualSpritePixelCount = 0
+let canvasVisualSpriteDescriptorCache = new WeakMap()
+let canvasVisualSpriteStaticSignatureIds = new Map()
+let canvasVisualAnimationProfileIds = new Map()
+let nextCanvasVisualSpriteStaticSignatureId = 1
+let nextCanvasVisualAnimationProfileId = 1
+let canvasVisualAnimationStreamStates = new WeakMap()
+const canvasVisualAtlasFrameCache = new Map()
+let canvasVisualAtlasFramePixelCount = 0
+let canvasVisualDirectAtlasFrameCache = null
 let committedStaticSurface = null
 let committedStaticFrame = null
 let committedCompositeSurface = null
 let runtimeBackSurface = null
 let runtimeBackSyncRects = []
 let committedTimeNodes = []
+let committedVisualAnimationNodes = []
+let committedVisualAnimationNodeMap = new Map()
+let committedSignalLightColors = new Map()
+let committedDirectSignalLightTimestamp = null
+let visibleVisualAnimationNodes = []
+let visualAnimationViewportKey = ''
+let visualAnimationViewportDirty = true
+let visualAnimationClipTarget = null
+let visualAnimationClipAncestors = []
+let visualAnimationClock = null
+let stopVisualAnimationClockWatch = null
+let visualAnimationLastFrameTimestamp = null
+let visualAnimationFrameIntervalMs = 0
+let visualAnimationMeasuredFrameMs = 0
+let visualAnimationMeasuredNodeCount = 0
+let visualAnimationTickCount = 0
+const visualAnimationMotionPreference = globalThis.matchMedia?.('(prefers-reduced-motion: reduce)') || null
+let visualAnimationReducedMotion = props.respectReducedMotion
+  && Boolean(visualAnimationMotionPreference?.matches)
+const visualAnimationTimeline = createCanvasVisualAnimationTimeline()
+visualAnimationTimeline.setSuspended(visualAnimationReducedMotion)
 let committedExcludedNodeIds = new Set()
 let committedExcludedDrawingIds = new Set()
 let committedEdgeSpatialIndex = null
@@ -159,6 +218,20 @@ const DEFAULT_RENDER_SLICE_BUDGET_MS = 2
 const MIN_RENDER_SLICE_BUDGET_MS = 1
 const MAX_RENDER_SLICE_BUDGET_MS = 6
 const RUNTIME_RENDER_SLICE_BUDGET_MS = 2
+const RUNTIME_ANIMATION_RENDER_SLICE_BUDGET_MS = 12
+const RUNTIME_ANIMATION_MAX_TASK_BURST_MS = 48
+const RUNTIME_VISUAL_SPRITE_MAX_SIGNATURES = 512
+const RUNTIME_VISUAL_SPRITE_MAX_SURFACES = 256
+const RUNTIME_VISUAL_SPRITE_MAX_ITEM_PIXELS = 262144
+const RUNTIME_VISUAL_SPRITE_MAX_TOTAL_PIXELS = 4194304
+const RUNTIME_VISUAL_SPRITE_POOL_MAX_SURFACES = 256
+const RUNTIME_VISUAL_SPRITE_POOL_MAX_TOTAL_PIXELS = 4194304
+const RUNTIME_VISUAL_ATLAS_MIN_INSTANCES = 32
+const RUNTIME_VISUAL_ATLAS_MAX_DIMENSION = 4096
+const RUNTIME_VISUAL_ATLAS_MAX_PIXELS = 8388608
+const RUNTIME_VISUAL_ATLAS_FRAME_CACHE_MAX_ENTRIES = 2
+const RUNTIME_VISUAL_ATLAS_FRAME_CACHE_MAX_PIXELS = 16777216
+const VISUAL_ANIMATION_CLOCK_FPS = 60
 const RUNTIME_RENDER_NODE_BATCH_SIZE = 512
 const RUNTIME_REGION_MERGE_SIZE = 512
 const RUNTIME_CURSOR_OPERATION_LIMIT = 4096
@@ -175,6 +248,9 @@ const TASK_RENDER_MAX_CONSECUTIVE_SLICES = 2
 const EDGE_RASTER_WORKER_THRESHOLD = 2048
 const EDGE_RASTER_WORKER_BATCH_SIZE = 512
 const LONG_TEXT_INCREMENTAL_THRESHOLD = 512
+// 与 NodeVisual 的固定内件配色保持一致；node.color 是文字颜色，不能作为动效强调色。
+const VISUAL_ACCENT_COLOR = '#16b89a'
+const VISUAL_HEARTBEAT_COLOR = '#ef5350'
 const supportsIdleRender = typeof globalThis.requestIdleCallback === 'function'
   && typeof globalThis.cancelIdleCallback === 'function'
 const supportsFrameRender = typeof globalThis.requestAnimationFrame === 'function'
@@ -184,12 +260,55 @@ const taskRenderCallbacks = new Map()
 let taskRenderChannel = null
 let nextTaskRenderId = 1
 let taskRenderConsecutiveSlices = 0
+let animationRenderBurstGeneration = -1
+let animationRenderBurstStartedAt = 0
 const edgeRasterWorkerClient = createEdgeRasterWorkerClient()
+
+function handleVisualAnimationMotionPreferenceChange(event) {
+  const next = props.respectReducedMotion && Boolean(event?.matches)
+  if (next === visualAnimationReducedMotion) return
+  visualAnimationReducedMotion = next
+  const timestamp = currentAnimationTimestamp()
+  const effectiveNodes = []
+  if (next) {
+    for (const sourceNode of committedVisualAnimationNodeMap.values()) {
+      const effective = materializeRuntimeNode(sourceNode, runtimePointValue)
+      if (isCanvasVisualAnimationCandidate(effective)) effectiveNodes.push(effective)
+    }
+  }
+  visualAnimationTimeline.setSuspended(next, timestamp, effectiveNodes)
+  syncVisualAnimationClock()
+}
+
+function attachVisualAnimationMotionPreference() {
+  visualAnimationMotionPreference?.addEventListener?.('change', handleVisualAnimationMotionPreferenceChange)
+  if (!visualAnimationMotionPreference?.addEventListener) {
+    visualAnimationMotionPreference?.addListener?.(handleVisualAnimationMotionPreferenceChange)
+  }
+}
+
+function detachVisualAnimationMotionPreference() {
+  visualAnimationMotionPreference?.removeEventListener?.('change', handleVisualAnimationMotionPreferenceChange)
+  if (!visualAnimationMotionPreference?.removeEventListener) {
+    visualAnimationMotionPreference?.removeListener?.(handleVisualAnimationMotionPreferenceChange)
+  }
+}
+
+onMounted(attachVisualAnimationMotionPreference)
+watch(() => props.respectReducedMotion, () => {
+  handleVisualAnimationMotionPreferenceChange(visualAnimationMotionPreference)
+}, { flush: 'sync' })
 
 function normalizedRenderSliceBudgetMs(value) {
   const requested = Number(value)
   if (!Number.isFinite(requested) || requested <= 0) return DEFAULT_RENDER_SLICE_BUDGET_MS
   return Math.min(MAX_RENDER_SLICE_BUDGET_MS, Math.max(MIN_RENDER_SLICE_BUDGET_MS, requested))
+}
+
+function runtimeRenderSliceBudget(context) {
+  return context?.payload?.visualAnimationFrame
+    ? RUNTIME_ANIMATION_RENDER_SLICE_BUDGET_MS
+    : RUNTIME_RENDER_SLICE_BUDGET_MS
 }
 
 function scheduleTaskRender(callback) {
@@ -244,8 +363,173 @@ function clearReusableRenderSurfaces() {
   }
 }
 
+function acquireCanvasVisualSpriteSurface(width, height) {
+  let matchIndex = -1
+  for (let index = reusableVisualSpriteSurfaces.length - 1; index >= 0; index -= 1) {
+    const candidate = reusableVisualSpriteSurfaces[index]
+    if (candidate.width === width && candidate.height === height) {
+      matchIndex = index
+      break
+    }
+  }
+  if (matchIndex < 0 && reusableVisualSpriteSurfaces.length) {
+    matchIndex = reusableVisualSpriteSurfaces.length - 1
+  }
+  const surface = matchIndex >= 0
+    ? reusableVisualSpriteSurfaces.splice(matchIndex, 1)[0]
+    : globalThis.document?.createElement?.('canvas') || null
+  if (!surface) return null
+  if (matchIndex >= 0) {
+    reusableVisualSpritePixelCount = Math.max(
+      0,
+      reusableVisualSpritePixelCount - Math.max(0, surface.width * surface.height)
+    )
+  }
+  try {
+    // Assigning the bitmap dimensions also resets every 2D context state and clears stale pixels.
+    surface.width = width
+    surface.height = height
+    return surface
+  } catch {
+    try {
+      surface.width = 0
+      surface.height = 0
+    } catch {}
+    return null
+  }
+}
+
+function releaseCanvasVisualSpriteSurface(surface) {
+  if (!surface) return false
+  const pixelCount = Math.max(0, number(surface.width) * number(surface.height))
+  let context = null
+  try { context = surface.getContext?.('2d') || null } catch {}
+  if (
+    context
+    && pixelCount > 0
+    && pixelCount <= RUNTIME_VISUAL_SPRITE_MAX_ITEM_PIXELS
+    && reusableVisualSpriteSurfaces.length < RUNTIME_VISUAL_SPRITE_POOL_MAX_SURFACES
+    && reusableVisualSpritePixelCount + pixelCount <= RUNTIME_VISUAL_SPRITE_POOL_MAX_TOTAL_PIXELS
+  ) {
+    reusableVisualSpriteSurfaces.push(surface)
+    reusableVisualSpritePixelCount += pixelCount
+    return true
+  }
+  surface.width = 0
+  surface.height = 0
+  return false
+}
+
+function clearReusableVisualSpriteSurfaces() {
+  for (const surface of reusableVisualSpriteSurfaces.splice(0)) {
+    surface.width = 0
+    surface.height = 0
+  }
+  reusableVisualSpritePixelCount = 0
+}
+
+function releaseCanvasVisualAtlasFrame(entry) {
+  if (!entry) return
+  canvasVisualAtlasFramePixelCount = Math.max(
+    0,
+    canvasVisualAtlasFramePixelCount - Math.max(0, number(entry.pixels))
+  )
+  try {
+    entry.surface.width = 0
+    entry.surface.height = 0
+  } catch {}
+  entry.slotSignatures?.clear?.()
+}
+
+function clearCanvasVisualAtlasFrameCache() {
+  for (const entry of canvasVisualAtlasFrameCache.values()) releaseCanvasVisualAtlasFrame(entry)
+  canvasVisualAtlasFrameCache.clear()
+  canvasVisualAtlasFramePixelCount = 0
+}
+
+function trimCanvasVisualAtlasFrameCache(additionalPixels = 0) {
+  while (
+    canvasVisualAtlasFrameCache.size >= RUNTIME_VISUAL_ATLAS_FRAME_CACHE_MAX_ENTRIES
+    || canvasVisualAtlasFramePixelCount + additionalPixels > RUNTIME_VISUAL_ATLAS_FRAME_CACHE_MAX_PIXELS
+  ) {
+    const oldest = canvasVisualAtlasFrameCache.entries().next().value
+    if (!oldest) break
+    canvasVisualAtlasFrameCache.delete(oldest[0])
+    releaseCanvasVisualAtlasFrame(oldest[1])
+  }
+}
+
+function cachedCanvasVisualAtlasFrame(layoutKey) {
+  const entry = canvasVisualAtlasFrameCache.get(layoutKey)
+  if (!entry) return null
+  canvasVisualAtlasFrameCache.delete(layoutKey)
+  canvasVisualAtlasFrameCache.set(layoutKey, entry)
+  return entry
+}
+
+function acquireCanvasVisualAtlasFrame(layoutKey, plan) {
+  const cached = cachedCanvasVisualAtlasFrame(layoutKey)
+  if (cached) return cached
+  const width = Math.max(1, Math.floor(number(plan?.width)))
+  const height = Math.max(1, Math.floor(number(plan?.height)))
+  const pixels = width * height
+  if (
+    width > RUNTIME_VISUAL_ATLAS_MAX_DIMENSION
+    || height > RUNTIME_VISUAL_ATLAS_MAX_DIMENSION
+    || pixels > RUNTIME_VISUAL_ATLAS_MAX_PIXELS
+    || pixels > RUNTIME_VISUAL_ATLAS_FRAME_CACHE_MAX_PIXELS
+  ) return null
+  trimCanvasVisualAtlasFrameCache(pixels)
+  if (
+    canvasVisualAtlasFrameCache.size >= RUNTIME_VISUAL_ATLAS_FRAME_CACHE_MAX_ENTRIES
+    || canvasVisualAtlasFramePixelCount + pixels > RUNTIME_VISUAL_ATLAS_FRAME_CACHE_MAX_PIXELS
+  ) return null
+  const surface = globalThis.document?.createElement?.('canvas') || null
+  if (!surface) return null
+  try {
+    surface.width = width
+    surface.height = height
+    const context = surface.getContext?.('2d') || null
+    if (!context) throw new Error('visual atlas context unavailable')
+    const entry = { surface, context, plan, pixels, slotSignatures: new Map() }
+    canvasVisualAtlasFrameCache.set(layoutKey, entry)
+    canvasVisualAtlasFramePixelCount += pixels
+    return entry
+  } catch {
+    try {
+      surface.width = 0
+      surface.height = 0
+    } catch {}
+    return null
+  }
+}
+
+function releaseCanvasVisualAtlasResources() {
+  invalidateCanvasVisualDirectAtlasFrame()
+  clearCanvasVisualAtlasFrameCache()
+  canvasVisualSpriteDescriptorCache = new WeakMap()
+  resetCanvasVisualSignatureIds()
+}
+
+function invalidateCanvasVisualDirectAtlasFrame() {
+  canvasVisualDirectAtlasFrameCache = null
+}
+
+function resetCanvasVisualSignatureIds() {
+  canvasVisualSpriteStaticSignatureIds = new Map()
+  canvasVisualAnimationProfileIds = new Map()
+  nextCanvasVisualSpriteStaticSignatureId = 1
+  nextCanvasVisualAnimationProfileId = 1
+  canvasVisualAnimationStreamStates = new WeakMap()
+}
+
 function scheduleTaskRenderSlice(callback) {
   if (!supportsFrameRender) return scheduleTaskRender(callback)
+  // 首帧没有可展示的中间结果；继续用短任务切片，避免后台或嵌入页的 rAF 限频把每次让出放大到 1 秒。
+  if (!renderReady.value) {
+    taskRenderConsecutiveSlices = 0
+    return scheduleTaskRender(callback)
+  }
   if (taskRenderConsecutiveSlices < TASK_RENDER_MAX_CONSECUTIVE_SLICES) {
     taskRenderConsecutiveSlices += 1
     return scheduleTaskRender(callback)
@@ -258,7 +542,49 @@ function resetTaskRenderFrameYield() {
   taskRenderConsecutiveSlices = 0
 }
 
-function scheduleRenderSlice(callback) {
+function resetAnimationRenderBurst() {
+  animationRenderBurstGeneration = -1
+  animationRenderBurstStartedAt = 0
+}
+
+function visualAnimationInputPending() {
+  const scheduler = globalThis.navigator?.scheduling
+  if (typeof scheduler?.isInputPending !== 'function') return false
+  try {
+    return scheduler.isInputPending({ includeContinuous: true }) === true
+  } catch {
+    try { return scheduler.isInputPending() === true } catch { return false }
+  }
+}
+
+function scheduleAnimationRenderSlice(callback, context) {
+  resetTaskRenderFrameYield()
+  const generation = Number(context?.generation)
+  const now = currentAnimationTimestamp()
+  if (generation !== animationRenderBurstGeneration || !animationRenderBurstStartedAt) {
+    animationRenderBurstGeneration = generation
+    animationRenderBurstStartedAt = now
+  }
+  const shouldYieldFrame = supportsFrameRender && (
+    visualAnimationInputPending()
+    || now - animationRenderBurstStartedAt >= RUNTIME_ANIMATION_MAX_TASK_BURST_MS
+  )
+  if (!shouldYieldFrame) return scheduleTaskRender(callback)
+  animationRenderBurstStartedAt = 0
+  return {
+    type: 'frame',
+    id: globalThis.requestAnimationFrame(() => {
+      if (generation === animationRenderBurstGeneration) {
+        animationRenderBurstStartedAt = currentAnimationTimestamp()
+      }
+      callback()
+    })
+  }
+}
+
+function scheduleRenderSlice(callback, context) {
+  if (context?.payload?.visualAnimationFrame) return scheduleAnimationRenderSlice(callback, context)
+  resetAnimationRenderBurst()
   if (props.renderMode === 'task') return scheduleTaskRenderSlice(callback)
   resetTaskRenderFrameYield()
   if (props.renderMode === 'frame' && supportsFrameRender) {
@@ -278,6 +604,7 @@ function cancelRenderSlice(handle) {
 }
 
 function scheduleImageRender(callback) {
+  if (props.renderMode === 'task' || !renderReady.value) return scheduleTaskRender(callback)
   if (supportsFrameRender) {
     return { type: 'frame', id: globalThis.requestAnimationFrame(callback) }
   }
@@ -296,6 +623,8 @@ function queueRenderMicrotask(callback) {
 }
 
 function reportCanvasRenderError(reason, error = null, force = false) {
+  const preservesVisibleFrame = committedGeneration.value > 0
+    && !['context-lost', 'context-unavailable'].includes(reason)
   renderReady.value = false
   const state = canvasContextGate.state()
   if (!force && reportedCanvasErrorEpoch === state.epoch) return
@@ -303,6 +632,7 @@ function reportCanvasRenderError(reason, error = null, force = false) {
   emit('render-error', {
     reason,
     epoch: state.epoch,
+    preservesVisibleFrame,
     message: error?.message || ''
   })
 }
@@ -342,10 +672,22 @@ const runtimeBadgeExcludedTypes = new Set([
   'table', 'checkbox', 'radio', 'switch', 'formProgress', 'button', 'input', 'select', 'time',
   'gauge', 'progress', 'polyline'
 ])
+const canvasVisualAnimationTypes = new Set([
+  'flowPipe',
+  'rotatingFan',
+  'signalLight',
+  'waterTank',
+  'heartbeat',
+  'particles'
+])
 
 function number(value, fallback = 0) {
   const parsed = Number(value)
   return Number.isFinite(parsed) ? parsed : fallback
+}
+
+function currentAnimationTimestamp() {
+  return globalThis.performance?.now?.() ?? Date.now()
 }
 
 function alpha(value, fallback = 1) {
@@ -430,13 +772,23 @@ function visibleStroke(node, width, height, worldPixel, requestedWidth = node.bo
 
 function strokeNodeOutline(ctx, node, width, height, worldPixel) {
   if (node.borderVisible === false) return
+  const requestedBorderWidth = Number(node.borderWidth)
+  if (Number.isFinite(requestedBorderWidth) && requestedBorderWidth <= 0) return
   nodePath(ctx, node, width, height)
   ctx.strokeStyle = node.stroke || '#485563'
-  ctx.lineWidth = visibleStroke(node, width, height, worldPixel)
-  if (node.borderStyle === 'dashed') ctx.setLineDash([ctx.lineWidth * 4, ctx.lineWidth * 3])
-  if (node.borderStyle === 'dotted') {
-    ctx.lineCap = 'round'
-    ctx.setLineDash([ctx.lineWidth, ctx.lineWidth * 2.5])
+  ctx.lineWidth = visibleStroke(
+    node,
+    width,
+    height,
+    worldPixel,
+    Number.isFinite(requestedBorderWidth) ? requestedBorderWidth : 1
+  )
+  if (node.borderStyle === 'dashed' || node.borderStyle === 'dotted') {
+    const defaultDashLength = node.borderStyle === 'dotted' ? 2 : 8
+    const dashLength = Math.max(.1, number(node.borderDashLength) || defaultDashLength)
+    const dashGap = Math.max(.1, number(node.borderDashGap) || 6)
+    ctx.setLineDash([dashLength, dashGap])
+    if (node.borderStyle === 'dotted') ctx.lineCap = 'round'
   }
   ctx.stroke()
   ctx.setLineDash([])
@@ -827,7 +1179,7 @@ function drawChart(ctx, node, width, height) {
   const values = runtimeChartPercentages(node).map(value => value / 100)
   const gap = width * .07
   const barWidth = (width - gap * (values.length + 1)) / values.length
-  ctx.fillStyle = node.color || '#16b89a'
+  ctx.fillStyle = VISUAL_ACCENT_COLOR
   values.forEach((value, index) => ctx.fillRect(gap + index * (barWidth + gap), height * (1 - value), barWidth, height * value))
 }
 
@@ -849,7 +1201,7 @@ function drawGauge(ctx, node, width, height, lineWidth, value, renderPass = 'ful
   const displayValue = runtimeDisplayText(effectiveValue, 68)
   const percent = Math.max(0, Math.min(100, number(effectiveValue, 68))) / 100
   const endAngle = startAngle + Math.PI * 1.5 * percent
-  ctx.strokeStyle = node.fill || '#16b89a'
+  ctx.strokeStyle = VISUAL_ACCENT_COLOR
   ctx.lineWidth = lineWidth * 2
   ctx.beginPath()
   ctx.arc(width / 2, height / 2, radius, startAngle, endAngle)
@@ -867,51 +1219,108 @@ function drawGauge(ctx, node, width, height, lineWidth, value, renderPass = 'ful
   ctx.fillText(`${displayValue}%`, width / 2, height * .72, Math.max(1, width * .8))
 }
 
-function drawFlowPipe(ctx, node, width, height, lineWidth) {
-  const inset = Math.min(height * .22, lineWidth * 2)
-  ctx.fillStyle = node.fill || '#e9f4f1'
-  ctx.fillRect(0, 0, width, height)
-  ctx.strokeStyle = node.stroke || '#485563'
-  ctx.lineWidth = lineWidth
-  ctx.beginPath()
-  ctx.moveTo(0, inset)
-  ctx.lineTo(width, inset)
-  ctx.moveTo(0, height - inset)
-  ctx.lineTo(width, height - inset)
-  ctx.stroke()
-  ctx.strokeStyle = node.color || '#16b89a'
-  ctx.setLineDash([lineWidth * 4, lineWidth * 3])
-  ctx.beginPath()
-  ctx.moveTo(0, height / 2)
-  ctx.lineTo(width, height / 2)
-  ctx.stroke()
-  ctx.setLineDash([])
+function drawFlowPipe(ctx, node, width, height, worldPixel, animationTimestamp) {
+  fillAndStroke(ctx, node, width, height, worldPixel, '#fff')
+  const trackWidth = Math.max(.1, width * .75)
+  const trackHeight = Math.max(.1, Math.min(16, height * .64))
+  const trackX = (width - trackWidth) / 2
+  const trackY = (height - trackHeight) / 2
+  const trackBorderWidth = canvasVisualDetailSize(2, worldPixel, trackHeight * .28, .8)
+  const innerX = trackX + trackBorderWidth
+  const innerY = trackY + trackBorderWidth
+  const innerRight = trackX + trackWidth - trackBorderWidth
+  const innerBottom = trackY + trackHeight - trackBorderWidth
+  ctx.save()
+  try {
+    ctx.fillStyle = '#e4f7fa'
+    ctx.fillRect(trackX, trackY, trackWidth, trackHeight)
+    ctx.strokeStyle = '#3c8fa0'
+    ctx.lineWidth = trackBorderWidth
+    ctx.strokeRect(
+      trackX + trackBorderWidth / 2,
+      trackY + trackBorderWidth / 2,
+      Math.max(.1, trackWidth - trackBorderWidth),
+      Math.max(.1, trackHeight - trackBorderWidth)
+    )
+    if (innerRight <= innerX || innerBottom <= innerY) return
+
+    ctx.beginPath()
+    ctx.rect(innerX, innerY, innerRight - innerX, innerBottom - innerY)
+    ctx.clip()
+    const stripeSpacing = Math.max(20, worldPixel * 5, trackWidth / 96)
+    const stripeWidth = canvasVisualDetailSize(3, worldPixel, trackHeight * .35, .9)
+    const stripeSlant = Math.min(trackHeight * .72, stripeSpacing * .65)
+    const stripeOffset = flowPipeDashOffset(node, stripeSpacing / 7, animationTimestamp)
+    ctx.strokeStyle = node.visualPrimaryColor || VISUAL_ACCENT_COLOR
+    ctx.lineWidth = stripeWidth
+    ctx.lineCap = 'butt'
+    ctx.beginPath()
+    for (
+      let stripeX = innerX - stripeSpacing + stripeOffset;
+      stripeX < innerRight + stripeSpacing;
+      stripeX += stripeSpacing
+    ) {
+      ctx.moveTo(stripeX + stripeSlant / 2, innerY)
+      ctx.lineTo(stripeX - stripeSlant / 2, innerBottom)
+    }
+    ctx.stroke()
+  } finally {
+    ctx.restore()
+  }
 }
 
-function drawFan(ctx, node, width, height, lineWidth) {
-  const radius = Math.min(width, height) * .43
-  ctx.fillStyle = node.fill || '#edf4f2'
-  ctx.strokeStyle = node.stroke || '#485563'
-  ctx.lineWidth = lineWidth
+function drawFan(ctx, node, width, height, worldPixel, animationTimestamp) {
+  fillAndStroke(ctx, node, width, height, worldPixel, '#fff')
+  const radius = Math.min(32, width / 2, height / 2)
+  const visualScale = radius / 32
+  const visualBorderWidth = canvasVisualDetailSize(2 * visualScale, worldPixel, radius * .18, .75)
+  const insetWidth = canvasVisualDetailSize(5 * visualScale, worldPixel, radius * .3, .8)
+  // Mirror the 64px DOM fan: the 8px round-capped blade reaches 24px from the hub.
+  const bladeLength = 20 * visualScale
+  ctx.fillStyle = '#f2f7f7'
+  ctx.strokeStyle = '#8ea5aa'
+  ctx.lineWidth = visualBorderWidth
   ctx.beginPath()
-  ctx.arc(width / 2, height / 2, radius, 0, Math.PI * 2)
+  ctx.arc(width / 2, height / 2, Math.max(.1, radius - visualBorderWidth / 2), 0, Math.PI * 2)
   ctx.fill()
   ctx.stroke()
-  ctx.fillStyle = node.color || '#16b89a'
-  for (let index = 0; index < 4; index += 1) {
-    ctx.save()
-    try {
-      ctx.translate(width / 2, height / 2)
-      ctx.rotate(index * Math.PI / 2)
-      ctx.beginPath()
-      ctx.ellipse(radius * .42, 0, radius * .5, radius * .2, -.42, 0, Math.PI * 2)
-      ctx.fill()
-    } finally {
-      ctx.restore()
-    }
-  }
+  ctx.strokeStyle = '#dfeaea'
+  ctx.lineWidth = insetWidth
   ctx.beginPath()
-  ctx.arc(width / 2, height / 2, radius * .12, 0, Math.PI * 2)
+  ctx.arc(width / 2, height / 2, Math.max(.1, radius - visualBorderWidth - insetWidth / 2), 0, Math.PI * 2)
+  ctx.stroke()
+  const rotorAngle = rotatingFanAngle(node, animationTimestamp)
+  const bladeWidth = canvasVisualDetailSize(8 * visualScale, worldPixel, radius * .3, 1)
+  ctx.save()
+  try {
+    ctx.strokeStyle = node.visualPrimaryColor || VISUAL_ACCENT_COLOR
+    ctx.lineWidth = bladeWidth
+    ctx.lineCap = 'round'
+    for (let index = 0; index < 4; index += 1) {
+      ctx.save()
+      try {
+        ctx.translate(width / 2, height / 2)
+        ctx.rotate(rotorAngle + index * Math.PI / 2)
+        ctx.beginPath()
+        ctx.moveTo(0, 0)
+        ctx.lineTo(0, -bladeLength)
+        ctx.stroke()
+      } finally {
+        ctx.restore()
+      }
+    }
+  } finally {
+    ctx.restore()
+  }
+  const outerHubRadius = canvasVisualDetailSize(8 * visualScale, worldPixel, radius * .4, 1.25)
+  const innerHubRadius = canvasVisualDetailSize(4 * visualScale, worldPixel, radius * .24, .7)
+  ctx.fillStyle = '#e7f7f4'
+  ctx.beginPath()
+  ctx.arc(width / 2, height / 2, outerHubRadius, 0, Math.PI * 2)
+  ctx.fill()
+  ctx.fillStyle = '#176e69'
+  ctx.beginPath()
+  ctx.arc(width / 2, height / 2, innerHubRadius, 0, Math.PI * 2)
   ctx.fill()
 }
 
@@ -934,42 +1343,60 @@ function drawImageFit(ctx, image, width, height, fit) {
   }
 }
 
+function cachedImageSettled(image) {
+  return sharedPreviewImageCache.settled(image)
+}
+
+function cachedImageReady(image) {
+  return sharedPreviewImageCache.ready(image)
+}
+
+function handleSharedImageSettled(event) {
+  if (imageCache.get(event.url) !== event.image) return
+  requestImageRender(event.url)
+}
+
 function cachedImage(url) {
   if (!url) return null
-  if (imageCache.has(url)) return imageCache.get(url)
-  const image = new Image()
-  image.decoding = 'async'
-  image.onload = requestImageRender
-  image.src = url
+  if (imageCache.has(url)) {
+    const cached = imageCache.get(url)
+    if (props.waitForImages && !cachedImageSettled(cached)) deferredImageUrls.add(url)
+    return cached
+  }
+  const image = sharedPreviewImageCache.acquire(url, handleSharedImageSettled)
   imageCache.set(url, image)
+  if (props.waitForImages && !cachedImageSettled(image)) deferredImageUrls.add(url)
   return image
 }
 
-function requestImageRender() {
+function requestImageRender(url = '') {
+  // 完整预览等待多张图片时，只在当前待加载集合结算后触发重绘。
+  if (props.waitForImages && deferredImageUrls.size) {
+    if (url) deferredImageUrls.delete(url)
+    if (deferredImageUrls.size) return false
+  }
   if (!props.active) {
     suspendedRenderDirty = true
     return false
   }
+  // 当前私有帧会在提交时复查图片状态，无需再排一个会被合并掉的整图任务。
+  if (renderScheduler.state.pending) return false
   return imageRenderTrigger.request()
 }
 
-function releaseCachedImage(image) {
-  if (!image) return
-  image.onload = null
-  image.onerror = null
-}
-
 function pruneImageCache(activeUrls) {
-  for (const [url, image] of imageCache) {
+  for (const [url] of imageCache) {
     if (activeUrls?.has(url)) continue
-    releaseCachedImage(image)
+    sharedPreviewImageCache.release(url, handleSharedImageSettled)
     imageCache.delete(url)
+    deferredImageUrls.delete(url)
   }
 }
 
 function clearImageCache() {
-  for (const image of imageCache.values()) releaseCachedImage(image)
+  sharedPreviewImageCache.releaseSubscriber(handleSharedImageSettled)
   imageCache.clear()
+  deferredImageUrls.clear()
 }
 
 function drawMediaPlaceholder(ctx, node, width, height, lineWidth, imageMode = false) {
@@ -1076,59 +1503,157 @@ function drawFormControl(ctx, node, width, height, lineWidth) {
   }
 }
 
-function drawSpecialNode(ctx, node, width, height, lineWidth, value, renderPass = 'full') {
-  const accent = node.color || '#16b89a'
+function drawSpecialNode(ctx, node, width, height, lineWidth, value, renderPass = 'full', worldPixel = lineWidth, animationTimestamp = 0) {
+  const accent = ['customMotion', 'customIndicator'].includes(node.type)
+    ? node.motionColor || VISUAL_ACCENT_COLOR
+    : VISUAL_ACCENT_COLOR
   const dark = node.stroke || '#485563'
   if (node.type === 'chart') return drawChart(ctx, node, width, height)
   if (node.type === 'gauge') return drawGauge(ctx, node, width, height, lineWidth, value, renderPass)
-  if (node.type === 'flowPipe') return drawFlowPipe(ctx, node, width, height, lineWidth)
-  if (node.type === 'rotatingFan') return drawFan(ctx, node, width, height, lineWidth)
+  if (node.type === 'flowPipe') return drawFlowPipe(ctx, node, width, height, worldPixel, animationTimestamp)
+  if (node.type === 'rotatingFan') return drawFan(ctx, node, width, height, worldPixel, animationTimestamp)
   if (node.type === 'signalLight') {
-    ctx.fillStyle = '#26323d'
-    roundedRect(ctx, 0, 0, width, height, Math.min(width, height) * .2)
-    ctx.fill()
+    fillAndStroke(ctx, node, width, height, worldPixel, '#fff')
     ctx.save()
     try {
       ctx.globalAlpha *= alpha(node.signalOpacity)
-      ctx.fillStyle = node.signalColors?.[0] || node.signalColor || '#21c58e'
+      ctx.fillStyle = signalLightColor(node, animationTimestamp)
+      const signalRadius = canvasVisualDetailSize(
+        20,
+        worldPixel,
+        Math.min(width / 2, height / 2),
+        4.25
+      )
       ctx.beginPath()
-      ctx.arc(width / 2, height / 2, Math.min(width, height) * .3, 0, Math.PI * 2)
+      ctx.arc(width / 2, height / 2, signalRadius, 0, Math.PI * 2)
       ctx.fill()
+      ctx.strokeStyle = 'rgba(38, 50, 61, .15)'
+      ctx.lineWidth = canvasVisualDetailSize(lineWidth, worldPixel, signalRadius * .18, .6)
+      ctx.stroke()
     } finally {
       ctx.restore()
     }
     return
   }
   if (node.type === 'waterTank') {
-    ctx.strokeStyle = dark
-    ctx.lineWidth = lineWidth
-    ctx.strokeRect(lineWidth / 2, lineWidth / 2, width - lineWidth, height - lineWidth)
+    fillAndStroke(ctx, node, width, height, worldPixel, '#fff')
+    const tankScale = Math.min(1, width / 68, height / 95)
+    const tankWidth = Math.max(.1, 68 * tankScale)
+    const tankHeight = Math.max(.1, 95 * tankScale)
+    const tankX = (width - tankWidth) / 2
+    const tankY = (height - tankHeight) / 2
+    const tankBorderWidth = canvasVisualDetailSize(3 * tankScale, worldPixel, Math.min(tankWidth, tankHeight) * .12, .75)
+    const tankRadius = 10 * tankScale
+    ctx.beginPath()
+    roundedRect(ctx, tankX, tankY, tankWidth, tankHeight, tankRadius)
+    ctx.fillStyle = '#f6fbfc'
+    ctx.fill()
+    ctx.strokeStyle = '#3c6f7a'
+    ctx.lineWidth = tankBorderWidth
+    ctx.stroke()
     const percent = Math.max(0, Math.min(100, number(node.progressValue))) / 100
-    const liquidHeight = Math.max(0, (height - lineWidth * 2) * percent)
-    ctx.fillStyle = '#4caee8'
-    ctx.fillRect(lineWidth, height - lineWidth - liquidHeight, width - lineWidth * 2, liquidHeight)
+    const innerX = tankX + tankBorderWidth
+    const innerY = tankY + tankBorderWidth
+    const innerWidth = Math.max(.1, tankWidth - tankBorderWidth * 2)
+    const innerHeight = Math.max(.1, tankHeight - tankBorderWidth * 2)
+    const liquidHeight = innerHeight * percent
+    ctx.save()
+    try {
+      ctx.beginPath()
+      roundedRect(ctx, innerX, innerY, innerWidth, innerHeight, Math.max(0, tankRadius - tankBorderWidth))
+      ctx.clip()
+      const liquidY = innerY + innerHeight - liquidHeight
+      ctx.fillStyle = node.visualPrimaryColor || '#3bb9df'
+      ctx.fillRect(innerX, liquidY, innerWidth, liquidHeight)
+      if (liquidHeight > 0) {
+        const wave = waterTankAnimationState(node, animationTimestamp)
+        ctx.fillStyle = waterTankWaveColor(node)
+        ctx.beginPath()
+        ctx.ellipse(
+          innerX + innerWidth / 2 + wave.waveOffset * innerWidth * .112,
+          liquidY,
+          innerWidth * .7 * wave.waveScale,
+          6 * tankScale,
+          0,
+          0,
+          Math.PI * 2
+        )
+        ctx.fill()
+      }
+    } finally {
+      ctx.restore()
+    }
+    ctx.fillStyle = '#174b58'
+    ctx.font = `600 ${Math.max(1, 13 * tankScale)}px "Microsoft YaHei", sans-serif`
+    ctx.textAlign = 'center'
+    ctx.textBaseline = 'middle'
+    ctx.fillText(`${Math.round(percent * 10000) / 100}%`, width / 2, height / 2, tankWidth * .8)
     return
   }
   if (node.type === 'heartbeat') {
-    ctx.strokeStyle = accent
-    ctx.lineWidth = lineWidth * 1.4
+    fillAndStroke(ctx, node, width, height, worldPixel, '#fff')
+    const iconSize = Math.max(.1, Math.min(48, width * .8, height * .8))
+      * heartbeatAnimationScale(node, animationTimestamp)
+    const scale = iconSize / 24
+    const iconX = (width - iconSize) / 2
+    const iconY = (height - iconSize) / 2
+    ctx.strokeStyle = node.visualPrimaryColor || VISUAL_HEARTBEAT_COLOR
+    ctx.lineWidth = canvasVisualDetailSize(2 * scale, worldPixel, iconSize * .12, .8)
+    ctx.lineCap = 'round'
+    ctx.lineJoin = 'round'
     ctx.beginPath()
-    ctx.moveTo(0, height * .55)
-    ctx.lineTo(width * .28, height * .55)
-    ctx.lineTo(width * .38, height * .2)
-    ctx.lineTo(width * .49, height * .82)
-    ctx.lineTo(width * .6, height * .42)
-    ctx.lineTo(width, height * .55)
+    ctx.moveTo(iconX + 12 * scale, iconY + 21 * scale)
+    ctx.bezierCurveTo(iconX + 10.8 * scale, iconY + 19.8 * scale, iconX + 2 * scale, iconY + 14.3 * scale, iconX + 2 * scale, iconY + 8.5 * scale)
+    ctx.bezierCurveTo(iconX + 2 * scale, iconY + 5.5 * scale, iconX + 4.5 * scale, iconY + 3 * scale, iconX + 7.5 * scale, iconY + 3 * scale)
+    ctx.bezierCurveTo(iconX + 9.3 * scale, iconY + 3 * scale, iconX + 10.8 * scale, iconY + 3.8 * scale, iconX + 12 * scale, iconY + 5.1 * scale)
+    ctx.bezierCurveTo(iconX + 13.2 * scale, iconY + 3.8 * scale, iconX + 14.7 * scale, iconY + 3 * scale, iconX + 16.5 * scale, iconY + 3 * scale)
+    ctx.bezierCurveTo(iconX + 19.5 * scale, iconY + 3 * scale, iconX + 22 * scale, iconY + 5.5 * scale, iconX + 22 * scale, iconY + 8.5 * scale)
+    ctx.bezierCurveTo(iconX + 22 * scale, iconY + 14.3 * scale, iconX + 13.2 * scale, iconY + 19.8 * scale, iconX + 12 * scale, iconY + 21 * scale)
+    ctx.stroke()
+    ctx.beginPath()
+    ctx.moveTo(iconX + 3.2 * scale, iconY + 12 * scale)
+    ctx.lineTo(iconX + 9.5 * scale, iconY + 12 * scale)
+    ctx.lineTo(iconX + 10 * scale, iconY + 11 * scale)
+    ctx.lineTo(iconX + 12 * scale, iconY + 15.5 * scale)
+    ctx.lineTo(iconX + 14 * scale, iconY + 8.5 * scale)
+    ctx.lineTo(iconX + 15.5 * scale, iconY + 12 * scale)
+    ctx.lineTo(iconX + 20.8 * scale, iconY + 12 * scale)
     ctx.stroke()
     return
   }
   if (node.type === 'particles') {
-    ctx.fillStyle = accent
-    const radius = Math.max(lineWidth, Math.min(width, height) * .05)
-    for (let index = 0; index < 8; index += 1) {
+    fillAndStroke(ctx, node, width, height, worldPixel, '#fff')
+    ctx.fillStyle = node.visualPrimaryColor || accent
+    const visualWidth = width * .8
+    const visualHeight = Math.min(52, height)
+    const visualX = (width - visualWidth) / 2
+    const visualY = (height - visualHeight) / 2
+    const dotSize = Math.min(7, visualHeight / 7)
+    const radius = canvasVisualDetailSize(dotSize / 2, worldPixel, visualHeight * .1, .65)
+    const positions = [[.05, 0], [.16, 7], [.28, 14], [.4, 21], [.52, 28], [.64, 35], [.76, 42], [.88, 7]]
+    const visualScale = dotSize / 7
+    ctx.save()
+    try {
       ctx.beginPath()
-      ctx.arc(width * (.1 + (index * 37 % 80) / 100), height * (.12 + (index * 53 % 76) / 100), radius, 0, Math.PI * 2)
-      ctx.fill()
+      ctx.rect(visualX, visualY, visualWidth, visualHeight)
+      ctx.clip()
+      const baseAlpha = ctx.globalAlpha
+      for (const [index, [left, top]] of positions.entries()) {
+        const state = particleAnimationState(node, index, animationTimestamp)
+        ctx.globalAlpha = baseAlpha * state.opacity
+        ctx.beginPath()
+        ctx.arc(
+          visualX + visualWidth * left + state.translateX * visualScale + radius,
+          visualY + top * visualScale + radius,
+          radius,
+          0,
+          Math.PI * 2
+        )
+        ctx.fill()
+      }
+      ctx.globalAlpha = baseAlpha
+    } finally {
+      ctx.restore()
     }
     return
   }
@@ -1234,6 +1759,12 @@ function drawNode(ctx, sourceNode, scaleX, scaleY, worldPixel, renderPass = 'ful
   // 运行时值只生成本次绘制使用的有效节点，不回写图纸中的静态属性。
   const textLayout = options.textLayout || null
   const node = options.node || textLayout?.node || materializeRuntimeNode(sourceNode, runtimePointValue)
+  const rawAnimationTimestamp = number(options.animationTimestamp)
+  const animationTimestamp = options.animationTimestampResolved === true
+    ? rawAnimationTimestamp
+    : isCanvasVisualAnimationCandidate(node)
+    ? visualAnimationTimeline.resolve(node, rawAnimationTimestamp)
+    : rawAnimationTimestamp
   const {
     width,
     height,
@@ -1248,7 +1779,11 @@ function drawNode(ctx, sourceNode, scaleX, scaleY, worldPixel, renderPass = 'ful
   const x = number(node.x)
   const y = number(node.y)
   const lineWidth = visibleStroke(node, layoutWidth, layoutHeight, visualWorldPixel)
-  const value = renderPass === 'static' ? undefined : runtimeValue(node)
+  const value = renderPass === 'static'
+    ? undefined
+    : options.runtimeValueResolved === true
+      ? options.runtimeValue
+      : runtimeValue(node)
   ctx.save()
   try {
     ctx.globalAlpha = multiplyOpacity(node.opacity, opacityMultiplier)
@@ -1259,7 +1794,7 @@ function drawNode(ctx, sourceNode, scaleX, scaleY, worldPixel, renderPass = 'ful
 
     if (renderPass === 'runtime') {
       if (['gauge', 'progress'].includes(node.type)) {
-        drawSpecialNode(ctx, node, layoutWidth, layoutHeight, lineWidth, value, 'runtime')
+        drawSpecialNode(ctx, node, layoutWidth, layoutHeight, lineWidth, value, 'runtime', visualWorldPixel, animationTimestamp)
       } else if (node.type === 'time') {
         drawText(ctx, node, layoutWidth, layoutHeight, effectiveScaleX, effectiveScaleY, formDisplayText(node))
       } else {
@@ -1325,7 +1860,7 @@ function drawNode(ctx, sourceNode, scaleX, scaleY, worldPixel, renderPass = 'ful
       }
     } else if (node.type === 'image' || node.type === 'customImageMotion') {
       const image = cachedImage(node.imageUrl)
-      if (image?.complete && image.naturalWidth) {
+      if (cachedImageReady(image)) {
         ctx.save()
         try {
           ctx.globalAlpha *= alpha(node.backgroundOpacity)
@@ -1338,7 +1873,7 @@ function drawNode(ctx, sourceNode, scaleX, scaleY, worldPixel, renderPass = 'ful
       } else drawMediaPlaceholder(ctx, node, layoutWidth, layoutHeight, lineWidth, true)
     } else if (node.type === 'video') drawMediaPlaceholder(ctx, node, layoutWidth, layoutHeight, lineWidth, false)
     else {
-      drawSpecialNode(ctx, node, layoutWidth, layoutHeight, lineWidth, value, renderPass)
+      drawSpecialNode(ctx, node, layoutWidth, layoutHeight, lineWidth, value, renderPass, visualWorldPixel, animationTimestamp)
       const visualOnly = ['flowPipe', 'rotatingFan', 'signalLight', 'waterTank', 'heartbeat', 'particles', 'progress']
       if (node.type === 'customTextMotion' || (!node.type.startsWith('custom') && !visualOnly.includes(node.type))) {
         drawText(ctx, node, layoutWidth, layoutHeight, effectiveScaleX, effectiveScaleY)
@@ -1432,6 +1967,1203 @@ function finishLongTextLayoutWork(work) {
   }
 }
 
+function canvasVisualDescriptorSourceKey(node) {
+  const bindings = Array.isArray(node?.dataBindings)
+    ? node.dataBindings.map(binding => [
+        binding?.target,
+        binding?.pointId,
+        binding?.sourceId,
+        binding?.jsonPath,
+        binding?.enabled
+      ])
+    : []
+  return JSON.stringify([
+    node?.type,
+    node?.x,
+    node?.y,
+    node?.w,
+    node?.h,
+    node?.rotate,
+    node?.visualScaleX,
+    node?.visualScaleY,
+    node?.opacity,
+    node?.fill,
+    node?.stroke,
+    node?.color,
+    node?.visualPrimaryColor,
+    node?.radius,
+    node?.borderVisible,
+    node?.borderWidth,
+    node?.borderStyle,
+    node?.borderDashLength,
+    node?.borderDashGap,
+    node?.backgroundOpacity,
+    node?.animation,
+    node?.animationDuration,
+    node?.animationDirection,
+    node?.animationPaused,
+    node?.signalOpacity,
+    node?.signalColorCount,
+    node?.signalColor,
+    ...(Array.isArray(node?.signalColors) ? node.signalColors : []),
+    node?.progressValue,
+    node?.dataKey,
+    bindings
+  ])
+}
+
+function canvasVisualSpriteAnimationState(node, layout, timestamp) {
+  if (node.type === 'flowPipe') {
+    const trackWidth = Math.max(.1, layout.layoutWidth * .75)
+    const trackHeight = Math.max(.1, Math.min(16, layout.layoutHeight * .64))
+    const stripeSpacing = Math.max(20, layout.visualWorldPixel * 5, trackWidth / 96)
+    return [flowPipeDashOffset(node, stripeSpacing / 7, timestamp), trackHeight]
+  }
+  if (node.type === 'rotatingFan') return [rotatingFanAngle(node, timestamp)]
+  if (node.type === 'signalLight') {
+    return [alpha(node.signalOpacity), signalLightColor(node, timestamp)]
+  }
+  if (node.type === 'waterTank') {
+    const state = waterTankAnimationState(node, timestamp)
+    return [Math.max(0, Math.min(100, number(node.progressValue))), state.waveOffset, state.waveScale]
+  }
+  if (node.type === 'heartbeat') return [heartbeatAnimationScale(node, timestamp)]
+  if (node.type === 'particles') {
+    const state = []
+    for (let index = 0; index < 8; index += 1) {
+      const particle = particleAnimationState(node, index, timestamp)
+      state.push(particle.translateX, particle.opacity)
+    }
+    return state
+  }
+  return []
+}
+
+function canvasVisualSpriteStaticSignature(task, node, bitmapRect, layout, opacityMultiplier, badgeText) {
+  const frame = task.frame
+  const centerBitmapX = (
+    frame.offsetX + (number(node.x) + layout.width / 2) * frame.scaleX
+  ) * frame.pixelRatioX - bitmapRect.x
+  const centerBitmapY = (
+    frame.offsetY + (number(node.y) + layout.height / 2) * frame.scaleY
+  ) * frame.pixelRatioY - bitmapRect.y
+  return JSON.stringify([
+    bitmapRect.w,
+    bitmapRect.h,
+    centerBitmapX,
+    centerBitmapY,
+    node.type,
+    layout.width,
+    layout.height,
+    layout.visualScaleX,
+    layout.visualScaleY,
+    node.opacity,
+    opacityMultiplier,
+    node.fill,
+    node.stroke,
+    node.color,
+    node.visualPrimaryColor,
+    node.radius,
+    node.borderVisible,
+    node.borderWidth,
+    node.borderStyle,
+    node.borderDashLength,
+    node.borderDashGap,
+    node.backgroundOpacity,
+    badgeText
+  ])
+}
+
+function internCanvasVisualSpriteStaticSignature(signature) {
+  let id = canvasVisualSpriteStaticSignatureIds.get(signature)
+  if (id == null) {
+    id = nextCanvasVisualSpriteStaticSignatureId
+    nextCanvasVisualSpriteStaticSignatureId += 1
+    canvasVisualSpriteStaticSignatureIds.set(signature, id)
+  }
+  return id
+}
+
+function canvasVisualAnimationProfile(node, layout) {
+  const profile = [
+    node.type,
+    node.animation,
+    node.animationDuration,
+    node.animationDirection
+  ]
+  if (node.type === 'flowPipe') {
+    profile.push(layout.layoutWidth, layout.layoutHeight, layout.visualWorldPixel)
+  } else if (node.type === 'signalLight') {
+    profile.push(
+      node.signalOpacity,
+      node.signalColorCount,
+      node.signalColor,
+      ...(Array.isArray(node.signalColors) ? node.signalColors : [])
+    )
+  } else if (node.type === 'waterTank') {
+    profile.push(node.progressValue)
+  }
+  return JSON.stringify(profile)
+}
+
+function internCanvasVisualAnimationProfile(node, layout) {
+  const profile = canvasVisualAnimationProfile(node, layout)
+  let id = canvasVisualAnimationProfileIds.get(profile)
+  if (id == null) {
+    id = nextCanvasVisualAnimationProfileId
+    nextCanvasVisualAnimationProfileId += 1
+    canvasVisualAnimationProfileIds.set(profile, id)
+  }
+  return id
+}
+
+function canvasVisualAnimationStreamKey(
+  sourceNode,
+  node,
+  profileId,
+  rawTimestamp,
+  resolvedTimestamp,
+  animated
+) {
+  if (!animated || !sourceNode || typeof sourceNode !== 'object') return 'static'
+  const paused = node.animationPaused === true
+  let state = canvasVisualAnimationStreamStates.get(sourceNode)
+  if (!state || state.profileId !== profileId || state.paused !== paused) {
+    state = {
+      profileId,
+      paused,
+      key: paused
+        ? `paused:${resolvedTimestamp}`
+        : `running:${resolvedTimestamp - rawTimestamp}`
+    }
+    canvasVisualAnimationStreamStates.set(sourceNode, state)
+  }
+  return state.key
+}
+
+function canvasVisualSpriteSignature(
+  task,
+  node,
+  bitmapRect,
+  layout,
+  timestamp,
+  opacityMultiplier,
+  badgeText,
+  staticSignature = '',
+  animationProfileId = 0
+) {
+  const prefix = staticSignature || internCanvasVisualSpriteStaticSignature(
+    canvasVisualSpriteStaticSignature(
+      task,
+      node,
+      bitmapRect,
+      layout,
+      opacityMultiplier,
+      badgeText
+    )
+  )
+  const profileId = animationProfileId || internCanvasVisualAnimationProfile(node, layout)
+  const animationKey = `${profileId}\u0000${timestamp}`
+  let animationState = task.visualAnimationSignatureCache?.get(animationKey)
+  if (animationState == null) {
+    task.visualAnimationSignatureCacheMisses += 1
+    animationState = JSON.stringify(canvasVisualSpriteAnimationState(node, layout, timestamp))
+    task.visualAnimationSignatureCache?.set(animationKey, animationState)
+  } else {
+    task.visualAnimationSignatureCacheHits += 1
+  }
+  return `${prefix}\u0000${animationState}`
+}
+
+function drawCanvasVisualSpriteDirect(
+  task,
+  sourceNode,
+  node,
+  scaleX,
+  scaleY,
+  worldPixel,
+  opacityMultiplier,
+  animationTimestamp,
+  runtimeValueSnapshot
+) {
+  drawNode(
+    task.ctx,
+    sourceNode,
+    scaleX,
+    scaleY,
+    worldPixel,
+    'full',
+    opacityMultiplier,
+    {
+      node,
+      animationTimestamp,
+      animationTimestampResolved: true,
+      runtimeValue: runtimeValueSnapshot,
+      runtimeValueResolved: true
+    }
+  )
+}
+
+function createCanvasVisualSprite(
+  task,
+  sourceNode,
+  node,
+  bitmapRect,
+  scaleX,
+  scaleY,
+  worldPixel,
+  opacityMultiplier,
+  animationTimestamp,
+  runtimeValueSnapshot
+) {
+  const surface = acquireCanvasVisualSpriteSurface(bitmapRect.w, bitmapRect.h)
+  if (!surface) return null
+  let context = null
+  let complete = false
+  try {
+    context = surface.getContext?.('2d') || null
+    if (!context) return null
+    context.setTransform(
+      task.frame.pixelRatioX,
+      0,
+      0,
+      task.frame.pixelRatioY,
+      -bitmapRect.x,
+      -bitmapRect.y
+    )
+    context.translate(task.frame.offsetX, task.frame.offsetY)
+    context.scale(task.frame.scaleX, task.frame.scaleY)
+    drawNode(
+      context,
+      sourceNode,
+      scaleX,
+      scaleY,
+      worldPixel,
+      'full',
+      opacityMultiplier,
+      {
+        node,
+        animationTimestamp,
+        animationTimestampResolved: true,
+        runtimeValue: runtimeValueSnapshot,
+        runtimeValueResolved: true
+      }
+    )
+    complete = true
+    return surface
+  } catch {
+    return null
+  } finally {
+    if (!complete) {
+      surface.width = 0
+      surface.height = 0
+    }
+  }
+}
+
+function blitCanvasVisualSprite(ctx, surface, bitmapRect, frame) {
+  const pixelRatioX = Math.max(.0001, number(frame.pixelRatioX, 1))
+  const pixelRatioY = Math.max(.0001, number(frame.pixelRatioY, 1))
+  const scaleX = Math.max(.0001, number(frame.scaleX, 1))
+  const scaleY = Math.max(.0001, number(frame.scaleY, 1))
+  const destinationX = (bitmapRect.x / pixelRatioX - number(frame.offsetX)) / scaleX
+  const destinationY = (bitmapRect.y / pixelRatioY - number(frame.offsetY)) / scaleY
+  const destinationWidth = bitmapRect.w / pixelRatioX / scaleX
+  const destinationHeight = bitmapRect.h / pixelRatioY / scaleY
+  ctx.drawImage(surface, destinationX, destinationY, destinationWidth, destinationHeight)
+}
+
+function prepareCanvasVisualSpriteCommand(
+  task,
+  sourceNode,
+  scaleX,
+  scaleY,
+  worldPixel,
+  opacityMultiplier
+) {
+  if (!canvasVisualAnimationTypes.has(sourceNode?.type)) return null
+  const descriptorOwner = sourceNode && typeof sourceNode === 'object'
+  const sourceKey = canvasVisualDescriptorSourceKey(sourceNode)
+  let descriptor = descriptorOwner ? canvasVisualSpriteDescriptorCache.get(sourceNode) : null
+  if (
+    descriptor?.frame !== task.frame
+    || descriptor.opacityMultiplier !== opacityMultiplier
+    || descriptor.sourceKey !== sourceKey
+  ) {
+    descriptor = null
+  }
+  let cacheable = false
+  if (descriptor) {
+    task.visualDescriptorCacheHits += 1
+  } else {
+    cacheable = Boolean(
+      descriptorOwner
+    )
+    if (cacheable) task.visualDescriptorCacheMisses += 1
+    else task.visualDescriptorCacheBypasses += 1
+  }
+  if (!descriptor) {
+    const node = materializeRuntimeNode(sourceNode, runtimePointValue)
+    if (number(node.rotate) !== 0) return null
+    const runtimeValueSnapshot = runtimeValue(sourceNode)
+    const badgeText = sourceNode.dataKey ? runtimeDisplayText(runtimeValueSnapshot) : ''
+    const visualScalePadding = Math.max(
+      Math.abs(number(node.visualScaleX, 1)),
+      Math.abs(number(node.visualScaleY, 1)),
+      1
+    )
+    const borderPadding = node.borderVisible === false
+      ? 0
+      : Math.max(0, number(node.borderWidth)) / 2 * visualScalePadding
+    const heartbeatPadding = node.type === 'heartbeat'
+      ? Math.max(number(node.w, 1), number(node.h, 1)) * .09 * visualScalePadding
+      : 0
+    const bitmapRect = runtimeNodeBitmapRect(node, task.frame, {
+      regionPadding: Math.max(2, borderPadding, heartbeatPadding),
+      bitmapPadding: 2
+    })
+    if (!bitmapRect) return null
+    const pixelCount = bitmapRect.w * bitmapRect.h
+    if (pixelCount <= 0 || pixelCount > RUNTIME_VISUAL_SPRITE_MAX_ITEM_PIXELS) return null
+    const layout = canvasNodeLayout(node, scaleX, scaleY, worldPixel)
+    descriptor = {
+      frame: task.frame,
+      sourceKey,
+      node,
+      bitmapRect,
+      pixelCount,
+      runtimeValueSnapshot,
+      badgeText,
+      layout,
+      opacityMultiplier,
+      staticSignature: internCanvasVisualSpriteStaticSignature(
+        canvasVisualSpriteStaticSignature(
+          task,
+          node,
+          bitmapRect,
+          layout,
+          opacityMultiplier,
+          badgeText
+        )
+      ),
+      animationProfileId: internCanvasVisualAnimationProfile(node, layout)
+    }
+    if (cacheable) canvasVisualSpriteDescriptorCache.set(sourceNode, descriptor)
+  }
+
+  const rawTimestamp = number(task.animationTimestamp)
+  const animated = isCanvasVisualAnimationCandidate(descriptor.node)
+  const animationTimestamp = animated
+    ? visualAnimationTimeline.resolve(descriptor.node, rawTimestamp)
+    : rawTimestamp
+  if (descriptor.node.type === 'signalLight') {
+    task.signalLightColors.set(
+      visualAnimationNodeKey(sourceNode),
+      signalLightColor(descriptor.node, animationTimestamp)
+    )
+  }
+  const signature = canvasVisualSpriteSignature(
+    task,
+    descriptor.node,
+    descriptor.bitmapRect,
+    descriptor.layout,
+    animationTimestamp,
+    opacityMultiplier,
+    descriptor.badgeText,
+    descriptor.staticSignature,
+    descriptor.animationProfileId
+  )
+  const streamKey = canvasVisualAnimationStreamKey(
+    sourceNode,
+    descriptor.node,
+    descriptor.animationProfileId,
+    rawTimestamp,
+    animationTimestamp,
+    animated
+  )
+  return {
+    sourceNode,
+    node: descriptor.node,
+    bitmapRect: descriptor.bitmapRect,
+    pixelCount: descriptor.pixelCount,
+    signature,
+    slotSignature: `${descriptor.staticSignature}\u0000${descriptor.animationProfileId}\u0000${streamKey}`,
+    scaleX,
+    scaleY,
+    worldPixel,
+    opacityMultiplier,
+    animationTimestamp,
+    runtimeValueSnapshot: descriptor.runtimeValueSnapshot
+  }
+}
+
+function tryDrawCanvasVisualSprite(
+  task,
+  sourceNode,
+  scaleX,
+  scaleY,
+  worldPixel,
+  renderPass,
+  opacityMultiplier
+) {
+  if (
+    renderPass !== 'full'
+    || !task.visualSpriteCache
+    || !canvasVisualAnimationTypes.has(sourceNode?.type)
+  ) return false
+
+  const command = prepareCanvasVisualSpriteCommand(
+    task,
+    sourceNode,
+    scaleX,
+    scaleY,
+    worldPixel,
+    opacityMultiplier,
+  )
+  if (!command) return false
+  const {
+    node,
+    bitmapRect,
+    pixelCount,
+    signature,
+    animationTimestamp,
+    runtimeValueSnapshot
+  } = command
+  let entry = task.visualSpriteCache.get(signature)
+  if (entry?.surface) {
+    blitCanvasVisualSprite(task.ctx, entry.surface, bitmapRect, task.frame)
+    task.visualSpriteBlitCount += 1
+    return true
+  }
+
+  if (!entry) {
+    if (task.visualSpriteCache.size >= RUNTIME_VISUAL_SPRITE_MAX_SIGNATURES) return false
+    entry = { hits: 1, disabled: false, surface: null, pixels: 0 }
+    task.visualSpriteCache.set(signature, entry)
+    drawCanvasVisualSpriteDirect(
+      task,
+      sourceNode,
+      node,
+      scaleX,
+      scaleY,
+      worldPixel,
+      opacityMultiplier,
+      animationTimestamp,
+      runtimeValueSnapshot
+    )
+    return true
+  }
+
+  entry.hits += 1
+  const canCreate = !entry.disabled
+    && task.visualSpriteSurfaceCount < RUNTIME_VISUAL_SPRITE_MAX_SURFACES
+    && task.visualSpritePixelCount + pixelCount <= RUNTIME_VISUAL_SPRITE_MAX_TOTAL_PIXELS
+  if (!canCreate) {
+    entry.disabled = true
+    drawCanvasVisualSpriteDirect(
+      task,
+      sourceNode,
+      node,
+      scaleX,
+      scaleY,
+      worldPixel,
+      opacityMultiplier,
+      animationTimestamp,
+      runtimeValueSnapshot
+    )
+    return true
+  }
+
+  const surface = createCanvasVisualSprite(
+    task,
+    sourceNode,
+    node,
+    bitmapRect,
+    scaleX,
+    scaleY,
+    worldPixel,
+    opacityMultiplier,
+    animationTimestamp,
+    runtimeValueSnapshot
+  )
+  if (!surface) {
+    entry.disabled = true
+    drawCanvasVisualSpriteDirect(
+      task,
+      sourceNode,
+      node,
+      scaleX,
+      scaleY,
+      worldPixel,
+      opacityMultiplier,
+      animationTimestamp,
+      runtimeValueSnapshot
+    )
+    return true
+  }
+
+  entry.surface = surface
+  entry.pixels = pixelCount
+  task.visualSpriteSurfaceCount += 1
+  task.visualSpritePixelCount += pixelCount
+  task.visualSpriteRasterCount += 1
+  blitCanvasVisualSprite(task.ctx, surface, bitmapRect, task.frame)
+  task.visualSpriteBlitCount += 1
+  return true
+}
+
+function releaseCanvasVisualSprites(task) {
+  for (const entry of task?.visualSpriteCache?.values?.() || []) {
+    if (!entry?.surface) continue
+    releaseCanvasVisualSpriteSurface(entry.surface)
+    entry.surface = null
+  }
+  task?.visualSpriteCache?.clear?.()
+  if (!task) return
+  task.visualSpritePixelCount = 0
+  task.visualSpriteSurfaceCount = 0
+}
+
+function canvasVisualAtlasEligible(task, items) {
+  return Boolean(
+    task.visualAnimationFrame
+    && !task.visualAtlasAttempted
+    && Array.isArray(items)
+    && items.length >= RUNTIME_VISUAL_ATLAS_MIN_INSTANCES
+    && task.renderNodes
+  )
+}
+
+function beginCanvasVisualAtlasAttempt(task, items, mode) {
+  if (!canvasVisualAtlasEligible(task, items)) return false
+  const topology = mode === 'direct'
+    ? task.visualAtlasDirectFrame?.topology || null
+    : null
+  task.visualAtlasAttempted = true
+  task.visualAtlasMode = mode
+  task.visualAtlasMinimumInstances = RUNTIME_VISUAL_ATLAS_MIN_INSTANCES
+  task.visualAtlasTopology = topology
+  task.visualAtlasItems = topology?.representatives || items
+  task.visualAtlasInstanceSources = topology?.instances || null
+  task.visualAtlasPendingTopology = null
+  task.visualAtlasCursor = 0
+  task.visualAtlasCommands = []
+  task.visualAtlasLayerItems = []
+  task.visualAtlasPassthroughCount = 0
+  task.visualAtlasUniqueCommands = new Map()
+  task.visualAtlasStableSlots = true
+  task.visualAtlasEntries = []
+  task.visualAtlasRasterCursor = 0
+  task.visualAtlasCompositeCursor = 0
+  task.visualAtlasCompositePrepared = false
+  task.visualAtlasPlan = null
+  task.visualAtlasFrame = null
+  task.visualAtlasInstances = null
+  task.visualAtlasBlitData = null
+  task.phase = 'visualAtlasPrepare'
+  return true
+}
+
+function clearCanvasVisualAtlasAttempt(task) {
+  task.visualAtlasItems = null
+  task.visualAtlasCommands = []
+  task.visualAtlasLayerItems = []
+  task.visualAtlasPassthroughCount = 0
+  task.visualAtlasMinimumInstances = 0
+  task.visualAtlasUniqueCommands = null
+  task.visualAtlasEntries = []
+  task.visualAtlasInstances = null
+  task.visualAtlasBlitData = null
+  task.visualAtlasInstanceSources = null
+  task.visualAtlasTopology = null
+  task.visualAtlasPendingTopology = null
+  task.visualAtlasPlan = null
+  task.visualAtlasFrame = null
+  task.visualAtlasOutputRect = null
+  task.visualAtlasCursor = 0
+  task.visualAtlasRasterCursor = 0
+  task.visualAtlasCompositeCursor = 0
+  task.visualAtlasCompositePrepared = false
+}
+
+function canvasVisualAtlasOutputRect(task) {
+  const rects = task.visualAtlasMode === 'union' || (task.visualAnimationFrame && task.measuredBitmapRects.length)
+    ? task.measuredBitmapRects
+    : fullRuntimeSeedRect(task.frame)
+  if (!Array.isArray(rects) || !rects.length) return null
+  let left = Number.POSITIVE_INFINITY
+  let top = Number.POSITIVE_INFINITY
+  let right = Number.NEGATIVE_INFINITY
+  let bottom = Number.NEGATIVE_INFINITY
+  for (const rect of rects) {
+    left = Math.min(left, number(rect?.x))
+    top = Math.min(top, number(rect?.y))
+    right = Math.max(right, number(rect?.x) + Math.max(0, number(rect?.w)))
+    bottom = Math.max(bottom, number(rect?.y) + Math.max(0, number(rect?.h)))
+  }
+  const x = Math.max(0, Math.floor(left))
+  const y = Math.max(0, Math.floor(top))
+  const clippedRight = Math.min(task.frame.bitmapWidth, Math.ceil(right))
+  const clippedBottom = Math.min(task.frame.bitmapHeight, Math.ceil(bottom))
+  if (clippedRight <= x || clippedBottom <= y) return null
+  return { x, y, w: clippedRight - x, h: clippedBottom - y }
+}
+
+function fallbackCanvasVisualAtlas(task, reason = 'unknown') {
+  const mode = task.visualAtlasMode
+  const preserveCompositeBase = task.visualAtlasDirectFrame?.preserveCompositeBase === true
+  if (task.regionContextSaved) {
+    try { task.ctx.restore() } catch { task.surfaceReusable = false }
+    task.regionContextSaved = false
+  }
+  if (task.denseContextSaved) {
+    try { task.ctx.restore() } catch { task.surfaceReusable = false }
+    task.denseContextSaved = false
+  }
+  task.visualAtlasFallbackCount += 1
+  task.visualAtlasFailureReason = reason
+  clearCanvasVisualAtlasAttempt(task)
+  if (mode === 'dense') beginDenseRuntime2dDraw(task)
+  else if (mode === 'direct') {
+    task.candidates = task.visualAtlasDirectItems || []
+    task.candidateCursor = 0
+    if (preserveCompositeBase) beginDirectPreservingRuntimeDraw(task)
+    else beginRuntimeUnionDraw(task)
+  }
+  else beginRuntimeUnionDraw(task)
+}
+
+function restoreCanvasVisualAtlasOutput(task, outputRect) {
+  const source = task?.visualAtlasDirectFrame?.preserveCompositeBase
+    ? task.frontComposite
+    : task?.base
+  if (!task?.ctx || !source || !outputRect) return false
+  let saved = false
+  try {
+    task.ctx.save()
+    saved = true
+    task.ctx.setTransform(1, 0, 0, 1, 0, 0)
+    task.ctx.globalAlpha = 1
+    task.ctx.globalCompositeOperation = 'source-over'
+    task.ctx.clearRect(outputRect.x, outputRect.y, outputRect.w, outputRect.h)
+    task.ctx.drawImage(
+      source,
+      outputRect.x,
+      outputRect.y,
+      outputRect.w,
+      outputRect.h,
+      outputRect.x,
+      outputRect.y,
+      outputRect.w,
+      outputRect.h
+    )
+    return true
+  } catch {
+    task.surfaceReusable = false
+    return false
+  } finally {
+    if (saved) {
+      try { task.ctx.restore() } catch { task.surfaceReusable = false }
+    }
+  }
+}
+
+function beginDirectPreservingRuntimeDraw(task) {
+  task.ctx.save()
+  task.regionContextSaved = true
+  task.ctx.setTransform(1, 0, 0, 1, 0, 0)
+  task.ctx.beginPath()
+  for (const rect of task.measuredBitmapRects) task.ctx.rect(rect.x, rect.y, rect.w, rect.h)
+  task.ctx.clip()
+  task.ctx.setTransform(task.frame.pixelRatioX, 0, 0, task.frame.pixelRatioY, 0, 0)
+  task.ctx.translate(task.frame.offsetX, task.frame.offsetY)
+  task.ctx.scale(task.frame.scaleX, task.frame.scaleY)
+  task.bitmapRects.push(...task.measuredBitmapRects)
+  task.phase = 'draw'
+}
+
+function drawCanvasVisualAtlasSprite(task, context, command, slot) {
+  const frame = task.frame
+  context.save()
+  try {
+    context.setTransform(1, 0, 0, 1, 0, 0)
+    context.beginPath()
+    context.rect(slot.x, slot.y, slot.w, slot.h)
+    context.clip()
+    context.setTransform(
+      frame.pixelRatioX,
+      0,
+      0,
+      frame.pixelRatioY,
+      slot.x - command.bitmapRect.x,
+      slot.y - command.bitmapRect.y
+    )
+    context.translate(frame.offsetX, frame.offsetY)
+    context.scale(frame.scaleX, frame.scaleY)
+    drawNode(
+      context,
+      command.sourceNode,
+      command.scaleX,
+      command.scaleY,
+      command.worldPixel,
+      'full',
+      command.opacityMultiplier,
+      {
+        node: command.node,
+        animationTimestamp: command.animationTimestamp,
+        animationTimestampResolved: true,
+        runtimeValue: command.runtimeValueSnapshot,
+        runtimeValueResolved: true
+      }
+    )
+  } finally {
+    context.restore()
+  }
+  const surface = context.canvas
+  context.save()
+  try {
+    context.setTransform(1, 0, 0, 1, 0, 0)
+    context.globalAlpha = 1
+    context.globalCompositeOperation = 'source-over'
+    context.drawImage(surface, slot.x, slot.y, slot.w, 1, slot.x, slot.y - 1, slot.w, 1)
+    context.drawImage(surface, slot.x, slot.y + slot.h - 1, slot.w, 1, slot.x, slot.y + slot.h, slot.w, 1)
+    context.drawImage(surface, slot.x, slot.y, 1, slot.h, slot.x - 1, slot.y, 1, slot.h)
+    context.drawImage(surface, slot.x + slot.w - 1, slot.y, 1, slot.h, slot.x + slot.w, slot.y, 1, slot.h)
+    context.drawImage(surface, slot.x, slot.y, 1, 1, slot.x - 1, slot.y - 1, 1, 1)
+    context.drawImage(surface, slot.x + slot.w - 1, slot.y, 1, 1, slot.x + slot.w, slot.y - 1, 1, 1)
+    context.drawImage(surface, slot.x, slot.y + slot.h - 1, 1, 1, slot.x - 1, slot.y + slot.h, 1, 1)
+    context.drawImage(surface, slot.x + slot.w - 1, slot.y + slot.h - 1, 1, 1, slot.x + slot.w, slot.y + slot.h, 1, 1)
+  } finally {
+    context.restore()
+  }
+}
+
+function canvasVisualAtlasLayoutKey(entries) {
+  return entries
+    .slice()
+    .sort((left, right) => left.signature.localeCompare(right.signature))
+    .map(entry => `${entry.signature.length}:${entry.signature}:${entry.width}x${entry.height}`)
+    .join('|')
+}
+
+function resolveCanvasVisualAtlasSlotSignature(task, command) {
+  let slotSignature = command.slotSignature
+  const existing = task.visualAtlasUniqueCommands.get(slotSignature)
+  if (!existing || existing.signature === command.signature) return slotSignature
+  const sourceKey = String(command.sourceNode?.id ?? task.visualAtlasCursor)
+  slotSignature = `${slotSignature}\u0000node:${sourceKey}`
+  let suffix = 1
+  while (
+    task.visualAtlasUniqueCommands.has(slotSignature)
+    && task.visualAtlasUniqueCommands.get(slotSignature).signature !== command.signature
+  ) {
+    slotSignature = `${command.slotSignature}\u0000node:${sourceKey}:${suffix}`
+    suffix += 1
+  }
+  return slotSignature
+}
+
+function prepareCanvasVisualAtlas(task, deadline) {
+  const startedAt = currentAnimationTimestamp()
+  if (!Array.isArray(task.visualAtlasLayerItems)) task.visualAtlasLayerItems = []
+  if (!Number.isFinite(task.visualAtlasPassthroughCount)) task.visualAtlasPassthroughCount = 0
+  const worldPixel = 1 / Math.max(.0001, Math.min(task.frame.scaleX, task.frame.scaleY))
+  while (task.visualAtlasCursor < task.visualAtlasItems.length) {
+    const item = task.visualAtlasItems[task.visualAtlasCursor]
+    if (item?.kind !== 'node' || !item.entity) {
+      if (item?.kind === 'drawing' && item.entity) {
+        task.visualAtlasLayerItems.push({ kind: 'passthrough', item })
+        task.visualAtlasPassthroughCount += 1
+        task.visualAtlasCursor += 1
+        if (deadline.shouldYield()) {
+          task.visualAtlasPrepareMs += currentAnimationTimestamp() - startedAt
+          return false
+        }
+        continue
+      }
+      task.visualAtlasPrepareMs += currentAnimationTimestamp() - startedAt
+      fallbackCanvasVisualAtlas(task, 'unsupported-entity')
+      return true
+    }
+    const command = prepareCanvasVisualSpriteCommand(
+      task,
+      item.entity,
+      task.frame.scaleX,
+      task.frame.scaleY,
+      worldPixel,
+      1
+    )
+    if (!command) {
+      task.visualAtlasLayerItems.push({ kind: 'passthrough', item })
+      task.visualAtlasPassthroughCount += 1
+      task.visualAtlasCursor += 1
+      if (deadline.shouldYield()) {
+        task.visualAtlasPrepareMs += currentAnimationTimestamp() - startedAt
+        return false
+      }
+      continue
+    }
+    command.slotSignature = item.slotSignature
+      || resolveCanvasVisualAtlasSlotSignature(task, command)
+    task.visualAtlasCommands.push(command)
+    task.visualAtlasLayerItems.push({
+      kind: 'atlas',
+      instanceIndex: task.visualAtlasCommands.length - 1
+    })
+    if (!task.visualAtlasUniqueCommands.has(command.slotSignature)) {
+      task.visualAtlasUniqueCommands.set(command.slotSignature, command)
+    }
+    task.visualAtlasCursor += 1
+    if (deadline.shouldYield()) {
+      task.visualAtlasPrepareMs += currentAnimationTimestamp() - startedAt
+      return false
+    }
+  }
+
+  const minimumInstances = Math.max(1, Math.floor(Number(task.visualAtlasMinimumInstances) || 1))
+  if (task.visualAtlasCommands.length < minimumInstances) {
+    task.visualAtlasPrepareMs += currentAnimationTimestamp() - startedAt
+    fallbackCanvasVisualAtlas(task, 'insufficient-visual-instances')
+    return true
+  }
+
+  if (task.visualAtlasUniqueCommands.size > RUNTIME_VISUAL_SPRITE_MAX_SIGNATURES) {
+    const dynamicCommands = new Map()
+    for (const command of task.visualAtlasCommands) {
+      command.slotSignature = command.signature
+      if (!dynamicCommands.has(command.signature)) dynamicCommands.set(command.signature, command)
+      if (dynamicCommands.size > RUNTIME_VISUAL_SPRITE_MAX_SIGNATURES) {
+        task.visualAtlasPrepareMs += currentAnimationTimestamp() - startedAt
+        fallbackCanvasVisualAtlas(task, 'signature-capacity')
+        return true
+      }
+    }
+    task.visualAtlasUniqueCommands = dynamicCommands
+    task.visualAtlasStableSlots = false
+  }
+
+  const entries = [...task.visualAtlasUniqueCommands.values()].map(command => ({
+    signature: command.slotSignature,
+    width: command.bitmapRect.w,
+    height: command.bitmapRect.h
+  }))
+  task.visualAtlasRawPixels = entries.reduce((total, entry) => total + entry.width * entry.height, 0)
+  const layoutKey = canvasVisualAtlasLayoutKey(entries)
+  if (task.visualAtlasTopology && task.visualAtlasTopology.layoutKey !== layoutKey) {
+    if (task.visualAtlasDirectFrame?.topology === task.visualAtlasTopology) {
+      task.visualAtlasDirectFrame.topology = null
+    }
+    task.visualAtlasTopology = null
+    task.visualAtlasItems = task.visualAtlasDirectItems || []
+    task.visualAtlasInstanceSources = null
+    task.visualAtlasCursor = 0
+    task.visualAtlasCommands = []
+    task.visualAtlasUniqueCommands = new Map()
+    task.visualAtlasStableSlots = true
+    task.visualAtlasPrepareMs += currentAnimationTimestamp() - startedAt
+    return false
+  }
+  let atlasFrame = cachedCanvasVisualAtlasFrame(layoutKey)
+  const plan = atlasFrame?.plan || packCanvasVisualAtlas(entries, {
+    maxEntries: RUNTIME_VISUAL_SPRITE_MAX_SIGNATURES,
+    maxWidth: RUNTIME_VISUAL_ATLAS_MAX_DIMENSION,
+    maxHeight: RUNTIME_VISUAL_ATLAS_MAX_DIMENSION,
+    maxPixels: RUNTIME_VISUAL_ATLAS_MAX_PIXELS,
+    padding: 1
+  })
+  const cacheHit = Boolean(atlasFrame)
+  if (plan && !atlasFrame) atlasFrame = acquireCanvasVisualAtlasFrame(layoutKey, plan)
+  if (!plan || !atlasFrame?.surface || !atlasFrame.context) {
+    task.visualAtlasPrepareMs += currentAnimationTimestamp() - startedAt
+    fallbackCanvasVisualAtlas(task, plan ? 'atlas-surface' : 'atlas-budget')
+    return true
+  }
+  task.visualAtlasPlan = plan
+  task.visualAtlasFrame = atlasFrame
+  task.visualAtlasFrameCacheHit = cacheHit
+  task.visualAtlasWidth = plan.width
+  task.visualAtlasHeight = plan.height
+  task.visualAtlasEntries = [...task.visualAtlasUniqueCommands.values()]
+  if (
+    task.visualAtlasMode === 'direct'
+    && task.visualAtlasStableSlots
+    && !task.visualAtlasTopology
+    && task.visualAtlasDirectFrame
+  ) {
+    task.visualAtlasPendingTopology = {
+      layoutKey,
+      representatives: task.visualAtlasEntries.map(command => ({
+        kind: 'node',
+        entity: command.sourceNode,
+        slotSignature: command.slotSignature
+      })),
+      instances: task.visualAtlasCommands.map(command => ({
+        signature: command.slotSignature,
+        bitmapRect: command.bitmapRect
+      })),
+      mappedInstances: null,
+      blitData: null,
+      outputRect: null
+    }
+  }
+  task.visualAtlasRasterCursor = 0
+  task.visualAtlasPrepareMs += currentAnimationTimestamp() - startedAt
+  task.phase = 'visualAtlasRaster'
+  return true
+}
+
+function rasterCanvasVisualAtlas(task, deadline) {
+  const startedAt = currentAnimationTimestamp()
+  const atlasFrame = task.visualAtlasFrame
+  const surface = atlasFrame?.surface
+  const context = atlasFrame?.context
+  if (!surface || !context || !task.visualAtlasPlan) {
+    task.visualAtlasRasterMs += currentAnimationTimestamp() - startedAt
+    fallbackCanvasVisualAtlas(task, 'atlas-surface')
+    return true
+  }
+  try {
+    while (task.visualAtlasRasterCursor < task.visualAtlasEntries.length) {
+      const command = task.visualAtlasEntries[task.visualAtlasRasterCursor]
+      const slot = task.visualAtlasPlan.slots.get(command.slotSignature)
+      if (!slot) throw new Error('visual atlas slot is missing')
+      if (atlasFrame.slotSignatures.get(command.slotSignature) === command.signature) {
+        task.visualAtlasSlotCacheHits += 1
+      } else {
+        context.save()
+        try {
+          context.setTransform(1, 0, 0, 1, 0, 0)
+          context.globalAlpha = 1
+          context.globalCompositeOperation = 'source-over'
+          context.clearRect(slot.x - 1, slot.y - 1, slot.w + 2, slot.h + 2)
+        } finally {
+          context.restore()
+        }
+        try {
+          drawCanvasVisualAtlasSprite(task, context, command, slot)
+          atlasFrame.slotSignatures.set(command.slotSignature, command.signature)
+        } catch (error) {
+          atlasFrame.slotSignatures.delete(command.slotSignature)
+          throw error
+        }
+        task.visualAtlasRasterDrawCount += 1
+        task.visualAtlasSlotCacheMisses += 1
+      }
+      task.visualAtlasRasterCursor += 1
+      if (deadline.shouldYield()) {
+        task.visualAtlasRasterMs += currentAnimationTimestamp() - startedAt
+        return false
+      }
+    }
+  } catch {
+    task.visualAtlasRasterMs += currentAnimationTimestamp() - startedAt
+    fallbackCanvasVisualAtlas(task, 'atlas-raster')
+    return true
+  }
+  const instanceSources = task.visualAtlasInstanceSources || task.visualAtlasCommands.map(command => ({
+    signature: command.slotSignature,
+    bitmapRect: command.bitmapRect
+  }))
+  const cachedTopology = task.visualAtlasTopology
+  const instances = cachedTopology?.mappedInstances
+    || mapCanvasVisualAtlasInstances(instanceSources, task.visualAtlasPlan.slots)
+  if (!instances) {
+    task.visualAtlasRasterMs += currentAnimationTimestamp() - startedAt
+    fallbackCanvasVisualAtlas(task, 'atlas-instance-map')
+    return true
+  }
+  const outputRect = canvasVisualAtlasOutputRect(task)
+  if (!outputRect) {
+    task.visualAtlasRasterMs += currentAnimationTimestamp() - startedAt
+    fallbackCanvasVisualAtlas(task, 'output-rect')
+    return true
+  }
+  task.visualAtlasOutputRect = outputRect
+  task.visualAtlasInstances = cachedTopology?.mappedInstances
+    ? instances
+    : instances.map(instance => ({
+        ...instance,
+        bitmapRect: {
+          x: instance.bitmapRect.x - outputRect.x,
+          y: instance.bitmapRect.y - outputRect.y,
+          w: instance.bitmapRect.w,
+          h: instance.bitmapRect.h
+        }
+      }))
+  task.visualAtlasBlitData = cachedTopology?.blitData
+    || canvasVisualAtlasBlitData(task.visualAtlasInstances)
+  if (!task.visualAtlasBlitData) {
+    task.visualAtlasRasterMs += currentAnimationTimestamp() - startedAt
+    fallbackCanvasVisualAtlas(task, 'atlas-blit-data')
+    return true
+  }
+  if (task.visualAtlasPendingTopology && task.visualAtlasDirectFrame) {
+    task.visualAtlasPendingTopology.mappedInstances = task.visualAtlasInstances
+    task.visualAtlasPendingTopology.blitData = task.visualAtlasBlitData
+    task.visualAtlasPendingTopology.outputRect = { ...outputRect }
+    task.visualAtlasDirectFrame.topology = task.visualAtlasPendingTopology
+  }
+  task.visualAtlasRasterMs += currentAnimationTimestamp() - startedAt
+  task.phase = 'visualAtlasComposite'
+  return true
+}
+
+function compositeCanvasVisualAtlas(task, deadline) {
+  const outputRect = task.visualAtlasOutputRect
+  const atlas = task.visualAtlasFrame?.surface
+  const instanceCount = task.visualAtlasInstances.length
+  const spriteCount = task.visualAtlasEntries.length
+  const atlasPixels = task.visualAtlasPlan.pixels
+  const compositeStartedAt = currentAnimationTimestamp()
+  let saved = false
+  let compositeFailed = false
+  let blitDone = false
+  try {
+    if (!task.visualAtlasCompositePrepared) {
+      if (task.visualAtlasMode === 'union') {
+        beginRuntimeUnionDraw(task)
+        task.phase = 'visualAtlasComposite'
+      }
+      else if (task.visualAtlasMode === 'dense' && task.visualAtlasPassthroughCount > 0) {
+        beginDenseRuntime2dDraw(task)
+        task.phase = 'visualAtlasComposite'
+      }
+      else if (task.visualAtlasMode === 'direct') {
+        task.bitmapRects = task.measuredBitmapRects.slice()
+      }
+      else {
+        task.bitmapRects = task.partialDense
+          ? task.measuredBitmapRects.slice()
+          : fullRuntimeSeedRect(task.frame)
+      }
+      task.visualAtlasCompositePrepared = true
+      task.visualAtlasBackend = 'canvas2d'
+    }
+    if (task.visualAtlasPassthroughCount > 0) {
+      const worldPixel = 1 / Math.max(.0001, Math.min(task.frame.scaleX, task.frame.scaleY))
+      while (task.visualAtlasCompositeCursor < task.visualAtlasLayerItems.length) {
+        const layerItem = task.visualAtlasLayerItems[task.visualAtlasCompositeCursor]
+        if (layerItem.kind === 'atlas') {
+          const blitStartedAt = currentAnimationTimestamp()
+          const instance = task.visualAtlasInstances[layerItem.instanceIndex]
+          if (!instance) throw new Error('visual atlas instance is missing')
+          const source = instance.atlasRect
+          const target = instance.bitmapRect
+          task.ctx.save()
+          try {
+            task.ctx.setTransform(1, 0, 0, 1, 0, 0)
+            task.ctx.globalAlpha = 1
+            task.ctx.globalCompositeOperation = 'source-over'
+            task.ctx.drawImage(
+              atlas,
+              source.x,
+              source.y,
+              source.w,
+              source.h,
+              outputRect.x + target.x,
+              outputRect.y + target.y,
+              target.w,
+              target.h
+            )
+          } finally {
+            task.ctx.restore()
+          }
+          task.visualAtlasDrawMs += Math.max(0, currentAnimationTimestamp() - blitStartedAt)
+        } else if (layerItem.item?.kind === 'drawing') {
+          drawTemporaryDrawing(task.ctx, layerItem.item.entity, worldPixel)
+        } else if (layerItem.item?.kind === 'node') {
+          if (!drawEntityIncrementally(
+            task,
+            layerItem.item.entity,
+            task.frame.scaleX,
+            task.frame.scaleY,
+            worldPixel,
+            'full',
+            1,
+            deadline
+          )) return false
+        }
+        task.visualAtlasCompositeCursor += 1
+        if (deadline?.shouldYield?.()) return false
+      }
+      blitDone = true
+    } else {
+    task.ctx.save()
+    saved = true
+    task.ctx.setTransform(1, 0, 0, 1, 0, 0)
+    task.ctx.globalAlpha = 1
+    task.ctx.globalCompositeOperation = 'source-over'
+    task.ctx.beginPath()
+    task.ctx.rect(outputRect.x, outputRect.y, outputRect.w, outputRect.h)
+    task.ctx.clip()
+    if (
+      task.visualAtlasMode === 'direct'
+      && task.visualAtlasCompositeCursor === 0
+      && !task.visualAtlasDirectFrame?.preserveCompositeBase
+    ) {
+      for (const rect of task.measuredBitmapRects) {
+        task.ctx.clearRect(rect.x, rect.y, rect.w, rect.h)
+        task.ctx.drawImage(
+          task.base,
+          rect.x,
+          rect.y,
+          rect.w,
+          rect.h,
+          rect.x,
+          rect.y,
+          rect.w,
+          rect.h
+        )
+      }
+    }
+    const blitStartedAt = currentAnimationTimestamp()
+    const result = drawCanvasVisualAtlasBlits(task.ctx, atlas, task.visualAtlasBlitData, {
+      cursor: task.visualAtlasCompositeCursor,
+      offsetX: outputRect.x,
+      offsetY: outputRect.y,
+      shouldYield: () => deadline?.shouldYield?.() === true
+    })
+    task.visualAtlasDrawMs += currentAnimationTimestamp() - blitStartedAt
+    task.visualAtlasCompositeCursor = result.cursor
+    blitDone = result.done
+    }
+  } catch {
+    compositeFailed = true
+  } finally {
+    if (saved) {
+      try { task.ctx.restore() } catch {
+        task.surfaceReusable = false
+        compositeFailed = true
+      }
+    }
+  }
+  task.visualAtlasCompositeMs += currentAnimationTimestamp() - compositeStartedAt
+  if (compositeFailed) {
+    restoreCanvasVisualAtlasOutput(task, outputRect)
+    fallbackCanvasVisualAtlas(task, '2d-atlas-composite')
+    return true
+  }
+  if (!blitDone) return false
+  task.visualAtlasUsed = true
+  task.visualAtlasInstanceCount = instanceCount
+  task.visualAtlasSpriteCount = spriteCount
+  task.visualAtlasPixels = atlasPixels
+  task.visualAtlasOutputPixels = outputRect.w * outputRect.h
+  task.visualSpriteRasterCount = task.visualAtlasRasterDrawCount
+  task.visualSpriteBlitCount = instanceCount
+  if (task.regionContextSaved) {
+    task.ctx.restore()
+    task.regionContextSaved = false
+  }
+  if (task.denseContextSaved) {
+    task.ctx.restore()
+    task.denseContextSaved = false
+  }
+  clearCanvasVisualAtlasAttempt(task)
+  task.phase = 'complete'
+  return true
+}
+
 function drawEntityIncrementally(
   task,
   sourceNode,
@@ -1442,6 +3174,12 @@ function drawEntityIncrementally(
   opacityMultiplier,
   deadline
 ) {
+  if (['image', 'customImageMotion'].includes(sourceNode?.type) && sourceNode.imageUrl) {
+    task.imageUrls?.add(sourceNode.imageUrl)
+    const image = cachedImage(sourceNode.imageUrl)
+    // 记录“实际绘制时”尚未就绪的资源；即使它在长任务结束前加载，也不能提交旧占位像素。
+    if (!cachedImageSettled(image)) task.pendingImageUrls?.add(sourceNode.imageUrl)
+  }
   let work = task.textLayoutWork
   let preparedNode = null
   if (!work) {
@@ -1480,6 +3218,16 @@ function drawEntityIncrementally(
     }
   }
 
+  if (tryDrawCanvasVisualSprite(
+    task,
+    sourceNode,
+    scaleX,
+    scaleY,
+    worldPixel,
+    renderPass,
+    opacityMultiplier
+  )) return true
+
   drawNode(
     task.ctx,
     sourceNode,
@@ -1488,7 +3236,11 @@ function drawEntityIncrementally(
     worldPixel,
     renderPass,
     opacityMultiplier,
-    { node: textLayout?.node || preparedNode, textLayout }
+    {
+      node: textLayout?.node || preparedNode,
+      textLayout,
+      animationTimestamp: task.animationTimestamp
+    }
   )
   return true
 }
@@ -1605,6 +3357,8 @@ function renderPayload() {
     excludedDrawingIds: props.excludedDrawingIds,
     renderPlanKey: props.renderPlanKey,
     frameCommitToken: props.frameCommitToken,
+    waitForImages: props.waitForImages,
+    spatialIndex: props.spatialIndex,
     edgeSpatialIndex: props.edgeSpatialIndex,
     drawingSpatialIndex: props.drawingSpatialIndex
   }
@@ -1678,12 +3432,47 @@ function createStaticRenderSurface(task) {
   }
 }
 
+function createViewBoxEntityCandidateWork(
+  payload,
+  viewBox,
+  renderNodes,
+  renderDrawings,
+  excludedNodeIds,
+  excludedDrawingIds
+) {
+  if (!viewBox) return null
+  const sources = []
+  if (renderNodes) {
+    if (typeof payload.spatialIndex?.createQueryCursor !== 'function') return null
+    sources.push({
+      kind: 'node',
+      cursor: payload.spatialIndex.createQueryCursor(viewBox, { sort: false })
+    })
+  }
+  if (renderDrawings) {
+    if (typeof payload.drawingSpatialIndex?.createQueryCursor !== 'function') return null
+    sources.push({
+      kind: 'drawing',
+      cursor: payload.drawingSpatialIndex.createQueryCursor(viewBox, { sort: false })
+    })
+  }
+  return createRuntimeCandidateCursor(createRuntimeQueryCursor(sources), {
+    include(item) {
+      if (item?.kind === 'node') return !excludedNodeIds.has(item.entity?.id)
+      if (item?.kind === 'drawing') return !excludedDrawingIds.has(item.entity?.id)
+      return false
+    },
+    compare: (left, right) => number(left?.entity?.layer) - number(right?.entity?.layer)
+  })
+}
+
 function createRenderTask(payload, generation) {
   const width = Math.max(1, number(payload.width, 240))
   const height = Math.max(1, number(payload.height, 150))
   const stageWidth = Math.max(1, number(payload.stageWidth, 1))
   const stageHeight = Math.max(1, number(payload.stageHeight, 1))
   const maxBitmapPixels = Math.max(0, number(payload.maxBitmapPixels))
+  const animationTimestamp = number(payload.animationTimestamp, currentAnimationTimestamp())
   const { bitmapWidth, bitmapHeight, pixelRatioX, pixelRatioY } = canvasBitmapDimensions({
     width,
     height,
@@ -1735,8 +3524,18 @@ function createRenderTask(payload, generation) {
     if (!payload.incrementalRuntime) fillRenderBackground(ctx, payload.background, stageWidth, stageHeight)
 
     const sharedNodeIndex = payload.nodeIndex instanceof Map
+    const renderNodes = payload.renderNodes !== false
+    const renderDrawings = payload.renderDrawings !== false
     const excludedNodeIds = new Set(payload.excludedNodeIds || [])
     const excludedDrawingIds = new Set(payload.excludedDrawingIds || [])
+    const entityCandidateWork = createViewBoxEntityCandidateWork(
+      payload,
+      transform.viewBox,
+      renderNodes,
+      renderDrawings,
+      excludedNodeIds,
+      excludedDrawingIds
+    )
     return {
       valid: true,
       generation,
@@ -1758,17 +3557,19 @@ function createRenderTask(payload, generation) {
       stageWidth,
       stageHeight,
       worldPixel,
+      animationTimestamp,
       nodes: payload.nodes || [],
       edges: edgeSourceCursor ? [] : (payload.edges || []),
       edgeSourceCursor,
       drawings: payload.drawings || [],
-      renderNodes: payload.renderNodes !== false,
-      renderDrawings: payload.renderDrawings !== false,
+      renderNodes,
+      renderDrawings,
       nodeIndex: sharedNodeIndex ? payload.nodeIndex : new Map(),
       nodeIndexCursor: 0,
       edgeCursor: 0,
-      entities: payload.orderedEntities || [],
-      usesSharedEntities: Array.isArray(payload.orderedEntities),
+      entities: entityCandidateWork ? [] : (payload.orderedEntities || []),
+      entityCandidateWork,
+      usesSharedEntities: !entityCandidateWork && Array.isArray(payload.orderedEntities),
       excludedNodeIds,
       excludedDrawingIds,
       renderPlanKey: String(payload.renderPlanKey || ''),
@@ -1779,7 +3580,11 @@ function createRenderTask(payload, generation) {
       entityCursor: 0,
       textLayoutWork: null,
       timeEntities: [],
+      animationNodes: [],
+      animationCandidateIds: new Set(),
       imageUrls: new Set(),
+      pendingImageUrls: new Set(),
+      waitForImages: Boolean(payload.waitForImages),
       incrementalRuntime: Boolean(payload.incrementalRuntime),
       reuseSurfaces,
       geometryInteractive: Boolean(payload.geometryInteractive),
@@ -1828,6 +3633,14 @@ function prepareNodeIndex(task, deadline) {
   return true
 }
 
+function beginEntityRenderPhase(task) {
+  task.phase = task.entityCandidateWork
+    ? 'queryEntities'
+    : task.usesSharedEntities
+      ? 'entities'
+      : 'prepareEntities'
+}
+
 function finishEdgePass(task) {
   if (task.incrementalRuntime) {
     task.staticCtx.restore()
@@ -1835,7 +3648,7 @@ function finishEdgePass(task) {
     task.phase = 'composeStaticSurface'
     return
   }
-  task.phase = task.usesSharedEntities ? 'entities' : 'prepareEntities'
+  beginEntityRenderPhase(task)
 }
 
 function closeEdgeRasterBitmap(bitmap) {
@@ -2010,6 +3823,16 @@ function prepareFallbackEntities(task, deadline) {
   return true
 }
 
+function prepareViewBoxEntities(task, deadline) {
+  const result = task.entityCandidateWork.runSlice(deadline, RUNTIME_CURSOR_OPERATION_LIMIT)
+  if (!result.done) return false
+  task.entities = task.entityCandidateWork.items
+  task.entityCandidateWork = null
+  task.entityCursor = 0
+  task.phase = 'entities'
+  return true
+}
+
 function sortFallbackEntities(task, deadline) {
   const length = task.entities.length
   if (length < 2 || task.sortWidth >= length) {
@@ -2122,7 +3945,7 @@ function composeStaticRenderSurface(task) {
     copied = commitCanvasSurface(task.ctx, task.staticSurface)
   } catch {}
   if (copied) {
-    task.phase = task.usesSharedEntities ? 'entities' : 'prepareEntities'
+    beginEntityRenderPhase(task)
     return true
   }
 
@@ -2133,6 +3956,21 @@ function composeStaticRenderSurface(task) {
   task.edgeCursor = 0
   task.phase = 'edges'
   return false
+}
+
+function collectTaskVisualAnimationNode(task, sourceNode) {
+  if (!canvasVisualAnimationTypes.has(sourceNode?.type)) return
+  const node = materializeRuntimeNode(sourceNode, runtimePointValue)
+  if (!isCanvasVisualAnimationCandidate(node)) return
+  task.animationCandidateIds.add(sourceNode.id ?? sourceNode)
+  if (!isCanvasVisualAnimationNode(node)) return
+  task.animationNodes.push(sourceNode)
+}
+
+function orderedTaskVisualAnimationNodes(task) {
+  return (task.animationNodes || [])
+    .slice()
+    .sort((left, right) => number(right?.layer) - number(left?.layer))
 }
 
 function drawEntities(task, deadline) {
@@ -2164,6 +4002,7 @@ function drawEntities(task, deadline) {
           deadline
         )) return false
         if (item.entity.type === 'time') task.timeEntities.push(item.entity)
+        collectTaskVisualAnimationNode(task, item.entity)
       }
       else {
         if (!task.renderDrawings) {
@@ -2240,6 +4079,10 @@ function runRenderSlice(task, deadline) {
       if (deadline.shouldYield()) return false
       continue
     }
+    if (task.phase === 'queryEntities') {
+      if (!prepareViewBoxEntities(task, deadline)) return false
+      continue
+    }
     if (task.phase === 'prepareEntities') {
       if (!prepareFallbackEntities(task, deadline)) return false
       continue
@@ -2260,6 +4103,9 @@ function releaseRenderTask(task, _payload, reason) {
   task.staticEdgeWorkerRequest = null
   task.staticEdgeWorkerCommands = []
   task.textLayoutWork = null
+  task.entityCandidateWork = null
+  task.animationNodes = []
+  task.animationCandidateIds?.clear?.()
   const contextsRestored = restoreCanvasRenderTaskContexts(task)
   const reuseSurfaces = task.reuseSurfaces && contextsRestored && reason !== 'error' && task.surfaceReusable !== false
   if (task.surface) {
@@ -2337,13 +4183,15 @@ function replaceCommittedGeometryIndexes(edgeIndex, drawingIndex, edgeIds = new 
 
 function fullRenderCompletion(task, pendingFull = false) {
   const pendingRuntime = runtimeRenderDirty || runtimeRenderFollowUpPending()
+  const pendingImages = task.pendingImageUrls?.size || 0
   return {
     generation: Math.max(committedGeneration.value + 1, task.generation),
     renderGeneration: task.generation,
     kind: 'full',
-    settled: !pendingFull && !pendingRuntime,
+    settled: !pendingFull && !pendingRuntime && pendingImages === 0,
     pendingFull,
     pendingRuntime,
+    pendingImages,
     renderPlanKey: task.renderPlanKey,
     frameCommitToken: task.frameCommitToken,
     viewBox: task.viewBox ? { ...task.viewBox } : null,
@@ -2356,7 +4204,8 @@ function fullRenderCompletion(task, pendingFull = false) {
     geometrySessionId: task.geometrySessionId,
     geometryRevision: task.geometryRevision,
     bitmapWidth: task.bitmapWidth,
-    bitmapHeight: task.bitmapHeight
+    bitmapHeight: task.bitmapHeight,
+    animationTimestamp: task.animationTimestamp
   }
 }
 
@@ -2427,6 +4276,20 @@ function commitRenderTask(task) {
     return
   }
   const completion = fullRenderCompletion(task)
+  if (task.waitForImages && completion.pendingImages > 0) {
+    // 私有绘制面仍含占位像素时不覆盖可见帧；最后一张图片结算后再统一重绘。
+    deferredImageUrls = new Set(
+      [...task.pendingImageUrls].filter(url => {
+        const image = imageCache.get(url)
+        return image && !cachedImageSettled(image)
+      })
+    )
+    releaseRenderTask(task)
+    emit('render-rejected', completion)
+    if (!deferredImageUrls.size) requestImageRender()
+    return
+  }
+  if (task.waitForImages) deferredImageUrls.clear()
   if (!frameCommitAccepted(completion)) {
     releaseRenderTask(task)
     emit('render-rejected', completion)
@@ -2445,6 +4308,12 @@ function commitRenderTask(task) {
     || task.renderDrawings
     || task.geometryInteractive
   )
+  const nextVisualAnimationNodes = retainIncrementalSurfaces
+    ? orderedTaskVisualAnimationNodes(task)
+    : []
+  const nextVisualAnimationCandidateIds = retainIncrementalSurfaces
+    ? new Set(task.animationCandidateIds)
+    : new Set()
   try {
     if (!restoreCanvasRenderTaskContexts(task)) throw new Error('render task context restore failed')
     const targetContext = target.getContext('2d')
@@ -2497,6 +4366,8 @@ function commitRenderTask(task) {
   )
   replaceCommittedStaticSurface(nextStaticSurface, nextStaticSurface ? {
     generation: task.generation,
+    width: task.width,
+    height: task.height,
     bitmapWidth: task.bitmapWidth,
     bitmapHeight: task.bitmapHeight,
     pixelRatioX: task.pixelRatioX,
@@ -2509,17 +4380,35 @@ function commitRenderTask(task) {
     stageHeight: task.stageHeight,
     renderNodes: task.renderNodes,
     renderDrawings: task.renderDrawings,
+    viewBox: task.viewBox ? { ...task.viewBox } : null,
+    renderPlanKey: task.renderPlanKey,
+    animationTimestamp: task.animationTimestamp,
     frameCommitToken: task.frameCommitToken
   } : null)
   committedTimeNodes = task.timeEntities
+  committedVisualAnimationNodes = nextVisualAnimationNodes
+  committedVisualAnimationNodeMap = new Map(
+    nextVisualAnimationNodes.map(node => [node.id ?? node, node])
+  )
+  commitSignalLightColors(nextVisualAnimationNodes, task.animationTimestamp, true)
+  if (typeof resetVisualAnimationFramePacing === 'function') resetVisualAnimationFramePacing()
+  visualAnimationViewportDirty = true
+  visualAnimationTimeline.retain(nextVisualAnimationCandidateIds)
   committedExcludedNodeIds = task.excludedNodeIds
   committedExcludedDrawingIds = task.excludedDrawingIds
+  if (pendingRuntimeNodes.size) {
+    syncRuntimeVisualAnimationNodes([...pendingRuntimeNodes.values()])
+  }
 
   committedGeneration.value = completion.generation
   committedCssWidth.value = task.width
   committedCssHeight.value = task.height
   committedRenderPlanKey.value = task.renderPlanKey
   renderReady.value = true
+  if (task.target?.dataset) {
+    task.target.dataset.visualAnimationNodes = String(nextVisualAnimationNodes.length)
+  }
+  syncVisualAnimationClock()
   emit('render-complete', completion)
   if (completesGeometry && geometryInteraction?.id === waitingGeometry.id) {
     if (waitingGeometry.fullDirty || coalescedRenderDirty) {
@@ -2564,6 +4453,7 @@ let runtimeDenseStreamOpen = false
 let runtimeDenseStreamStarted = false
 let runtimeDenseStreamTimer = 0
 let pendingRuntimeNodes = new Map()
+let pendingVisualAnimationTimestamp = null
 
 function runtimeRenderFollowUpPending() {
   return pendingRuntimeDense || runtimeDenseStreamOpen || pendingRuntimeNodes.size > 0
@@ -2652,6 +4542,8 @@ function invalidateIncrementalRuntime() {
   runtimeDenseStreamStarted = false
   clearRuntimeDenseStreamTimer()
   pendingRuntimeNodes.clear()
+  pendingVisualAnimationTimestamp = null
+  resetVisualAnimationFramePacing()
 }
 
 function canIncrementRuntime() {
@@ -2679,24 +4571,73 @@ function fullRuntimeSeedRect(frame) {
   }]
 }
 
+function bitmapRectContains(outer, inner) {
+  if (!outer || !inner) return false
+  return number(outer.x) <= number(inner.x)
+    && number(outer.y) <= number(inner.y)
+    && number(outer.x) + Math.max(0, number(outer.w)) >= number(inner.x) + Math.max(0, number(inner.w))
+    && number(outer.y) + Math.max(0, number(outer.h)) >= number(inner.y) + Math.max(0, number(inner.h))
+}
+
 function createRuntimeRenderTask(payload, generation) {
+  const taskStartedAt = currentAnimationTimestamp()
   const frame = payload.frame
   const nodes = Array.isArray(payload.nodes) ? payload.nodes : []
   const entities = Array.isArray(payload.entities) ? payload.entities : null
+  const allowDense = payload.allowDense !== false
   const changedNodeCount = Math.max(nodes.length, Math.floor(Number(payload.nodeCount) || 0))
-  const dense = Boolean(entities) && (payload.dense === true || shouldUseDenseRuntime({
-    available: true,
-    nodeCount: changedNodeCount
-  }))
+  const animationTimestamp = number(payload.animationTimestamp, currentAnimationTimestamp())
+  const visualAnimationFrame = payload.visualAnimationFrame === true
+  const visualAnimationNodeCount = visualAnimationFrame
+    ? Math.max(1, Math.floor(Number(payload.visualAnimationNodeCount) || changedNodeCount || 1))
+    : 0
+  const visualAnimationVisibleCount = visualAnimationFrame
+    ? Math.max(visualAnimationNodeCount, Math.floor(Number(payload.visualAnimationVisibleCount) || 0))
+    : 0
+  const visualAtlasDirectRect = payload.visualAtlasDirectRect || null
+  const visualAtlasDirectFrame = payload.visualAtlasDirectFrame || null
+  const visualAtlasDirect = Boolean(
+    visualAnimationFrame
+    && visualAtlasDirectRect
+    && visualAtlasDirectFrame
+    && nodes.length >= RUNTIME_VISUAL_ATLAS_MIN_INSTANCES
+  )
+  const signalLightColors = new Map()
+  if (!visualAtlasDirect) {
+    for (const sourceNode of nodes) {
+      if (sourceNode?.type !== 'signalLight') continue
+      const node = materializeRuntimeNode(sourceNode, runtimePointValue)
+      const resolvedTimestamp = isCanvasVisualAnimationCandidate(node)
+        ? visualAnimationTimeline.resolve(node, animationTimestamp)
+        : animationTimestamp
+      signalLightColors.set(
+        visualAnimationNodeKey(sourceNode),
+        signalLightColor(node, resolvedTimestamp)
+      )
+    }
+  }
+  const dense = allowDense && Boolean(entities) && (
+    payload.dense === true
+    || (!visualAnimationFrame && shouldUseDenseRuntime({
+      available: true,
+      nodeCount: changedNodeCount
+    }))
+  )
   const frontComposite = payload.composite
   const back = frame && frontComposite ? takeRuntimeBackSurface(frame) : null
+  const preserveDirectComposite = visualAtlasDirectFrame?.preserveCompositeBase === true
+  const seedRects = dense || !back
+    ? fullRuntimeSeedRect(frame)
+    : visualAtlasDirect && !preserveDirectComposite
+      ? back.syncRects.filter(rect => !bitmapRectContains(visualAtlasDirectRect, rect))
+      : back.syncRects
   const regionAccumulator = createRuntimeRegionAccumulator({
     stageWidth: frame?.stageWidth,
     stageHeight: frame?.stageHeight,
     padding: 2,
     mergeCellSize: RUNTIME_REGION_MERGE_SIZE
   })
-  return {
+  const task = {
     valid: Boolean(
       (nodes.length || dense)
       && frame
@@ -2714,6 +4655,23 @@ function createRuntimeRenderTask(payload, generation) {
     ),
     epoch: payload.epoch,
     generation,
+    animationTimestamp,
+    visualAnimationFrame,
+    visualAnimationNodeCount,
+    visualAnimationVisibleCount,
+    visualAtlasDirect,
+    visualAtlasDirectFrame: visualAtlasDirect ? visualAtlasDirectFrame : null,
+    visualAtlasDirectItems: visualAtlasDirect
+      ? nodes
+          .slice()
+          .map(node => ({ kind: 'node', entity: node }))
+      : null,
+    visualAnimationStartedAt: visualAnimationFrame ? taskStartedAt : 0,
+    visualAnimationActiveWorkMs: visualAnimationFrame
+      ? Math.max(0, number(payload.visualAnimationPreparationMs))
+      : 0,
+    signalLightColors,
+    allowDense,
     target: payload.target,
     contextToken: payload.contextToken,
     base: payload.base,
@@ -2722,6 +4680,7 @@ function createRuntimeRenderTask(payload, generation) {
     frame,
     spatialIndex: payload.spatialIndex,
     drawingSpatialIndex: payload.drawingSpatialIndex,
+    hasDrawings: payload.hasDrawings === true,
     renderNodes: frame?.renderNodes !== false,
     renderDrawings: frame?.renderDrawings !== false,
     ctx: null,
@@ -2730,10 +4689,64 @@ function createRuntimeRenderTask(payload, generation) {
     entities,
     entityCursor: 0,
     textLayoutWork: null,
+    visualSpriteCache: visualAnimationFrame ? new Map() : null,
+    visualSpritePixelCount: 0,
+    visualSpriteSurfaceCount: 0,
+    visualSpriteRasterCount: 0,
+    visualSpriteBlitCount: 0,
+    visualAnimationSignatureCache: visualAnimationFrame ? new Map() : null,
+    visualAnimationSignatureCacheHits: 0,
+    visualAnimationSignatureCacheMisses: 0,
+    visualAtlasAttempted: false,
+    visualAtlasMode: '',
+    visualAtlasItems: null,
+    visualAtlasTopology: null,
+    visualAtlasInstanceSources: null,
+    visualAtlasPendingTopology: null,
+    visualAtlasCursor: 0,
+    visualAtlasCommands: [],
+    visualAtlasLayerItems: [],
+    visualAtlasPassthroughCount: 0,
+    visualAtlasMinimumInstances: 0,
+    visualAtlasUniqueCommands: null,
+    visualAtlasStableSlots: true,
+    visualAtlasEntries: [],
+    visualAtlasRasterCursor: 0,
+    visualAtlasCompositeCursor: 0,
+    visualAtlasCompositePrepared: false,
+    visualAtlasRasterDrawCount: 0,
+    visualAtlasSlotCacheHits: 0,
+    visualAtlasSlotCacheMisses: 0,
+    visualAtlasPlan: null,
+    visualAtlasFrame: null,
+    visualAtlasFrameCacheHit: false,
+    visualAtlasInstances: null,
+    visualAtlasBlitData: null,
+    visualAtlasOutputRect: null,
+    visualAtlasUsed: false,
+    visualAtlasBackend: '',
+    visualAtlasFallbackCount: 0,
+    visualAtlasFailureReason: '',
+    visualAtlasInstanceCount: 0,
+    visualAtlasSpriteCount: 0,
+    visualAtlasPixels: 0,
+    visualAtlasRawPixels: 0,
+    visualAtlasWidth: 0,
+    visualAtlasHeight: 0,
+    visualAtlasOutputPixels: 0,
+    visualAtlasPrepareMs: 0,
+    visualAtlasRasterMs: 0,
+    visualAtlasUploadMs: 0,
+    visualAtlasDrawMs: 0,
+    visualAtlasValidationMs: 0,
+    visualAtlasCompositeMs: 0,
+    visualDescriptorCacheHits: 0,
+    visualDescriptorCacheMisses: 0,
+    visualDescriptorCacheBypasses: 0,
     mode: dense ? 'dense' : 'sparse',
     seededFromBase: false,
     seedSource: dense ? payload.base : frontComposite,
-    seedRects: dense || !back ? fullRuntimeSeedRect(frame) : back.syncRects,
+    seedRects,
     seedRectCursor: 0,
     seedRectY: 0,
     excludedNodeIds: payload.excludedNodeIds,
@@ -2745,17 +4758,28 @@ function createRuntimeRenderTask(payload, generation) {
       bitmapHeight: frame?.bitmapHeight
     }),
     measuredRegionCount: 0,
+    measuredRegions: [],
+    measuredBitmapRects: visualAtlasDirect ? [{ ...visualAtlasDirectRect }] : [],
+    visualDenseRequested: false,
     regionCursor: null,
     bitmapRects: [],
     region: null,
     bitmapRect: null,
+    candidateProbe: null,
+    candidateProbeCount: 0,
     candidateWork: null,
     candidates: [],
     candidateCursor: 0,
     regionContextSaved: false,
     denseContextSaved: false,
+    partialDense: false,
+    unionRegionDraw: false,
     phase: 'regions'
   }
+  if (visualAnimationFrame) {
+    task.visualAnimationActiveWorkMs += Math.max(0, currentAnimationTimestamp() - taskStartedAt)
+  }
+  return task
 }
 
 function seedRuntimeRenderSurface(task, deadline) {
@@ -2815,15 +4839,24 @@ function seedRuntimeRenderSurface(task, deadline) {
   }
 }
 
-function resetRuntimeSurfaceSeed(task, source) {
+function resetRuntimeSurfaceSeed(task, source, rects = fullRuntimeSeedRect(task.frame)) {
   task.seedSource = source
-  task.seedRects = fullRuntimeSeedRect(task.frame)
+  task.seedRects = rects
   task.seedRectCursor = 0
   task.seedRectY = 0
   task.seededFromBase = false
 }
 
 function prepareRuntimeRegions(task, deadline) {
+  if (task.visualAtlasDirect) {
+    task.nodes = []
+    task.regionAccumulator = null
+    if (beginCanvasVisualAtlasAttempt(task, task.visualAtlasDirectItems, 'direct')) return true
+    task.candidates = task.visualAtlasDirectItems || []
+    task.candidateCursor = 0
+    beginRuntimeUnionDraw(task)
+    return true
+  }
   if (task.mode === 'dense') {
     task.nodes = []
     task.regionAccumulator = null
@@ -2842,6 +4875,39 @@ function prepareRuntimeRegions(task, deadline) {
   return true
 }
 
+function runtimeRegionsOverlap(left, right) {
+  return left.x <= right.x + right.w
+    && right.x <= left.x + left.w
+    && left.y <= right.y + right.h
+    && right.y <= left.y + left.h
+}
+
+function mergeOverlappingRuntimeRegions(regions) {
+  const merged = []
+  for (const source of regions || []) {
+    if (!source) continue
+    const region = { ...source }
+    let index = 0
+    while (index < merged.length) {
+      const previous = merged[index]
+      if (!runtimeRegionsOverlap(previous, region)) {
+        index += 1
+        continue
+      }
+      const right = Math.max(region.x + region.w, previous.x + previous.w)
+      const bottom = Math.max(region.y + region.h, previous.y + previous.h)
+      region.x = Math.min(region.x, previous.x)
+      region.y = Math.min(region.y, previous.y)
+      region.w = right - region.x
+      region.h = bottom - region.y
+      merged.splice(index, 1)
+      index = 0
+    }
+    merged.push(region)
+  }
+  return merged
+}
+
 function beginDenseRuntimeDraw(task) {
   if (!task.entities) {
     task.valid = false
@@ -2849,18 +4915,47 @@ function beginDenseRuntimeDraw(task) {
     return
   }
   task.mode = 'dense'
+  task.regionAccumulator = null
+  task.regionCursor = null
+  task.region = null
+  task.bitmapRect = null
+  task.candidateProbe = null
+  task.candidateProbeCount = 0
+  task.candidateWork = null
+  task.candidates = []
+  task.candidateCursor = 0
+  const preserveVisualRegions = task.visualAnimationFrame && task.measuredBitmapRects.length > 0
+  task.partialDense = preserveVisualRegions
+  if (!preserveVisualRegions) {
+    task.measuredRegions = []
+    task.measuredBitmapRects = []
+  }
+  task.unionRegionDraw = false
   if (!task.seededFromBase) {
-    if (task.seedSource !== task.base) resetRuntimeSurfaceSeed(task, task.base)
+    if (task.seedSource !== task.base) {
+      resetRuntimeSurfaceSeed(
+        task,
+        task.base,
+        preserveVisualRegions ? task.measuredBitmapRects.slice() : fullRuntimeSeedRect(task.frame)
+      )
+    }
     task.phase = 'denseSetup'
     return
   }
+  if (beginCanvasVisualAtlasAttempt(task, task.entities, 'dense')) return
+  beginDenseRuntime2dDraw(task)
+}
+
+function beginDenseRuntime2dDraw(task) {
   task.ctx.save()
   task.denseContextSaved = true
   task.ctx.setTransform(task.frame.pixelRatioX, 0, 0, task.frame.pixelRatioY, 0, 0)
   task.ctx.translate(task.frame.offsetX, task.frame.offsetY)
   task.ctx.scale(task.frame.scaleX, task.frame.scaleY)
   task.entityCursor = 0
-  task.bitmapRects = [{ x: 0, y: 0, w: task.frame.bitmapWidth, h: task.frame.bitmapHeight }]
+  task.bitmapRects = task.partialDense
+    ? task.measuredBitmapRects.slice()
+    : [{ x: 0, y: 0, w: task.frame.bitmapWidth, h: task.frame.bitmapHeight }]
   task.phase = 'dense'
 }
 
@@ -2868,6 +4963,20 @@ function measureRuntimeRegions(task, deadline) {
   while (true) {
     const next = task.regionCursor?.next()
     if (!next || next.done) {
+      if (task.visualAnimationFrame && task.measuredRegions.length) {
+        if (task.visualDenseRequested) {
+          task.regionCursor = null
+          task.regionAccumulator = null
+          beginDenseRuntimeDraw(task)
+          return true
+        }
+        const queryRegions = mergeOverlappingRuntimeRegions(task.measuredRegions)
+        task.regionCursor = null
+        task.regionAccumulator = null
+        task.unionRegionDraw = true
+        beginRuntimeCandidateCollection(task, queryRegions, true)
+        return true
+      }
       task.regionCursor = task.regionAccumulator.createCursor()
       task.regionAccumulator = null
       task.phase = 'region'
@@ -2876,12 +4985,21 @@ function measureRuntimeRegions(task, deadline) {
     const bitmapRect = runtimeBitmapRect(next.value, task.frame, 2)
     if (bitmapRect) {
       task.measuredRegionCount += 1
+      if (task.visualAnimationFrame) {
+        task.measuredRegions.push(next.value)
+        task.measuredBitmapRects.push(bitmapRect)
+      }
       task.coverageTracker.add(bitmapRect)
       if (shouldUseDenseRuntime({
-        available: Boolean(task.entities),
+        available: task.allowDense && Boolean(task.entities),
         regionCount: task.measuredRegionCount,
         coverage: task.coverageTracker.coverage
       })) {
+        if (task.visualAnimationFrame) {
+          task.visualDenseRequested = true
+          if (deadline.shouldYield()) return false
+          continue
+        }
         task.regionAccumulator = null
         task.regionCursor = null
         beginDenseRuntimeDraw(task)
@@ -2931,7 +5049,71 @@ function finishRuntimeRegion(task) {
   task.candidateWork = null
   task.candidates = []
   task.candidateCursor = 0
-  task.phase = 'region'
+  task.phase = task.unionRegionDraw ? 'complete' : 'region'
+}
+
+function runtimeCandidateIncluded(task, item) {
+  if (item?.kind === 'node') {
+    return task.renderNodes && !task.excludedNodeIds.has(item.entity?.id)
+  }
+  if (item?.kind === 'drawing') {
+    return task.renderDrawings && !task.excludedDrawingIds.has(item.entity?.id)
+  }
+  return false
+}
+
+function runtimeRegionQuerySources(task, limit = Number.POSITIVE_INFINITY, regions = [task.region]) {
+  const queryLimit = Number.isFinite(limit) ? Math.max(1, Math.floor(limit)) : undefined
+  const options = queryLimit ? { sort: false, limit: queryLimit } : { sort: false }
+  const sources = []
+  for (const region of regions) {
+    if (task.renderNodes) {
+      sources.push({
+        kind: 'node',
+        cursor: task.spatialIndex.createQueryCursor(region, options)
+      })
+    }
+    if (task.renderDrawings && typeof task.drawingSpatialIndex?.createQueryCursor === 'function') {
+      sources.push({
+        kind: 'drawing',
+        cursor: task.drawingSpatialIndex.createQueryCursor(region, options)
+      })
+    }
+  }
+  return sources
+}
+
+function beginRuntimeCandidateCollection(task, regions = [task.region], deduplicate = false) {
+  const seenIds = deduplicate ? new Map() : null
+  const seenObjects = deduplicate ? new Map() : null
+  const include = item => {
+    if (!runtimeCandidateIncluded(task, item)) return false
+    if (!deduplicate) return true
+    const kind = item.kind
+    const entity = item.entity
+    if (entity?.id != null) {
+      let ids = seenIds.get(kind)
+      if (!ids) seenIds.set(kind, ids = new Set())
+      if (ids.has(entity.id)) return false
+      ids.add(entity.id)
+      return true
+    }
+    let objects = seenObjects.get(kind)
+    if (!objects) seenObjects.set(kind, objects = new WeakSet())
+    if (entity && typeof entity === 'object') {
+      if (objects.has(entity)) return false
+      objects.add(entity)
+    }
+    return true
+  }
+  task.candidateWork = createRuntimeCandidateCursor(
+    createRuntimeQueryCursor(runtimeRegionQuerySources(task, Number.POSITIVE_INFINITY, regions)),
+    {
+      include,
+      compare: (left, right) => number(left?.entity?.layer) - number(right?.entity?.layer)
+    }
+  )
+  task.phase = 'candidates'
 }
 
 function prepareRuntimeRegion(task) {
@@ -2942,26 +5124,34 @@ function prepareRuntimeRegion(task) {
 
   task.region = next.value
   task.bitmapRect = bitmapRect
-  const querySources = []
-  if (task.renderNodes) {
-    querySources.push({
-      kind: 'node',
-      cursor: task.spatialIndex.createQueryCursor(task.region, { sort: false })
-    })
-  }
-  if (task.renderDrawings && typeof task.drawingSpatialIndex?.createQueryCursor === 'function') {
-    querySources.push({
-      kind: 'drawing',
-      cursor: task.drawingSpatialIndex.createQueryCursor(task.region, { sort: false })
-    })
-  }
-  task.candidateWork = createRuntimeCandidateCursor(
-    createRuntimeQueryCursor(querySources),
-    {
-      compare: (left, right) => number(left?.entity?.layer) - number(right?.entity?.layer)
+  if (!task.visualAnimationFrame && task.allowDense && Array.isArray(task.entities)) {
+    const excludedCount = task.excludedNodeIds.size + task.excludedDrawingIds.size
+    task.candidateProbe = createRuntimeQueryCursor(runtimeRegionQuerySources(
+      task,
+      RUNTIME_DENSE_NODE_THRESHOLD + excludedCount + 1
+    ))
+    task.candidateProbeCount = 0
+    task.phase = 'candidateProbe'
+  } else beginRuntimeCandidateCollection(task)
+  return true
+}
+
+function probeRuntimeCandidates(task, deadline) {
+  const result = task.candidateProbe.runSlice({
+    maxOperations: RUNTIME_CURSOR_OPERATION_LIMIT,
+    shouldYield: () => task.candidateProbeCount > RUNTIME_DENSE_NODE_THRESHOLD || deadline.shouldYield(),
+    onMatch(item) {
+      if (runtimeCandidateIncluded(task, item)) task.candidateProbeCount += 1
     }
-  )
-  task.phase = 'candidates'
+  })
+  if (task.candidateProbeCount > RUNTIME_DENSE_NODE_THRESHOLD) {
+    beginDenseRuntimeDraw(task)
+    return true
+  }
+  if (!result.done) return false
+  task.candidateProbe = null
+  task.candidateProbeCount = 0
+  beginRuntimeCandidateCollection(task)
   return true
 }
 
@@ -2992,17 +5182,39 @@ function beginRuntimeRegionDraw(task) {
   task.phase = 'draw'
 }
 
+function beginRuntimeUnionDraw(task) {
+  const bitmapRects = task.measuredBitmapRects
+  task.ctx.save()
+  task.regionContextSaved = true
+  task.ctx.setTransform(1, 0, 0, 1, 0, 0)
+  task.ctx.beginPath()
+  for (const rect of bitmapRects) task.ctx.rect(rect.x, rect.y, rect.w, rect.h)
+  task.ctx.clip()
+  task.ctx.clearRect(0, 0, task.frame.bitmapWidth, task.frame.bitmapHeight)
+  task.ctx.drawImage(task.base, 0, 0)
+  task.ctx.setTransform(task.frame.pixelRatioX, 0, 0, task.frame.pixelRatioY, 0, 0)
+  task.ctx.translate(task.frame.offsetX, task.frame.offsetY)
+  task.ctx.scale(task.frame.scaleX, task.frame.scaleY)
+  task.bitmapRects.push(...bitmapRects)
+  task.phase = 'draw'
+}
+
 function prepareRuntimeCandidates(task, deadline) {
   const result = task.candidateWork.runSlice(deadline, RUNTIME_CURSOR_OPERATION_LIMIT)
   if (!result.done) return false
   task.candidates = task.candidateWork.items
   task.candidateWork = null
   task.candidateCursor = 0
-  beginRuntimeRegionDraw(task)
+  if (task.unionRegionDraw) {
+    if (!beginCanvasVisualAtlasAttempt(task, task.candidates, 'union')) beginRuntimeUnionDraw(task)
+  }
+  else beginRuntimeRegionDraw(task)
   return true
 }
 
 function runRuntimeRenderSlice(task, deadline) {
+  const sliceStartedAt = task?.visualAnimationFrame ? currentAnimationTimestamp() : 0
+  try {
   if (
     !task.valid
     || task.epoch !== runtimeRenderEpoch
@@ -3029,6 +5241,10 @@ function runRuntimeRenderSlice(task, deadline) {
     if (task.phase === 'region') {
       if (!prepareRuntimeRegion(task)) return true
       if (deadline.shouldYield()) return false
+      continue
+    }
+    if (task.phase === 'candidateProbe') {
+      if (!probeRuntimeCandidates(task, deadline)) return false
       continue
     }
     if (task.phase === 'candidates') {
@@ -3061,6 +5277,15 @@ function runRuntimeRenderSlice(task, deadline) {
       continue
     }
     if (task.phase === 'dense') return drawDenseRuntimeEntities(task, deadline)
+    if (task.phase === 'visualAtlasPrepare') {
+      if (!prepareCanvasVisualAtlas(task, deadline)) return false
+      continue
+    }
+    if (task.phase === 'visualAtlasRaster') {
+      if (!rasterCanvasVisualAtlas(task, deadline)) return false
+      continue
+    }
+    if (task.phase === 'visualAtlasComposite') return compositeCanvasVisualAtlas(task, deadline)
     if (task.phase === 'denseSetup') {
       beginDenseRuntimeDraw(task)
       continue
@@ -3069,6 +5294,11 @@ function runRuntimeRenderSlice(task, deadline) {
     return true
   }
   return false
+  } finally {
+    if (task?.visualAnimationFrame) {
+      task.visualAnimationActiveWorkMs += Math.max(0, currentAnimationTimestamp() - sliceStartedAt)
+    }
+  }
 }
 
 function releaseRuntimeRenderTask(task, _payload, reason) {
@@ -3083,11 +5313,17 @@ function releaseRuntimeRenderTask(task, _payload, reason) {
   task.regionContextSaved = false
   task.denseContextSaved = false
   task.textLayoutWork = null
+  task.visualAnimationSignatureCache?.clear?.()
+  task.visualAnimationSignatureCache = null
+  releaseCanvasVisualSprites(task)
+  clearCanvasVisualAtlasAttempt(task)
   task.nodes = []
   task.entities = null
   task.regionAccumulator = null
   task.coverageTracker = null
   task.regionCursor = null
+  task.candidateProbe = null
+  task.candidateProbeCount = 0
   task.candidateWork = null
   task.candidates = []
   if (task.ctx) {
@@ -3114,11 +5350,46 @@ function runtimeRenderCompletion(task) {
     runtimeMode: task.mode,
     bitmapWidth: task.frame.bitmapWidth,
     bitmapHeight: task.frame.bitmapHeight,
-    frameCommitToken: task.frame.frameCommitToken
+    pixelRatioX: task.frame.pixelRatioX,
+    pixelRatioY: task.frame.pixelRatioY,
+    viewBox: task.frame.viewBox ? { ...task.frame.viewBox } : null,
+    renderPlanKey: task.frame.renderPlanKey,
+    frameCommitToken: task.frame.frameCommitToken,
+    animationTimestamp: task.animationTimestamp,
+    visualSpriteRasters: task.visualSpriteRasterCount,
+    visualSpriteBlits: task.visualSpriteBlitCount,
+    visualAtlasUsed: task.visualAtlasUsed,
+    visualAtlasMode: task.visualAtlasMode,
+    visualAtlasPreserveComposite: task.visualAtlasDirectFrame?.preserveCompositeBase === true,
+    visualAtlasBackend: task.visualAtlasBackend,
+    visualAtlasFallbacks: task.visualAtlasFallbackCount,
+    visualAtlasFailureReason: task.visualAtlasFailureReason,
+    visualAtlasInstances: task.visualAtlasInstanceCount,
+    visualAtlasSprites: task.visualAtlasSpriteCount,
+    visualAtlasPixels: task.visualAtlasPixels,
+    visualAtlasRawPixels: task.visualAtlasRawPixels,
+    visualAtlasWidth: task.visualAtlasWidth,
+    visualAtlasHeight: task.visualAtlasHeight,
+    visualAtlasOutputPixels: task.visualAtlasOutputPixels,
+    visualAtlasPrepareMs: task.visualAtlasPrepareMs,
+    visualAtlasRasterMs: task.visualAtlasRasterMs,
+    visualAtlasUploadMs: task.visualAtlasUploadMs,
+    visualAtlasDrawMs: task.visualAtlasDrawMs,
+    visualAtlasValidationMs: task.visualAtlasValidationMs,
+    visualAtlasCompositeMs: task.visualAtlasCompositeMs,
+    visualDescriptorCacheHits: task.visualDescriptorCacheHits,
+    visualDescriptorCacheMisses: task.visualDescriptorCacheMisses,
+    visualDescriptorCacheBypasses: task.visualDescriptorCacheBypasses,
+    visualAnimationSignatureCacheHits: task.visualAnimationSignatureCacheHits,
+    visualAnimationSignatureCacheMisses: task.visualAnimationSignatureCacheMisses,
+    visualAtlasFrameCacheHit: task.visualAtlasFrameCacheHit,
+    visualAtlasSlotCacheHits: task.visualAtlasSlotCacheHits,
+    visualAtlasSlotCacheMisses: task.visualAtlasSlotCacheMisses
   }
 }
 
 function commitRuntimeRenderTask(task) {
+  const commitStartedAt = task?.visualAnimationFrame ? currentAnimationTimestamp() : 0
   if (
     !task?.valid
     || task.epoch !== runtimeRenderEpoch
@@ -3160,16 +5431,64 @@ function commitRuntimeRenderTask(task) {
     releaseRuntimeRenderTask(task)
   }
   if (!committed) return
+  if (task.target?.dataset) {
+    task.target.dataset.visualAtlasUsed = completion.visualAtlasUsed ? 'true' : 'false'
+    task.target.dataset.visualAtlasMode = completion.visualAtlasMode
+    task.target.dataset.visualAtlasPreserveComposite = completion.visualAtlasPreserveComposite ? 'true' : 'false'
+    task.target.dataset.visualAtlasBackend = completion.visualAtlasBackend
+    task.target.dataset.visualAtlasFallbacks = String(completion.visualAtlasFallbacks)
+    task.target.dataset.visualAtlasFailureReason = completion.visualAtlasFailureReason
+    task.target.dataset.visualAtlasInstances = String(completion.visualAtlasInstances)
+    task.target.dataset.visualAtlasSprites = String(completion.visualAtlasSprites)
+    task.target.dataset.visualAtlasPixels = String(completion.visualAtlasPixels)
+    task.target.dataset.visualAtlasRawPixels = String(completion.visualAtlasRawPixels)
+    task.target.dataset.visualAtlasWidth = String(completion.visualAtlasWidth)
+    task.target.dataset.visualAtlasHeight = String(completion.visualAtlasHeight)
+    task.target.dataset.visualAtlasOutputPixels = String(completion.visualAtlasOutputPixels)
+    task.target.dataset.visualAtlasPrepareMs = completion.visualAtlasPrepareMs.toFixed(3)
+    task.target.dataset.visualAtlasRasterMs = completion.visualAtlasRasterMs.toFixed(3)
+    task.target.dataset.visualAtlasUploadMs = completion.visualAtlasUploadMs.toFixed(3)
+    task.target.dataset.visualAtlasDrawMs = completion.visualAtlasDrawMs.toFixed(3)
+    task.target.dataset.visualAtlasValidationMs = completion.visualAtlasValidationMs.toFixed(3)
+    task.target.dataset.visualAtlasCompositeMs = completion.visualAtlasCompositeMs.toFixed(3)
+    task.target.dataset.visualDescriptorCacheHits = String(completion.visualDescriptorCacheHits)
+    task.target.dataset.visualDescriptorCacheMisses = String(completion.visualDescriptorCacheMisses)
+    task.target.dataset.visualDescriptorCacheBypasses = String(completion.visualDescriptorCacheBypasses)
+    task.target.dataset.visualAnimationSignatureCacheHits = String(completion.visualAnimationSignatureCacheHits)
+    task.target.dataset.visualAnimationSignatureCacheMisses = String(completion.visualAnimationSignatureCacheMisses)
+    task.target.dataset.visualAtlasFrameCacheHit = completion.visualAtlasFrameCacheHit ? 'true' : 'false'
+    task.target.dataset.visualAtlasSlotCacheHits = String(completion.visualAtlasSlotCacheHits)
+    task.target.dataset.visualAtlasSlotCacheMisses = String(completion.visualAtlasSlotCacheMisses)
+  }
+  if (task.visualAnimationFrame) {
+    const measuredAt = currentAnimationTimestamp()
+    task.visualAnimationActiveWorkMs += Math.max(0, measuredAt - commitStartedAt)
+    visualAnimationMeasuredFrameMs = Math.max(0, task.visualAnimationActiveWorkMs)
+    visualAnimationMeasuredNodeCount = task.visualAnimationVisibleCount
+    if (task.target?.dataset) {
+      task.target.dataset.visualAnimationState = 'committed'
+      task.target.dataset.visualAnimationFrameMs = visualAnimationMeasuredFrameMs.toFixed(3)
+      task.target.dataset.visualAnimationWallMs = Math.max(
+        0,
+        measuredAt - task.visualAnimationStartedAt
+      ).toFixed(3)
+      task.target.dataset.visualAnimationIntervalMs = visualAnimationFrameIntervalMs.toFixed(3)
+    }
+  }
   if (nextComposite) {
-    if (task.mode === 'sparse') swapCommittedCompositeSurface(nextComposite, task.bitmapRects)
+    if (task.mode === 'sparse' || task.partialDense) swapCommittedCompositeSurface(nextComposite, task.bitmapRects)
     else replaceCommittedCompositeSurface(nextComposite)
   }
+  if (task.visualAtlasDirect) commitDirectSignalLightTimestamp(task.animationTimestamp)
+  else if (task.mode === 'dense') commitSignalLightColors(committedVisualAnimationNodes, task.animationTimestamp, true)
+  else commitSignalLightColors(task.signalLightColors, task.animationTimestamp)
   reportedCanvasErrorEpoch = -1
   committedGeneration.value = completion.generation
   renderReady.value = true
   emit('render-complete', completion)
   if (!pendingRuntimeDense && !pendingRuntimeNodes.size) {
     runtimeRenderDirty = false
+    flushPendingVisualAnimationRender()
     return
   }
   if (runtimeDenseStreamOpen && runtimeDenseStreamStarted) {
@@ -3182,7 +5501,7 @@ function commitRuntimeRenderTask(task) {
 }
 
 const runtimeRenderScheduler = createChunkedRenderScheduler({
-  budgetMs: RUNTIME_RENDER_SLICE_BUDGET_MS,
+  budgetMs: runtimeRenderSliceBudget,
   schedule: scheduleRenderSlice,
   cancel: cancelRenderSlice,
   createTask: createRuntimeRenderTask,
@@ -3191,6 +5510,527 @@ const runtimeRenderScheduler = createChunkedRenderScheduler({
   discard: releaseRuntimeRenderTask,
   onError: (error, detail) => reportCanvasRenderError(`runtime-${detail.phase}-failed`, error)
 })
+
+function resetVisualAnimationFramePacing() {
+  visualAnimationLastFrameTimestamp = null
+  visualAnimationFrameIntervalMs = 0
+  visualAnimationMeasuredFrameMs = 0
+  visualAnimationMeasuredNodeCount = 0
+}
+
+function releaseVisualAnimationClock() {
+  pendingVisualAnimationTimestamp = null
+  stopVisualAnimationClockWatch?.()
+  stopVisualAnimationClockWatch = null
+  if (visualAnimationClock) releaseVisualClock(VISUAL_ANIMATION_CLOCK_FPS)
+  visualAnimationClock = null
+  resetVisualAnimationFramePacing()
+}
+
+function visualAnimationNodeKey(node) {
+  return node?.id ?? node
+}
+
+function commitSignalLightColors(nodesOrColors, timestamp, replace = false) {
+  const colors = replace ? new Map() : committedSignalLightColors
+  if (nodesOrColors instanceof Map) {
+    for (const [key, color] of nodesOrColors) {
+      if (key != null) colors.set(key, color)
+    }
+  } else {
+    for (const sourceNode of nodesOrColors || []) {
+      if (sourceNode?.type !== 'signalLight') continue
+      const key = visualAnimationNodeKey(sourceNode)
+      if (key == null) continue
+      const node = materializeRuntimeNode(sourceNode, runtimePointValue)
+      const resolvedTimestamp = isCanvasVisualAnimationCandidate(node)
+        ? visualAnimationTimeline.resolve(node, timestamp)
+        : timestamp
+      colors.set(key, signalLightColor(node, resolvedTimestamp))
+    }
+  }
+  if (replace) {
+    committedSignalLightColors = colors
+    committedDirectSignalLightTimestamp = null
+  }
+}
+
+function commitDirectSignalLightTimestamp(timestamp) {
+  committedSignalLightColors = new Map()
+  committedDirectSignalLightTimestamp = number(timestamp, currentAnimationTimestamp())
+}
+
+function previousCommittedSignalLightColor(node, key) {
+  if (committedSignalLightColors.has(key)) return committedSignalLightColors.get(key)
+  if (committedDirectSignalLightTimestamp == null) return undefined
+  const resolvedTimestamp = isCanvasVisualAnimationCandidate(node)
+    ? visualAnimationTimeline.resolve(node, committedDirectSignalLightTimestamp)
+    : committedDirectSignalLightTimestamp
+  return signalLightColor(node, resolvedTimestamp)
+}
+
+function syncRuntimeVisualAnimationNodes(nodes) {
+  const source = Array.isArray(nodes) ? nodes : []
+  if (!source.length) return false
+  invalidateCanvasVisualDirectAtlasFrame()
+  const timestamp = currentAnimationTimestamp()
+  let changed = false
+  for (const candidate of source) {
+    const node = candidate && typeof candidate === 'object'
+      ? candidate
+      : props.nodeIndex?.get?.(candidate)
+    if (!canvasVisualAnimationTypes.has(node?.type)) continue
+    canvasVisualSpriteDescriptorCache.delete(node)
+    canvasVisualAnimationStreamStates.delete(node)
+    const key = visualAnimationNodeKey(node)
+    if (key == null) continue
+    const effective = materializeRuntimeNode(node, runtimePointValue)
+    if (isCanvasVisualAnimationCandidate(effective)) {
+      visualAnimationTimeline.resolve(effective, timestamp)
+    }
+    const active = !committedExcludedNodeIds.has(key) && isCanvasVisualAnimationNode(effective)
+    if (active) {
+      if (committedVisualAnimationNodeMap.get(key) !== node) {
+        committedVisualAnimationNodeMap.set(key, node)
+        committedSignalLightColors.delete(key)
+        changed = true
+      }
+    } else {
+      committedSignalLightColors.delete(key)
+      if (committedVisualAnimationNodeMap.delete(key)) changed = true
+    }
+  }
+  if (!changed) return false
+  committedVisualAnimationNodes = [...committedVisualAnimationNodeMap.values()]
+    .sort((left, right) => number(right?.layer) - number(left?.layer))
+  visualAnimationViewportDirty = true
+  syncVisualAnimationClock()
+  return true
+}
+
+function clipsOverflow(value) {
+  return ['auto', 'scroll', 'hidden', 'clip'].includes(String(value || '').toLowerCase())
+}
+
+function visualAnimationClippingAncestors(target) {
+  if (target === visualAnimationClipTarget) return visualAnimationClipAncestors
+  visualAnimationClipTarget = target
+  visualAnimationClipAncestors = []
+  for (let ancestor = target?.parentElement; ancestor; ancestor = ancestor.parentElement) {
+    const style = typeof globalThis.getComputedStyle === 'function'
+      ? globalThis.getComputedStyle(ancestor)
+      : null
+    const clipsX = clipsOverflow(style?.overflowX || style?.overflow)
+    const clipsY = clipsOverflow(style?.overflowY || style?.overflow)
+    if (clipsX || clipsY) visualAnimationClipAncestors.push({ element: ancestor, clipsX, clipsY })
+  }
+  return visualAnimationClipAncestors
+}
+
+function visualAnimationViewportBounds() {
+  const frame = committedStaticFrame
+  const target = canvas.value
+  const fallback = frame?.viewBox || (frame ? {
+    x: 0,
+    y: 0,
+    w: frame.stageWidth,
+    h: frame.stageHeight
+  } : null)
+  if (!frame || !target?.getBoundingClientRect) return fallback
+  const rect = target.getBoundingClientRect()
+  if (!(rect.width > 0) || !(rect.height > 0)) return fallback
+
+  const ownerDocument = target.ownerDocument
+  const documentElement = ownerDocument?.documentElement
+  const viewportWidth = Number(globalThis.innerWidth) || Number(documentElement?.clientWidth) || rect.right
+  const viewportHeight = Number(globalThis.innerHeight) || Number(documentElement?.clientHeight) || rect.bottom
+  let left = Math.max(0, rect.left)
+  let top = Math.max(0, rect.top)
+  let right = Math.min(viewportWidth, rect.right)
+  let bottom = Math.min(viewportHeight, rect.bottom)
+  for (const { element, clipsX, clipsY } of visualAnimationClippingAncestors(target)) {
+    if (typeof element?.getBoundingClientRect !== 'function') continue
+    const ancestorRect = element.getBoundingClientRect()
+    if (clipsX) {
+      left = Math.max(left, ancestorRect.left)
+      right = Math.min(right, ancestorRect.right)
+    }
+    if (clipsY) {
+      top = Math.max(top, ancestorRect.top)
+      bottom = Math.min(bottom, ancestorRect.bottom)
+    }
+  }
+  if (right <= left || bottom <= top) return { x: 0, y: 0, w: 0, h: 0 }
+
+  const cssWidth = Math.max(1, number(frame.width, rect.width))
+  const cssHeight = Math.max(1, number(frame.height, rect.height))
+  const localLeft = (left - rect.left) * cssWidth / rect.width
+  const localTop = (top - rect.top) * cssHeight / rect.height
+  const localRight = (right - rect.left) * cssWidth / rect.width
+  const localBottom = (bottom - rect.top) * cssHeight / rect.height
+  const worldLeft = Math.max(0, Math.min(frame.stageWidth, (localLeft - frame.offsetX) / frame.scaleX))
+  const worldTop = Math.max(0, Math.min(frame.stageHeight, (localTop - frame.offsetY) / frame.scaleY))
+  const worldRight = Math.max(worldLeft, Math.min(frame.stageWidth, (localRight - frame.offsetX) / frame.scaleX))
+  const worldBottom = Math.max(worldTop, Math.min(frame.stageHeight, (localBottom - frame.offsetY) / frame.scaleY))
+  return { x: worldLeft, y: worldTop, w: worldRight - worldLeft, h: worldBottom - worldTop }
+}
+
+function visualAnimationBoundsKey(bounds) {
+  if (!bounds) return ''
+  return [bounds.x, bounds.y, bounds.w, bounds.h]
+    .map(value => Math.round(number(value) * 10) / 10)
+    .join(':')
+}
+
+function visualAnimationQueryBounds(bounds) {
+  if (!bounds) return bounds
+  let padding = 0
+  for (const sourceNode of committedVisualAnimationNodes) {
+    const node = materializeRuntimeNode(sourceNode, runtimePointValue)
+    const visualScalePadding = Math.max(
+      1,
+      Math.abs(number(node.visualScaleX, 1)),
+      Math.abs(number(node.visualScaleY, 1))
+    )
+    const borderPadding = node.borderVisible === false
+      ? 0
+      : Math.max(0, number(node.borderWidth)) / 2 * visualScalePadding
+    const heartbeatPadding = node.type === 'heartbeat'
+      ? Math.max(number(node.w, 1), number(node.h, 1)) * .09 * visualScalePadding
+      : 0
+    padding = Math.max(padding, borderPadding, heartbeatPadding)
+  }
+  if (!(padding > 0)) return bounds
+  return {
+    x: bounds.x - padding,
+    y: bounds.y - padding,
+    w: bounds.w + padding * 2,
+    h: bounds.h + padding * 2
+  }
+}
+
+function refreshVisibleVisualAnimationNodes() {
+  const bounds = visualAnimationViewportBounds()
+  const key = visualAnimationBoundsKey(bounds)
+  if (!visualAnimationViewportDirty && key === visualAnimationViewportKey) return visibleVisualAnimationNodes
+  visualAnimationViewportDirty = false
+  visualAnimationViewportKey = key
+  const queryBounds = visualAnimationQueryBounds(bounds)
+  const candidates = bounds?.w > 0 && bounds?.h > 0 && typeof props.spatialIndex?.query === 'function'
+    ? props.spatialIndex.query(queryBounds, { sort: false })
+    : bounds?.w > 0 && bounds?.h > 0
+      ? committedVisualAnimationNodes
+      : []
+  const visible = []
+  const ids = new Set()
+  for (const candidate of candidates) {
+    const key = visualAnimationNodeKey(candidate)
+    if (key == null || ids.has(key) || !committedVisualAnimationNodeMap.has(key)) continue
+    const node = props.nodeIndex?.get?.(candidate.id) || candidate
+    if (!node || committedExcludedNodeIds.has(key)) continue
+    ids.add(key)
+    visible.push(node)
+  }
+  visible.sort((left, right) => number(right?.layer) - number(left?.layer))
+  visibleVisualAnimationNodes = visible
+  return visibleVisualAnimationNodes
+}
+
+function appendVisibleVisualAnimationNodes(source, timestamp, batch, stale) {
+  const seen = new Set()
+  for (const tracked of source) {
+    const node = props.nodeIndex?.get?.(tracked?.id) || tracked
+    const key = visualAnimationNodeKey(node)
+    if (!node || key == null || seen.has(key) || committedExcludedNodeIds.has(key)) continue
+    const effective = materializeRuntimeNode(node, runtimePointValue)
+    if (!isCanvasVisualAnimationNode(effective)) {
+      stale.push(node)
+      continue
+    }
+    const previousSignalColor = effective.type === 'signalLight'
+      ? previousCommittedSignalLightColor(effective, key)
+      : undefined
+    const resolvedTimestamp = visualAnimationTimeline.resolve(effective, timestamp)
+    if (
+      effective.type === 'signalLight'
+      && previousSignalColor === signalLightColor(effective, resolvedTimestamp)
+    ) continue
+    seen.add(key)
+    batch.push(node)
+  }
+}
+
+function nextVisualAnimationNodeBatch(timestamp = currentAnimationTimestamp()) {
+  const visible = refreshVisibleVisualAnimationNodes()
+  if (!visible.length) return []
+  const batch = []
+  const stale = []
+  // Build one atomic frame from every visible continuous effect and each light that changed color.
+  appendVisibleVisualAnimationNodes(visible, timestamp, batch, stale)
+  if (stale.length) syncRuntimeVisualAnimationNodes(stale)
+  return batch
+}
+
+function visualAnimationDirectAtlasFrame(visibleNodes = refreshVisibleVisualAnimationNodes()) {
+  const documentNodes = Array.isArray(props.nodes) ? props.nodes : []
+  const layerEntries = Array.isArray(props.orderedEntities) ? props.orderedEntities : []
+  const cached = canvasVisualDirectAtlasFrameCache
+  if (
+    cached?.frame === committedStaticFrame
+    && cached.documentNodes === documentNodes
+    && cached.layerEntries === layerEntries
+    && cached.nodeIndex === props.nodeIndex
+    && cached.visibleNodes === visibleNodes
+    && cached.animationNodeMap === committedVisualAnimationNodeMap
+    && cached.renderRevision === props.renderRevision
+  ) return cached
+  if (
+    visibleNodes.length < RUNTIME_VISUAL_ATLAS_MIN_INSTANCES
+    || !documentNodes.length
+    || !layerEntries.length
+  ) return null
+
+  const pureVisualDocument = layerEntries.length === documentNodes.length
+    && committedVisualAnimationNodeMap.size === documentNodes.length
+    && !props.drawings.length
+    && !committedExcludedNodeIds.size
+    && !committedExcludedDrawingIds.size
+  let preserveCompositeBase = !pureVisualDocument
+  if (pureVisualDocument) {
+    for (const sourceNode of documentNodes) {
+      const key = visualAnimationNodeKey(sourceNode)
+      const node = materializeRuntimeNode(sourceNode, runtimePointValue)
+      if (
+        key == null
+        || committedVisualAnimationNodeMap.get(key) !== sourceNode
+        || !canvasVisualAnimationTypes.has(sourceNode?.type)
+        || !isCanvasVisualAnimationNode(node)
+        || number(node?.rotate) !== 0
+        || alpha(node?.opacity) <= 0
+      ) return null
+    }
+    preserveCompositeBase = false
+  } else {
+    const opaqueFill = value => {
+      const color = String(value || '').trim()
+      return /^#[\da-f]{3}(?:[\da-f]{3})?$/i.test(color)
+        || /^rgb\(\s*\d+(?:\.\d+)?\s+\d+(?:\.\d+)?\s+\d+(?:\.\d+)?\s*\)$/i.test(color)
+        || /^rgb\(\s*\d+(?:\.\d+)?\s*,\s*\d+(?:\.\d+)?\s*,\s*\d+(?:\.\d+)?\s*\)$/i.test(color)
+    }
+    if (typeof props.spatialIndex?.query !== 'function') return null
+    for (const sourceNode of visibleNodes) {
+      const key = visualAnimationNodeKey(sourceNode)
+      const node = materializeRuntimeNode(sourceNode, runtimePointValue)
+      if (
+        key == null
+        || committedVisualAnimationNodeMap.get(key) !== sourceNode
+        || !canvasVisualAnimationTypes.has(sourceNode?.type)
+        || !isCanvasVisualAnimationNode(node)
+        || number(node?.rotate) !== 0
+        || alpha(node?.opacity) !== 1
+        || alpha(node?.backgroundOpacity) !== 1
+        || !opaqueFill(node?.fill)
+      ) return null
+      const region = runtimeNodeRegion(node, {
+        stageWidth: committedStaticFrame?.stageWidth,
+        stageHeight: committedStaticFrame?.stageHeight,
+        padding: 2
+      })
+      if (!region) return null
+      const overlappingNodes = props.spatialIndex.query(region, { sort: false })
+      if (overlappingNodes.some(candidate => {
+        const candidateKey = visualAnimationNodeKey(candidate)
+        return candidateKey !== key && !committedExcludedNodeIds.has(candidateKey)
+      })) return null
+      if (props.drawings.length) {
+        if (typeof props.drawingSpatialIndex?.query !== 'function') return null
+        const overlappingDrawings = props.drawingSpatialIndex.query(region, { sort: false })
+        if (overlappingDrawings.some(drawing => !committedExcludedDrawingIds.has(drawing?.id))) return null
+      }
+    }
+  }
+  const visibleIds = new Set(visibleNodes.map(visualAnimationNodeKey))
+  const orderedVisibleNodes = []
+  for (const item of layerEntries) {
+    if (item?.kind !== 'node' || !item.entity) return null
+    const key = visualAnimationNodeKey(item.entity)
+    if (visibleIds.has(key)) orderedVisibleNodes.push(props.nodeIndex?.get?.(key) || item.entity)
+  }
+  if (orderedVisibleNodes.length !== visibleIds.size) return null
+  const bitmapRect = runtimeBitmapRect(visualAnimationViewportBounds(), committedStaticFrame, 2)
+  if (!bitmapRect) return null
+  canvasVisualDirectAtlasFrameCache = {
+    frame: committedStaticFrame,
+    documentNodes,
+    layerEntries,
+    nodeIndex: props.nodeIndex,
+    visibleNodes,
+    animationNodeMap: committedVisualAnimationNodeMap,
+    renderRevision: props.renderRevision,
+    bitmapRect,
+    nodes: orderedVisibleNodes,
+    preserveCompositeBase,
+    topology: null
+  }
+  return canvasVisualDirectAtlasFrameCache
+}
+
+function queueVisualAnimationTimestamp(timestamp) {
+  const resolved = number(timestamp, currentAnimationTimestamp())
+  pendingVisualAnimationTimestamp = pendingVisualAnimationTimestamp == null
+    ? resolved
+    : Math.max(pendingVisualAnimationTimestamp, resolved)
+  return pendingVisualAnimationTimestamp
+}
+
+function minimumVisibleVisualAnimationDurationSeconds(nodes) {
+  let minimum = Number.POSITIVE_INFINITY
+  for (const sourceNode of nodes) {
+    const hasRuntimeTiming = hasEnabledRuntimeBinding(sourceNode, 'animationDuration')
+      || hasEnabledRuntimeBinding(sourceNode, 'animationPlaying')
+    const node = hasRuntimeTiming
+      ? materializeRuntimeNode(sourceNode, runtimePointValue)
+      : sourceNode
+    if (!isCanvasVisualAnimationNode(node)) continue
+    const duration = number(node.animationDuration)
+    if (duration > 0) minimum = Math.min(minimum, duration)
+  }
+  return Number.isFinite(minimum) ? minimum : 0
+}
+
+function flushPendingVisualAnimationRender() {
+  const blockedBy = pendingVisualAnimationTimestamp == null
+    ? 'timestamp'
+    : !props.active
+      ? 'inactive'
+      : !props.incrementalRuntime
+        ? 'non-incremental'
+        : renderScheduler.state.pending
+          ? 'full-render'
+          : runtimeRenderScheduler.state.pending
+            ? 'runtime-render'
+            : geometryInteraction
+              ? 'geometry'
+              : coalescedRenderDirty
+                ? 'coalesced-render'
+                : runtimeRenderDirty
+                  ? 'runtime-dirty'
+                  : runtimeRenderFollowUpPending()
+                    ? 'runtime-follow-up'
+                    : !canIncrementRuntime()
+                      ? 'incremental-unavailable'
+                      : ''
+  if (blockedBy) {
+    if (canvas.value?.dataset) canvas.value.dataset.visualAnimationState = `blocked:${blockedBy}`
+    return null
+  }
+
+  const preparationStartedAt = currentAnimationTimestamp()
+  const animationTimestamp = pendingVisualAnimationTimestamp
+  const visibleNodes = refreshVisibleVisualAnimationNodes()
+  const visibleCount = visibleNodes.length
+  const directAtlasFrame = visualAnimationDirectAtlasFrame(visibleNodes)
+  const batch = directAtlasFrame?.nodes || nextVisualAnimationNodeBatch(animationTimestamp)
+  if (!batch.length) {
+    pendingVisualAnimationTimestamp = null
+    return null
+  }
+  const inserted = []
+  for (const node of batch) {
+    const key = node.id ?? node
+    pendingRuntimeNodes.set(key, node)
+    inserted.push([key, node])
+  }
+  const generation = scheduleRuntimeRender({
+    animationTimestamp,
+    visualAnimationFrame: true,
+    visualAnimationNodeCount: batch.length,
+    visualAnimationVisibleCount: visibleCount,
+    visualAtlasDirectRect: directAtlasFrame?.bitmapRect || null,
+    visualAtlasDirectFrame: directAtlasFrame || null,
+    visualAnimationPreparationMs: Math.max(0, currentAnimationTimestamp() - preparationStartedAt)
+  })
+  if (generation != null) {
+    pendingVisualAnimationTimestamp = null
+    if (canvas.value?.dataset) canvas.value.dataset.visualAnimationState = 'scheduled'
+    return generation
+  }
+  for (const [key, node] of inserted) {
+    if (pendingRuntimeNodes.get(key) === node) pendingRuntimeNodes.delete(key)
+  }
+  return null
+}
+
+function requestVisualAnimationRender(timestamp) {
+  visualAnimationTickCount += 1
+  if (canvas.value?.dataset) canvas.value.dataset.visualAnimationTicks = String(visualAnimationTickCount)
+  if (visualAnimationReducedMotion || !props.active || !props.incrementalRuntime) return null
+  if (pendingVisualAnimationTimestamp != null) {
+    const pendingGeneration = flushPendingVisualAnimationRender()
+    if (pendingGeneration != null || pendingVisualAnimationTimestamp != null) return pendingGeneration
+  }
+  const now = number(timestamp, currentAnimationTimestamp())
+  const visibleNodes = refreshVisibleVisualAnimationNodes()
+  const visibleCount = visibleNodes.length
+  const pending = Boolean(
+    renderScheduler.state.pending
+    || runtimeRenderScheduler.state.pending
+    || geometryInteraction
+    || coalescedRenderDirty
+    || runtimeRenderDirty
+    || runtimeRenderFollowUpPending()
+    || !canIncrementRuntime()
+  )
+  const plan = canvasVisualAnimationFramePlan({
+    now,
+    visibleCount,
+    measuredFrameMs: visualAnimationMeasuredFrameMs,
+    measuredVisibleCount: visualAnimationMeasuredNodeCount,
+    previousIntervalMs: visualAnimationFrameIntervalMs,
+    lastFrameTimestamp: visualAnimationLastFrameTimestamp,
+    minimumAnimationDurationSeconds: minimumVisibleVisualAnimationDurationSeconds(visibleNodes),
+    pending
+  })
+  if (!plan.shouldRender) {
+    if (canvas.value?.dataset) canvas.value.dataset.visualAnimationState = 'paced'
+    return null
+  }
+  visualAnimationLastFrameTimestamp = plan.frameTimestamp
+  visualAnimationFrameIntervalMs = plan.intervalMs
+  queueVisualAnimationTimestamp(plan.frameTimestamp)
+  return flushPendingVisualAnimationRender()
+}
+
+function syncVisualAnimationClock() {
+  const shouldRun = Boolean(
+    props.active
+    && !visualAnimationReducedMotion
+    && props.incrementalRuntime
+    && committedVisualAnimationNodeMap.size
+    && committedStaticSurface
+    && committedStaticFrame?.renderNodes
+    && committedCompositeSurface
+    && canvas.value
+    && !renderScheduler.state.pending
+    && typeof props.spatialIndex?.createQueryCursor === 'function'
+  )
+  if (!shouldRun) {
+    releaseVisualAnimationClock()
+    if (canvas.value?.dataset) canvas.value.dataset.visualAnimationClock = 'stopped'
+    return
+  }
+  if (visualAnimationClock) {
+    if (canvas.value?.dataset) canvas.value.dataset.visualAnimationClock = 'running'
+    return
+  }
+  visualAnimationClock = acquireVisualClock(VISUAL_ANIMATION_CLOCK_FPS)
+  stopVisualAnimationClockWatch = watch(
+    visualAnimationClock,
+    requestVisualAnimationRender,
+    { flush: 'sync', immediate: true }
+  )
+  if (canvas.value?.dataset) canvas.value.dataset.visualAnimationClock = 'running'
+}
 
 function geometryNodeLookup(nodes) {
   const overrides = new Map(nodes.map(node => [node.id, node]))
@@ -3212,6 +6052,7 @@ function geometrySnapshot(source = {}) {
     activeNodeIds: new Set(nodes.map(node => node.id)),
     nodeOpacityMultiplier: alpha(source.nodeOpacityMultiplier),
     nodeLookup: geometryNodeLookup(nodes),
+    animationTimestamp: currentAnimationTimestamp(),
     revision: number(source.geometryRevision)
   }
 }
@@ -3368,7 +6209,9 @@ function drawGeometryCompositePlan(ctx, plan, snapshot) {
       if (item.kind === 'node') {
         if (!frame.renderNodes) continue
         const opacityMultiplier = snapshot.activeNodeIds.has(item.entity.id) ? snapshot.nodeOpacityMultiplier : 1
-        drawNode(ctx, item.entity, frame.scaleX, frame.scaleY, worldPixel, 'full', opacityMultiplier)
+        drawNode(ctx, item.entity, frame.scaleX, frame.scaleY, worldPixel, 'full', opacityMultiplier, {
+          animationTimestamp: snapshot.animationTimestamp
+        })
       }
       else if (frame.renderDrawings) drawTemporaryDrawing(ctx, item.entity, worldPixel)
     }
@@ -3588,7 +6431,7 @@ function cancelGeometryInteraction(sessionId) {
   return true
 }
 
-function scheduleRuntimeRender() {
+function scheduleRuntimeRender(options = {}) {
   if (!props.active) {
     suspendedRenderDirty = true
     return null
@@ -3603,18 +6446,26 @@ function scheduleRuntimeRender() {
     queueRuntimeDenseStreamFlush()
     return null
   }
-  const denseAvailable = Array.isArray(props.orderedEntities)
+  const allowDense = options.allowDense !== false
+  const denseAvailable = allowDense && Array.isArray(props.orderedEntities)
   if (pendingRuntimeDense && !denseAvailable && !pendingRuntimeNodes.size) {
     pendingRuntimeDense = false
     runtimeRenderDirty = false
     return requestCoalescedRender()
   }
-  const dense = denseAvailable && (pendingRuntimeDense || shouldUseDenseRuntime({
-    available: true,
-    nodeCount: pendingRuntimeNodes.size
-  }))
+  const dense = denseAvailable && (
+    pendingRuntimeDense
+    || (options.visualAnimationFrame !== true && shouldUseDenseRuntime({
+      available: true,
+      nodeCount: pendingRuntimeNodes.size
+    }))
+  )
   const nodeCount = pendingRuntimeNodes.size
-  const nodes = dense ? [] : takePendingRuntimeNodeBatch()
+  const nodes = dense
+    ? []
+    : takePendingRuntimeNodeBatch(options.visualAnimationFrame === true
+      ? Math.max(1, nodeCount)
+      : RUNTIME_RENDER_NODE_BATCH_SIZE)
   if (dense) pendingRuntimeNodes = new Map()
   pendingRuntimeDense = false
   runtimeRenderDirty = false
@@ -3629,16 +6480,31 @@ function scheduleRuntimeRender() {
     spatialIndex: props.spatialIndex,
     drawingSpatialIndex: props.drawingSpatialIndex,
     hasDrawings: props.drawings.length > 0,
-    entities: props.orderedEntities,
+    entities: allowDense ? props.orderedEntities : null,
     excludedNodeIds: committedExcludedNodeIds,
     excludedDrawingIds: committedExcludedDrawingIds,
     nodes,
     nodeCount,
-    dense
+    dense,
+    allowDense,
+    animationTimestamp: options.animationTimestamp,
+    visualAnimationFrame: options.visualAnimationFrame === true,
+    visualAnimationNodeCount: options.visualAnimationNodeCount,
+    visualAnimationVisibleCount: options.visualAnimationVisibleCount,
+    visualAnimationPreparationMs: options.visualAnimationPreparationMs,
+    visualAtlasDirectRect: options.visualAtlasDirectRect,
+    visualAtlasDirectFrame: options.visualAtlasDirectFrame
   })
 }
 
 function startFullRender(metadata = {}) {
+  releaseVisualAnimationClock()
+  invalidateCanvasVisualDirectAtlasFrame()
+  clearCanvasVisualAtlasFrameCache()
+  canvasVisualSpriteDescriptorCache = new WeakMap()
+  resetCanvasVisualSignatureIds()
+  visualAnimationClipTarget = null
+  visualAnimationClipAncestors = []
   runtimeRenderScheduler.invalidate('full-render')
   invalidateIncrementalRuntime()
   committedTimeNodes = []
@@ -3681,10 +6547,13 @@ function requestCoalescedRender() {
     coalescedRenderDirty = true
     return renderScheduler.state.generation
   }
+  // 新任务已经吸收此前的合并请求，避免成功提交后再无意义地完整重绘一次。
+  coalescedRenderDirty = false
   return startFullRender()
 }
 
 function invalidatePendingRender(reason = 'invalidated') {
+  releaseVisualAnimationClock()
   renderScheduler.invalidate(reason)
   runtimeRenderScheduler.invalidate(reason)
   coalescedRenderDirty = false
@@ -3701,6 +6570,7 @@ function requestRuntimeRender(changedNodes) {
   const request = runtimeRenderRequest(changedNodes)
   updateRuntimeDenseStream(request)
   const nodes = resolveChangedRuntimeNodes(request.nodes)
+  syncRuntimeVisualAnimationNodes(nodes)
   for (const node of nodes) pendingRuntimeNodes.set(node.id ?? node, node)
   if (!nodes.length && !pendingRuntimeDense && !pendingRuntimeNodes.size) {
     const pendingFull = renderScheduler.state.pending
@@ -3760,6 +6630,12 @@ function getCanvasElement() {
   return canvas.value
 }
 
+function resumeCommittedAnimationClock() {
+  if (!props.active) return false
+  syncVisualAnimationClock()
+  return Boolean(visualAnimationClock)
+}
+
 defineExpose({
   requestRender: scheduleRender,
   requestCoalescedRender,
@@ -3770,6 +6646,7 @@ defineExpose({
   finishGeometryInteraction,
   cancelGeometryInteraction,
   patchRemovedEntities,
+  resumeCommittedAnimationClock,
   getCanvasElement,
   renderState: renderScheduler.state,
   runtimeRenderState: runtimeRenderScheduler.state
@@ -3796,6 +6673,7 @@ watch([
   () => props.edgeSpatialIndex,
   () => props.drawingSpatialIndex,
   () => props.renderMode,
+  () => props.waitForImages,
   () => props.preferText,
   () => props.faithful,
   () => props.minimumScreenTextSize,
@@ -3831,13 +6709,17 @@ watch(() => props.frameCommitToken, token => {
 
 watch(() => props.active, active => {
   if (active) {
-    if (!suspendedRenderDirty) return
-    if (props.frameCommitToken != null && !previewFrameCommitRequested(props.frameCommitToken)) return
-    scheduleRender()
+    const renderRequested = suspendedRenderDirty && (
+      props.frameCommitToken == null
+      || previewFrameCommitRequested(props.frameCommitToken)
+    )
+    if (renderRequested) scheduleRender()
+    else syncVisualAnimationClock()
     return
   }
   suspendedRenderDirty = true
   geometryInteraction = null
+  releaseVisualAnimationClock()
   imageRenderTrigger.cancel()
   invalidatePendingRender('suspended')
   invalidateIncrementalRuntime()
@@ -3849,9 +6731,12 @@ watch([
 ], requestTimeRender, { flush: 'post' })
 
 onBeforeUnmount(() => {
+  detachVisualAnimationMotionPreference()
+  releaseVisualAnimationClock()
   imageRenderTrigger.dispose()
   edgeRasterWorkerClient.dispose()
   resetTaskRenderFrameYield()
+  resetAnimationRenderBurst()
   canvasContextGate.release(canvas.value)
   geometryInteraction = null
   coalescedRenderDirty = false
@@ -3863,7 +6748,20 @@ onBeforeUnmount(() => {
   replaceCommittedCompositeSurface(null)
   replaceCommittedGeometryIndexes(null, null)
   clearReusableRenderSurfaces()
+  clearReusableVisualSpriteSurfaces()
+  releaseCanvasVisualAtlasResources()
   committedTimeNodes = []
+  committedVisualAnimationNodes = []
+  committedVisualAnimationNodeMap.clear()
+  committedSignalLightColors.clear()
+  committedDirectSignalLightTimestamp = null
+  visibleVisualAnimationNodes = []
+  resetVisualAnimationFramePacing()
+  visualAnimationViewportKey = ''
+  visualAnimationViewportDirty = true
+  visualAnimationClipTarget = null
+  visualAnimationClipAncestors = []
+  visualAnimationTimeline.clear()
   committedExcludedNodeIds = new Set()
   committedExcludedDrawingIds = new Set()
   clearImageCache()

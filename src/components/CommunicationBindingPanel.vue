@@ -22,6 +22,7 @@ import { formatRuntimeValue } from '../utils/runtimeValueFormat.js'
 import { isUsableSourceSnapshot } from '../utils/sourceSnapshotValidation.js'
 import {
   directBindingCompatibility,
+  parameterDataFormatGuide,
   parameterValueTypeLabel
 } from '../utils/dataBindingCompatibility.js'
 import {
@@ -35,7 +36,6 @@ const props = defineProps({
   parameters: { type: Array, default: () => [] },
   gateway: { type: Object, default: null },
   sourceRevision: { type: Number, default: 0 },
-  runtimeStore: { type: Object, default: null },
   locked: { type: Boolean, default: false }
 })
 
@@ -68,7 +68,8 @@ const SECTION_LABELS = Object.freeze({
   appearance: '外观与样式',
   animation: '内容与动效',
   content: '内容与动效',
-  data: '数据参数'
+  data: '数据参数',
+  signal: '信号灯属性'
 })
 
 const VALUE_TYPE_ICONS = Object.freeze({
@@ -170,6 +171,11 @@ const parameterByTarget = computed(() => new Map(
 ))
 const activeParameter = computed(() => parameterByTarget.value.get(activeTarget.value) || null)
 const activeParameterLabel = computed(() => parameterLabel(activeParameter.value?.source))
+const activeFormatGuide = computed(() => parameterDataFormatGuide(activeParameter.value?.source))
+const activeFormatGuideTitle = computed(() => {
+  const label = parameterValueTypeLabel(activeParameter.value?.source)
+  return `${label.endsWith('数据') ? label : `${label}数据`}格式`
+})
 
 const bindingsByTarget = computed(() => {
   const result = new Map()
@@ -537,6 +543,16 @@ onUnmounted(() => {
 
         <div class="binding-step" :class="{ disabled: !selectedSourceId }">
           <div class="step-heading"><i>2</i><span><b>选择 JSON 数据</b><small>展开数据并点击需要绑定的字段，也可以手动输入路径</small></span></div>
+
+          <section v-if="activeFormatGuide" class="data-format-guide" data-testid="communication-data-format-guide">
+            <header>
+              <span><b>{{ activeFormatGuideTitle }}</b><small>{{ activeFormatGuide.description }}</small></span>
+            </header>
+            <article v-for="formatExample in activeFormatGuide.examples" :key="formatExample.label">
+              <div><b>{{ formatExample.label }}</b><span>JSONPath <code>{{ formatExample.jsonPath }}</code></span></div>
+              <pre><code>{{ formatExample.json }}</code></pre>
+            </article>
+          </section>
 
           <div v-if="snapshotLoading" class="snapshot-state"><RefreshCw class="spinning" />正在读取最新数据样例…</div>
           <div v-else-if="snapshotError" class="snapshot-state error">
@@ -1011,6 +1027,69 @@ select:disabled {
   color: #87949a;
   font-size: 9px;
   line-height: 1.45;
+}
+
+.data-format-guide {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+  margin-bottom: 9px;
+  padding: 8px;
+  border-left: 3px solid #56ad9d;
+  background: #f4f9f8;
+}
+
+.data-format-guide header b,
+.data-format-guide header small {
+  display: block;
+}
+
+.data-format-guide header b {
+  color: #35535d;
+  font-size: 10px;
+}
+
+.data-format-guide header small {
+  margin-top: 2px;
+  color: #73858c;
+  font-size: 9px;
+  line-height: 1.5;
+}
+
+.data-format-guide article {
+  min-width: 0;
+}
+
+.data-format-guide article > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  margin-bottom: 3px;
+  color: #60757d;
+  font-size: 9px;
+}
+
+.data-format-guide article > div span {
+  flex: 0 0 auto;
+}
+
+.data-format-guide article > div code {
+  color: #137c69;
+  font: 9px Consolas, monospace;
+}
+
+.data-format-guide pre {
+  max-height: 180px;
+  margin: 0;
+  overflow: auto;
+  padding: 6px 7px;
+  border: 1px solid #d9e6e3;
+  background: #fff;
+  color: #405862;
+  font: 9px/1.45 Consolas, monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .source-select-row {

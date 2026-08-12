@@ -37,8 +37,6 @@ const PARAMETER_TYPE_ALIASES = Object.freeze({
   dataset: 'table'
 })
 
-export const POINT_RESULT_PAGE_SIZE = 50
-
 export const PARAMETER_VALUE_TYPE_LABELS = Object.freeze({
   color: '颜色',
   number: '数值',
@@ -55,6 +53,98 @@ export const POINT_VALUE_TYPE_LABELS = Object.freeze({
   object: '对象',
   unknown: '未知'
 })
+
+function formatGuideExample(label, jsonPath, payload) {
+  return Object.freeze({
+    label,
+    jsonPath,
+    json: JSON.stringify(payload, null, 2)
+  })
+}
+
+const PARAMETER_DATA_FORMAT_GUIDES = Object.freeze({
+  color: Object.freeze({
+    valueType: 'color',
+    description: '返回颜色字符串，支持 HEX、RGB、HSL 或 online、warning、alarm 等状态文本。',
+    examples: Object.freeze([
+      formatGuideExample('推荐格式', '$.value', { value: '#16a085' })
+    ])
+  }),
+  number: Object.freeze({
+    valueType: 'number',
+    description: '返回有限数值，也支持可安全转换的数字文本。',
+    examples: Object.freeze([
+      formatGuideExample('推荐格式', '$.value', { value: 42.5 })
+    ])
+  }),
+  boolean: Object.freeze({
+    valueType: 'boolean',
+    description: '推荐返回布尔值，也支持 0/1、on/off、开启/关闭。',
+    examples: Object.freeze([
+      formatGuideExample('推荐格式', '$.value', { value: true })
+    ])
+  }),
+  text: Object.freeze({
+    valueType: 'text',
+    description: '返回文本、数值或布尔值，组件会将其显示为文字。',
+    examples: Object.freeze([
+      formatGuideExample('推荐格式', '$.value', { value: '设备运行中' })
+    ])
+  }),
+  table: Object.freeze({
+    valueType: 'table',
+    description: '支持行对象数组，或同时声明 columns 与 rows 的表格对象。',
+    examples: Object.freeze([
+      formatGuideExample('行数组', '$.table', {
+        table: [
+          { device: '设备 A', value: 42, status: '运行' },
+          { device: '设备 B', value: 37, status: '待机' }
+        ]
+      }),
+      formatGuideExample('自定义列与行', '$.table', {
+        table: {
+          columns: [
+            { key: 'device', title: '设备' },
+            { key: 'value', title: '数值' },
+            { key: 'status', title: '状态' }
+          ],
+          rows: [
+            { device: '设备 A', value: 42, status: '运行' },
+            { device: '设备 B', value: 37, status: '待机' }
+          ]
+        }
+      })
+    ])
+  })
+})
+
+function boundedNumberFormatGuide(parameter) {
+  const minimum = Number(parameter?.min)
+  const maximum = Number(parameter?.max)
+  const hasMinimum = Number.isFinite(minimum)
+  const hasMaximum = Number.isFinite(maximum)
+  if (!hasMinimum && !hasMaximum) return PARAMETER_DATA_FORMAT_GUIDES.number
+
+  let sample = 42.5
+  if (hasMinimum && sample < minimum) sample = minimum
+  if (hasMaximum && sample > maximum) {
+    sample = hasMinimum && maximum > minimum
+      ? minimum + (maximum - minimum) * 0.8
+      : maximum
+  }
+  sample = Math.round(sample * 1_000_000) / 1_000_000
+  const range = hasMinimum && hasMaximum
+    ? `${minimum} 到 ${maximum}`
+    : hasMinimum ? `不小于 ${minimum}` : `不大于 ${maximum}`
+
+  return Object.freeze({
+    valueType: 'number',
+    description: `返回有限数值，也支持可安全转换的数字文本；有效范围为${range}。`,
+    examples: Object.freeze([
+      formatGuideExample('推荐格式', '$.value', { value: sample })
+    ])
+  })
+}
 
 function normalizedText(value) {
   return String(value ?? '').trim()
@@ -93,6 +183,13 @@ export function normalizeParameterValueType(parameter) {
       : parameter?.valueType || parameter?.targetType || parameter?.type
   ).toLowerCase()
   return PARAMETER_TYPE_ALIASES[raw] || raw
+}
+
+/** 返回与运行时兼容规则一致的默认响应示例，供所有组件的通信页展示。 */
+export function parameterDataFormatGuide(parameter) {
+  const valueType = normalizeParameterValueType(parameter)
+  if (valueType === 'number') return boundedNumberFormatGuide(parameter)
+  return PARAMETER_DATA_FORMAT_GUIDES[valueType] || null
 }
 
 export function parameterValueTypeLabel(parameter) {

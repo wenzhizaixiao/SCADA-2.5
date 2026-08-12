@@ -28,6 +28,7 @@ import {
 } from './config/componentCatalog'
 import {
   baseNodeOptions,
+  builtInVisualPrimaryColor,
   clampTableColumnWidth,
   normalizeDrawing,
   normalizeEdge,
@@ -38,7 +39,13 @@ import {
   normalizeTableModel
 } from './models/editorModel'
 import { drawingRepository, operationGateway, pointCatalogGateway, runtimeGateway, timeService } from './services/backend'
-import { getBindableParameter, getBindableParameters } from './config/componentBindingSchema'
+import {
+  ANIMATION_DURATION_MIN_SECONDS,
+  BUILT_IN_ANIMATION_DURATION_MAX_SECONDS,
+  getBindableParameter,
+  getBindableParameters,
+  MAX_SIGNAL_COLORS
+} from './config/componentBindingSchema'
 import {
   bindingSourceIds,
   bindingPointIds,
@@ -83,22 +90,33 @@ import {
   editorLodRemovalCoverRegions as mergeEditorLodRemovalRegions,
   editorLodOverlayEdges,
   editorLodOverlayNodeIds,
+  EDITOR_LOD_MAX_OVERLAY_NODES,
   pickTopEditorEntity,
   shouldHideEditorLodGeometryDom,
   shouldUseEditorLod
 } from './utils/editorLod'
 import { formatTimeValue, parseTimeValue, resolveTimeValue, timeInputStep, timeInputType } from './utils/formTime'
 import { isImeCompositionEvent } from './utils/keyboard'
-import { NODE_MOVE_INTERACTION_OPACITY } from './utils/interactionOpacity'
 import { largeSelectionPreviewBounds as previewLargeSelectionBounds } from './utils/largeSelectionTransform'
 import { createLargeSelectionTransformTask, runLargeSelectionTransformTaskSlice } from './utils/largeSelectionTransformTask'
 import { filterPaperEntries } from './utils/librarySearch'
 import { drawingComparisonKey, drawingNamesMatch } from './utils/drawingName'
 import { incidentEdgeCountExceedsLimit } from './utils/edgeInteractionPolicy'
 import { miniMapTransform, miniMapViewportRect, miniMapWorldPoint } from './utils/miniMapGeometry'
-import { MAX_POLYLINE_NODE_POINTS, polylineFrameFromWorldPoints } from './utils/polylineGeometry'
+import {
+  clampPolylineSegmentCount,
+  createEvenlySpacedPolylinePoints,
+  DEFAULT_POLYLINE_SEGMENT_COUNT,
+  nearestPolylinePointIndex,
+  polylineFrameFromWorldPoints,
+  polylineNormalizedPointsToLocal,
+  polylinePointHandlePaths,
+  reframePolylineNode,
+  resamplePolylineNodeGeometry,
+  worldPointToPolylineLocal
+} from './utils/polylineGeometry'
 import { previewBitmapIsSharp, previewBitmapPixelBudget, previewBitmapPixelRatio } from './utils/previewBitmapBudget'
-import { previewPixelAlignedOffset } from './utils/previewPixelAlignment'
+import { previewViewportOverscan, previewViewportPixelRatio } from './utils/previewViewportCanvas'
 import {
   EDITOR_LOD_FALLBACK_BITMAP_PIXELS,
   editorLodDetailOverscanPixels,
@@ -120,6 +138,7 @@ import {
   createPreviewFrameFreshness,
   previewFrameTarget
 } from './utils/previewFrameFreshness'
+import { createPreviewMediaReadinessGate } from './utils/previewMediaReadiness'
 import {
   PREVIEW_HYBRID_MAX_DOM_COST,
   PREVIEW_HYBRID_MAX_DOM_NODES,
@@ -182,6 +201,7 @@ const MAX_LOCAL_PROJECT_CACHE_CHARS = 4 * 1024 * 1024
 const WORKSPACE_SESSION_IDLE_TIMEOUT_MS = 2500
 const WORKSPACE_SESSION_MIN_IDLE_BUDGET_MS = 8
 const WORKSPACE_SESSION_RETRY_DELAY_MS = 500
+const PREVIEW_FIT_FALLBACK_IDLE_TIMEOUT_MS = 2000
 const MAX_PROJECT_NODES = PROJECT_CAPACITY_LIMITS.entities
 const MAX_PROJECT_EDGES = PROJECT_CAPACITY_LIMITS.edges
 const MAX_PROJECT_DRAWINGS = PROJECT_CAPACITY_LIMITS.drawings
@@ -205,6 +225,8 @@ const EMPTY_RENDER_LIST = Object.freeze([])
 const PREVIEW_DOM_NODE_LIMIT = 512
 const PREVIEW_DOM_EDGE_LIMIT = 1024
 const PREVIEW_DOM_DRAWING_LIMIT = 512
+const PREVIEW_DOM_RETENTION_OVERSCAN = 320
+const PREVIEW_DOM_RETENTION_GUARD = 96
 const PREVIEW_EDGE_CANVAS_OVERSCAN = 192
 const PREVIEW_EDGE_CANVAS_GUARD = 64
 const EDITOR_DOM_NODE_LIMIT = 512
@@ -231,6 +253,8 @@ const projectRuntimePreparer = createProjectRuntimePreparer()
 const workspaceSessionStore = createWorkspaceSessionStore()
 const workspaceSessionSaveQueue = createWorkspaceSessionSaveQueue(workspaceSessionStore)
 const workspaceSessionIdleTask = createCancellableIdleTask({ timeout: WORKSPACE_SESSION_IDLE_TIMEOUT_MS })
+const previewFitFallbackIdleTask = createCancellableIdleTask({ timeout: PREVIEW_FIT_FALLBACK_IDLE_TIMEOUT_MS })
+let previewFitEnsureGeneration = 0
 const workspaceAsyncOperationBarrier = createAsyncOperationBarrier()
 
 function currentDevicePixelRatio() {
@@ -311,6 +335,8 @@ const editorLodCanvasReady = ref(false)
 const editorLodDetailCanvas = ref(null)
 const editorLodDetailBounds = shallowRef(null)
 const editorLodDetailCommittedFrame = shallowRef(null)
+const editorLodFallbackAnimationTimestamp = ref(null)
+const editorLodDetailAnimationTimestamp = ref(null)
 const editorLodDetailReady = ref(false)
 const editorLodDetailFresh = ref(false)
 const editorLodRemovalCoverRegions = shallowRef([])
@@ -319,6 +345,7 @@ const editorLodContentRevision = ref(0)
 const editorDevicePixelRatio = ref(currentDevicePixelRatio())
 const editorLodBootstrapNodeIds = shallowRef([])
 const editorLodBootstrapDrawingIds = shallowRef([])
+const editorLodPendingInsertionNodeIds = shallowRef([])
 const editorProgressiveDomActive = ref(false)
 const editorProgressiveDomNodeIds = shallowRef([])
 const editorLodGeometrySession = shallowRef(null)
@@ -340,6 +367,8 @@ const showPreview = ref(false)
 const previewFullscreen = ref(false)
 const previewFullscreenPending = ref(false)
 const previewAutoFit = ref(false)
+const previewAutoFitPending = ref(false)
+const previewModeTransitionPending = computed(() => previewAutoFitPending.value || previewFullscreenPending.value)
 const previewScale = ref(1)
 const previewDisplayMode = ref('dom')
 const previewRenderTarget = ref('dom')
@@ -359,8 +388,12 @@ const previewDomNodesReady = ref(false)
 const previewDomGeometryReady = ref(false)
 const previewDomReady = computed(() => previewDomNodesReady.value && previewDomGeometryReady.value)
 const previewDomMounted = ref(false)
+const previewPresentationReady = ref(false)
+const previewViewportTransitioning = ref(false)
+const previewDomQueryBounds = shallowRef(null)
 const previewLivePlaneGeneration = ref(0)
 const previewLivePlaneReady = ref(true)
+const previewMediaReadinessGate = createPreviewMediaReadinessGate({ afterDomUpdate: nextTick })
 const previewFitCommittedPlanKey = ref('')
 const previewFitCommittedOverlayNodes = shallowRef([])
 const previewFitCommittedOverlayDrawings = shallowRef([])
@@ -465,6 +498,7 @@ const workspacePaperSessions = createWorkspaceSessionCache(MAX_CACHED_WORKSPACES
 let workspaceSessionPersistTimer = 0
 let workspaceSessionPersistenceCapturing = false
 let workspaceSessionPersistenceWarningShown = false
+let workspaceSessionPersistenceDeferredWorkspace = ''
 let workspaceSessionRestoreGeneration = 0
 let customDrawingFileHandle = null
 let pendingVideoUrlEdit = null
@@ -668,6 +702,8 @@ const previewOverlay = ref(null)
 const previewCanvas = ref(null)
 const previewFitCanvas = ref(null)
 const previewEdgeCanvas = ref(null)
+const previewDomStage = ref(null)
+const previewLivePlaneStage = ref(null)
 const textEditor = ref(null)
 const inlineTextComposing = ref(false)
 const editingText = ref(null)
@@ -703,16 +739,18 @@ const previewFitPlan = computed(() => {
     if (previewNodeNeedsLiveDom(node)) liveNodeIds.push(node.id)
   }
   const tail = previewHybridLayerTail(layerEntries.value, liveNodeIds)
-  const overlayNodes = tail.entries
+  const layerSafe = tail.safe
+  const domSafe = layerSafe && previewHybridTailDomSafe(tail.entries)
+  // 混合层级不安全时，兜底 Canvas 绘制完整图纸；最终交互仍由完整 DOM 接管。
+  const overlayEntries = liveNodeIds.length && layerSafe && domSafe ? tail.entries : []
+  const overlayNodes = overlayEntries
     .filter(entry => entry?.kind === 'node' && entry.entity)
     .map(entry => entry.entity)
-  const overlayDrawings = tail.entries
+  const overlayDrawings = overlayEntries
     .filter(entry => entry?.kind === 'drawing' && entry.entity)
     .map(entry => entry.entity)
   const overlayNodeIds = overlayNodes.map(node => node.id)
   const overlayDrawingIds = overlayDrawings.map(drawing => drawing.id)
-  const layerSafe = tail.safe
-  const domSafe = layerSafe && previewHybridTailDomSafe(tail.entries)
   return {
     overlayNodes,
     overlayDrawings,
@@ -779,21 +817,41 @@ const previewLivePlaneActive = computed(() => (
   || previewLivePlaneDrawings.value.length > 0
 ))
 const previewDomUsesLivePlane = computed(() => previewFitUsesDomOverlay.value)
-const previewFitBootstrapSharp = computed(() => previewBitmapIsSharp(
-  previewFitCommittedPixelRatio.value,
-  previewFitPixelRatio.value
+const previewSmallDocument = computed(() => (
+  nodes.value.length <= PREVIEW_DOM_NODE_LIMIT
+  && edges.value.length <= PREVIEW_DOM_EDGE_LIMIT
+  && drawings.value.length <= PREVIEW_DOM_DRAWING_LIMIT
 ))
+const previewViewportCanvasPlanned = computed(() => (
+  showPreview.value
+  && previewRenderTarget.value === 'dom'
+  && !previewFitLayoutRequested.value
+  && previewFitPlan.value.canUseCanvas
+))
+// 大图保留一张完整 Canvas 帧；滚动换代期间显示旧完整帧，不暴露半挂载 DOM。
+const previewFallbackRequired = computed(() => showPreview.value && !previewSmallDocument.value)
+// 高清视口可用时优先完成首屏，整图兜底降为空闲任务，避免两张 Canvas 争抢首帧。
+const previewFitInitialRenderUrgent = computed(() => (
+  previewFallbackRequired.value
+  && !previewFitFrameAvailable.value
+  && (
+    (!previewPresentationReady.value && !previewViewportCanvasPlanned.value)
+    || previewEdgeCanvasFailed.value
+  )
+))
+const previewFitRenderMode = computed(() => (previewFitActive.value || previewFitInitialRenderUrgent.value) ? 'task' : 'idle')
+const previewFitRenderBudgetMs = computed(() => previewFitRenderMode.value === 'task' ? 4 : 2)
 const previewCanvasVisible = computed(() => previewFitVisible.value || (
-  !previewDomReady.value
+  (
+    previewViewportTransitioning.value
+    || !previewDomReady.value
+    || (previewDomEdgeCanvasActive.value && !previewEdgeCanvasVisible.value)
+  )
   && previewFitFrameAvailable.value
-  && previewFitFrameFresh.value
-  && previewFitBootstrapSharp.value
 ))
 const previewDomVisible = computed(() => !previewFitVisible.value && (
-  previewDomReady.value
+  (!previewViewportTransitioning.value && previewDomReady.value)
   || !previewFitFrameAvailable.value
-  || !previewFitFrameFresh.value
-  || !previewFitBootstrapSharp.value
 ))
 const previewFitPresentationScale = computed(() => (
   previewFitVisible.value && previewFitFrameAvailable.value
@@ -813,14 +871,17 @@ const previewFitPixelRatio = computed(() => previewBitmapPixelRatio(previewDevic
 const previewCanvasRenderActive = computed(() => showPreview.value && previewFitMounted.value && (
   previewRenderTarget.value === 'fit'
   || previewFitVisible.value
+  || previewCanvasVisible.value
   || !previewDomReady.value
+  || (previewFallbackRequired.value && (!previewFitFrameAvailable.value || !previewFitFrameFresh.value))
 ))
 const previewFitBitmapPixelBudget = computed(() => previewBitmapPixelBudget({
   fitActive: previewFitLayoutRequested.value || previewFittedVisible.value,
   stageWidth: stageWidth.value,
   stageHeight: stageHeight.value,
   scale: previewFitCanvasScale.value,
-  devicePixelRatio: previewDevicePixelRatio.value
+  devicePixelRatio: previewDevicePixelRatio.value,
+  preservePixelRatio: previewFitLayoutRequested.value || previewFittedVisible.value
 }))
 const previewFitBootstrapTarget = computed(() => previewFrameTarget(previewFitFrameTargetOptions()))
 const previewFitBootstrapCanRenderSharp = computed(() => previewBitmapIsSharp(
@@ -917,11 +978,12 @@ const runtimeCanvasDirtyQueue = createRuntimeCanvasDirtyQueue({
 function runtimeCanvasRenderingActive() {
   return (editorLodActive.value && !editorRenderPaused.value)
     || previewCanvasRenderActive.value
+    || previewDomEdgeCanvasActive.value
     || showMiniMap.value
 }
 
 function previewRuntimeCanvasTracked() {
-  return showPreview.value && previewFitMounted.value
+  return showPreview.value && (previewFitMounted.value || previewDomEdgeCanvasActive.value)
 }
 
 function queueRuntimeCanvasDirtyKey(key) {
@@ -1395,6 +1457,33 @@ function formatCanvasZoom(value) {
   return `${Number(percent.toFixed(digits))}%`
 }
 const selectedCategory = computed(() => selected.value ? typeCategory.get(selected.value.type) || (selected.value.type === 'pencil' ? '基本形状' : '通用组件') : '')
+const BUILT_IN_ANIMATION_OPTIONS = Object.freeze({
+  flowPipe: Object.freeze([{ value: 'flow', label: '流动' }, { value: 'none', label: '无' }]),
+  rotatingFan: Object.freeze([{ value: 'flow', label: '旋转' }, { value: 'none', label: '无' }]),
+  signalLight: Object.freeze([{ value: 'blink', label: '颜色切换' }, { value: 'none', label: '无' }]),
+  waterTank: Object.freeze([{ value: 'flow', label: '水面流动' }, { value: 'none', label: '无' }]),
+  heartbeat: Object.freeze([{ value: 'pulse', label: '心跳' }, { value: 'none', label: '无' }]),
+  particles: Object.freeze([{ value: 'flow', label: '粒子流动' }, { value: 'none', label: '无' }])
+})
+function builtInAnimationOptions(node) {
+  return BUILT_IN_ANIMATION_OPTIONS[node?.type] || BUILT_IN_ANIMATION_OPTIONS.flowPipe
+}
+function normalizeBuiltInAnimationDuration(node = selected.value) {
+  if (!node || node.locked) return
+  const duration = Number(node.animationDuration)
+  node.animationDuration = Math.max(
+    ANIMATION_DURATION_MIN_SECONDS,
+    Math.min(BUILT_IN_ANIMATION_DURATION_MAX_SECONDS, Number.isFinite(duration) ? duration : 1.5)
+  )
+  // LOD canvases cache materialized visual descriptors, so commit the timing
+  // change explicitly instead of waiting for the deferred property refresh.
+  markMiniMapDirty()
+}
+function normalizeWaterTankProgress(node = selected.value) {
+  if (!node || node.type !== 'waterTank' || node.locked) return
+  const progress = Number(node.progressValue)
+  node.progressValue = Math.max(0, Math.min(100, Number.isFinite(progress) ? progress : 0))
+}
 const selectedBindingParameters = computed(() => (
   selectedNodeCount.value === 1 && selected.value
     ? getBindableParameters(selected.value)
@@ -1769,7 +1858,20 @@ function appendNodes(source = []) {
   addRuntimeDataNodes(inserted)
   appendLayerEntries('node', inserted)
   entityLayerAllocator.commit(inserted)
+  retainInsertedEditorLodNodes(inserted)
   return inserted
+}
+
+function retainInsertedEditorLodNodes(source = []) {
+  if (!editorLodActive.value || !editorLodCanvasRendersEntities.value || editorRenderPaused.value) return false
+  const nextIds = new Set(editorLodPendingInsertionNodeIds.value)
+  for (const node of source) {
+    if (node?.id == null || nextIds.size >= EDITOR_LOD_MAX_OVERLAY_NODES) break
+    nextIds.add(node.id)
+  }
+  editorLodPendingInsertionNodeIds.value = [...nextIds]
+  markEditorLodDirty()
+  return true
 }
 
 function appendEdges(source = []) {
@@ -1828,6 +1930,7 @@ function markRuntimeCanvasDirty() {
     if (editorLodActive.value && !editorRenderPaused.value && editorLodCanvas.value) targets.push(editorLodCanvas.value)
     if (editorLodActive.value && !editorRenderPaused.value && editorLodDetailCanvas.value) targets.push(editorLodDetailCanvas.value)
     if (previewCanvasRenderActive.value && previewFitCanvas.value) targets.push(previewFitCanvas.value)
+    if (previewDomEdgeCanvasActive.value && previewEdgeCanvas.value) targets.push(previewEdgeCanvas.value)
     if (showMiniMap.value && miniMapPreview.value) targets.push(miniMapPreview.value)
     if (!targets.length) {
       if (runtimeCanvasRenderingActive()) markRuntimeCanvasDirty()
@@ -1877,6 +1980,13 @@ function markDocumentInput(event) {
     return
   }
   markMiniMapDirty()
+}
+function flushDocumentInputRender() {
+  if (!documentInputRenderTimer) return false
+  clearTimeout(documentInputRenderTimer)
+  documentInputRenderTimer = 0
+  markMiniMapDirty()
+  return true
 }
 function viewportWorldBounds(currentViewport, scale = 1, bufferPixels = DEFAULT_VIEWPORT_OVERSCAN) {
   const safeScale = Math.max(.0001, finiteNumber(scale, 1))
@@ -1941,13 +2051,6 @@ const activeOperationNodeIds = computed(() => {
   if (['moveNodes', 'resizeNodes', 'rotateNodes'].includes(current.type)) return new Set(current.items.map(item => item.id))
   return ['resize', 'rotate'].includes(current.type) && current.id != null ? new Set([current.id]) : EMPTY_NODE_ID_SET
 })
-function nodeMoveInteractionOpacity(nodeId) {
-  return operation.value?.nodeMoveInteractionActive === true
-    && !operation.value?.transientLargeSelection
-    && activeOperationNodeIds.value.has(nodeId)
-    ? NODE_MOVE_INTERACTION_OPACITY
-    : 1
-}
 function deactivateNodeMoveInteraction(op) {
   if (op?.type === 'moveNodes') op.nodeMoveInteractionActive = false
 }
@@ -1988,6 +2091,7 @@ const editorPersistentLodActive = computed(() => editorFullLodActive.value)
 const editorLodActive = computed(() => editorFullLodActive.value || editorEdgeOnlyLodActive.value || editorProgressiveDomActive.value)
 const editorLodCanvasRendersEntities = computed(() => !editorEdgeOnlyLodActive.value || editorProgressiveDomActive.value)
 const editorLodFallbackPlanKey = computed(() => `editor-${editorLodCanvasRendersEntities.value ? 'full' : 'edges'}`)
+// 预览覆盖层挂载后编辑器已不可见，立即暂停其 Canvas，避免与预览首帧争抢主线程。
 const editorRenderPaused = computed(() => showPreview.value)
 
 function cancelEditorProgressiveDomFrame() {
@@ -2082,11 +2186,6 @@ watch(editorPersistentLodActive, (active, previous) => {
   restartEditorProgressiveDomMount()
 }, { flush: 'sync' })
 
-// watch 会在注册时立即读取 getter，必须放在 LOD 响应式状态初始化之后，避免启动阶段触发 TDZ。
-watch(runtimeCanvasRenderingActive, active => {
-  if (!active || !runtimeCanvasDirtyQueue.hasPending()) return
-  markRuntimeCanvasDirty()
-})
 const editorLodDetailPixelRatio = computed(() => resolveEditorLodDetailPixelRatio(editorDevicePixelRatio.value))
 const editorLodDetailOverscan = computed(() => editorLodDetailOverscanPixels({
   viewportWidth: viewport.value.width,
@@ -2122,6 +2221,7 @@ function editorLodDetailBoundsNeedRefresh(bounds) {
 function resetEditorLodDetail() {
   editorLodDetailBounds.value = null
   editorLodDetailCommittedFrame.value = null
+  editorLodDetailAnimationTimestamp.value = null
   editorLodDetailReady.value = false
   editorLodDetailFresh.value = false
   editorLodRemovalCoverRegions.value = []
@@ -2136,6 +2236,7 @@ function cancelEditorLodRendering(reason = 'editor-lod-reset') {
   resetEditorLodRecovery()
   clearEditorLodGeometryVisualState()
   editorLodCanvasReady.value = false
+  editorLodFallbackAnimationTimestamp.value = null
   resetEditorLodDetail()
   editorLodBootstrapNodeIds.value = []
   editorLodBootstrapDrawingIds.value = []
@@ -2265,7 +2366,10 @@ const editorLodOverlayIds = computed(() => editorLodOverlayNodeIds({
   editingTextId: editingText.value?.id,
   editingFormId: editingFormId.value
 }))
-const editorLodOverlayIdSet = computed(() => new Set(editorLodOverlayIds.value))
+const editorLodOverlayIdSet = computed(() => new Set([
+  ...editorLodOverlayIds.value,
+  ...editorLodPendingInsertionNodeIds.value
+]))
 function editorProgressiveDomNodeHidden(nodeId) {
   return editorProgressiveDomActive.value
     && editorLodCanvasRendersEntities.value
@@ -2277,27 +2381,86 @@ const editorRenderedNodes = computed(() => {
   if (!editorLodActive.value || !editorLodCanvasRendersEntities.value) return visibleNodes.value
   const overlayIds = editorLodOverlayIds.value
   const progressiveIds = editorProgressiveDomActive.value ? editorProgressiveDomNodeIds.value : []
+  const pendingInsertionIds = editorLodPendingInsertionNodeIds.value
   const ids = editorLodCanvasReady.value
-    ? [...new Set([...progressiveIds, ...overlayIds])]
-    : [...new Set([...editorLodBootstrapNodeIds.value, ...progressiveIds, ...overlayIds])]
+    ? [...new Set([...progressiveIds, ...overlayIds, ...pendingInsertionIds])]
+    : [...new Set([...editorLodBootstrapNodeIds.value, ...progressiveIds, ...overlayIds, ...pendingInsertionIds])]
   return ids
     .map(id => nodeIndex.value.get(id))
     .filter(Boolean)
     .sort((a, b) => (Number(a.layer) || 0) - (Number(b.layer) || 0))
 })
+function editorLodSignalAnimationTimestamp(node) {
+  if (!editorLodActive.value || node?.type !== 'signalLight') return null
+  const bounds = editorLodDetailCommittedFrame.value?.bounds
+  const centerX = finiteNumber(node.x) + Math.max(.1, finiteNumber(node.w, 1)) / 2
+  const centerY = finiteNumber(node.y) + Math.max(.1, finiteNumber(node.h, 1)) / 2
+  const detailCoversNode = editorLodDetailVisible.value
+    && bounds
+    && centerX >= bounds.x
+    && centerX <= bounds.x + bounds.w
+    && centerY >= bounds.y
+    && centerY <= bounds.y + bounds.h
+  const preferred = detailCoversNode
+    ? editorLodDetailAnimationTimestamp.value
+    : editorLodFallbackAnimationTimestamp.value
+  if (preferred != null && Number.isFinite(Number(preferred))) return Number(preferred)
+  const fallback = editorLodFallbackAnimationTimestamp.value
+  return fallback != null && Number.isFinite(Number(fallback)) ? Number(fallback) : null
+}
+function clippedPreviewDomQueryBounds(bufferPixels = PREVIEW_DOM_RETENTION_OVERSCAN) {
+  const raw = viewportWorldBounds(previewViewport.value, 1, bufferPixels)
+  const left = Math.max(0, Math.min(stageWidth.value, raw.x))
+  const top = Math.max(0, Math.min(stageHeight.value, raw.y))
+  const right = Math.max(left, Math.min(stageWidth.value, raw.x + raw.w))
+  const bottom = Math.max(top, Math.min(stageHeight.value, raw.y + raw.h))
+  return { x: left, y: top, w: Math.max(.1, right - left), h: Math.max(.1, bottom - top) }
+}
+function previewDomQueryBoundsNeedRefresh(bounds) {
+  if (!bounds) return true
+  const visible = clippedPreviewDomQueryBounds(0)
+  const preferred = clippedPreviewDomQueryBounds(PREVIEW_DOM_RETENTION_OVERSCAN)
+  const guard = PREVIEW_DOM_RETENTION_GUARD
+  return (bounds.x > 0 && visible.x < bounds.x + guard)
+    || (bounds.y > 0 && visible.y < bounds.y + guard)
+    || (bounds.x + bounds.w < stageWidth.value && visible.x + visible.w > bounds.x + bounds.w - guard)
+    || (bounds.y + bounds.h < stageHeight.value && visible.y + visible.h > bounds.y + bounds.h - guard)
+    || bounds.w > preferred.w + guard
+    || bounds.h > preferred.h + guard
+}
+function syncPreviewDomQueryBounds(force = false) {
+  if (!showPreview.value || !previewDomMounted.value || previewDomFullDocumentRequested.value) return false
+  if (!force && !previewDomQueryBoundsNeedRefresh(previewDomQueryBounds.value)) return false
+  const next = clippedPreviewDomQueryBounds()
+  if (previewCanvasBoundsMatch(next, previewDomQueryBounds.value)) return false
+  previewDomQueryBounds.value = next
+  return true
+}
+function resetPreviewDomQueryBounds() {
+  previewDomQueryBounds.value = null
+}
 const previewNodeCandidates = computed(() => {
   if (!showPreview.value) return []
   void nodeSpatialRevision.value
-  return nodeSpatialIndex.query(viewportWorldBounds(previewViewport.value, 1, LARGE_DOCUMENT_OVERSCAN), { sort: false })
+  const bounds = previewDomQueryBounds.value || viewportWorldBounds(previewViewport.value, 1, LARGE_DOCUMENT_OVERSCAN)
+  return nodeSpatialIndex.query(bounds, { sort: false })
 })
 const previewVisibleNodes = computed(() => previewNodeCandidates.value)
 const previewDomFullDocumentRequested = computed(() => (
   previewRenderTarget.value === 'dom'
-  && previewFitLayoutRequested.value
-  && (!previewFitCanUseCanvas.value || previewFitCanvasFailed.value)
+  && (
+    previewSmallDocument.value
+    || previewFitCanvasFailed.value
+    || (
+      previewFitLayoutRequested.value
+      && (!previewFitCanUseCanvas.value || previewFitCanvasFailed.value)
+    )
+  )
 ))
 const previewDomNodes = computed(() => {
   if (!showPreview.value || !previewDomMounted.value) return []
+  // 原始尺寸预览由高清视口 Canvas 承担普通视觉；交互尾层由 live plane 保留真实 DOM。
+  if (previewDomEdgeCanvasActive.value) return []
   const source = previewDomFullDocumentRequested.value ? nodes.value : previewVisibleNodes.value
   if (!previewDomUsesLivePlane.value) return source
   const excludedIds = new Set(previewFitExcludedNodeIds.value)
@@ -2325,32 +2488,35 @@ const visibleEdges = computed(() => {
 })
 const previewEdgeCandidates = computed(() => {
   if (!showPreview.value) return []
-  return edgesInBounds(viewportWorldBounds(previewViewport.value, 1, LARGE_DOCUMENT_OVERSCAN))
+  const bounds = previewDomQueryBounds.value || viewportWorldBounds(previewViewport.value, 1, LARGE_DOCUMENT_OVERSCAN)
+  return edgesInBounds(bounds)
 })
 const previewDrawingCandidates = computed(() => {
   if (!showPreview.value) return []
-  return drawingsInBounds(viewportWorldBounds(previewViewport.value, 1, LARGE_DOCUMENT_OVERSCAN))
+  const bounds = previewDomQueryBounds.value || viewportWorldBounds(previewViewport.value, 1, LARGE_DOCUMENT_OVERSCAN)
+  return drawingsInBounds(bounds)
 })
-const previewDomDensity = computed(() => {
-  if (!showPreview.value) return { nodes: false, edges: false, drawings: false }
-  const bounds = viewportWorldBounds(previewViewport.value, 1, LARGE_DOCUMENT_OVERSCAN)
-  void nodeSpatialRevision.value
-  return {
-    nodes: nodeSpatialIndex.query(bounds, { sort: false, limit: PREVIEW_DOM_NODE_LIMIT + 1 }).length > PREVIEW_DOM_NODE_LIMIT,
-    edges: edgesInBounds(bounds, { limit: PREVIEW_DOM_EDGE_LIMIT + 1 }).length > PREVIEW_DOM_EDGE_LIMIT,
-    drawings: drawingsInBounds(bounds, { limit: PREVIEW_DOM_DRAWING_LIMIT + 1 }).length > PREVIEW_DOM_DRAWING_LIMIT
-  }
-})
-const previewDomLimited = computed(() => Object.values(previewDomDensity.value).some(Boolean))
+// 复用原高密连线画布作为原始尺寸/全屏模式的完整高清视口画布。
 const previewDomEdgeCanvasRequested = computed(() => (
-  showPreview.value
+  previewViewportCanvasPlanned.value
   && previewDomMounted.value
-  && previewRenderTarget.value === 'dom'
-  && !previewFitLayoutRequested.value
-  && previewDomDensity.value.edges
 ))
 const previewDomEdgeCanvasActive = computed(() => previewDomEdgeCanvasRequested.value && !previewEdgeCanvasFailed.value)
-function clippedPreviewEdgeCanvasBounds(bufferPixels = PREVIEW_EDGE_CANVAS_OVERSCAN) {
+// watch 注册时会立即读取 getter，必须等它引用的编辑器和预览状态全部初始化完毕。
+watch(runtimeCanvasRenderingActive, active => {
+  if (!active || !runtimeCanvasDirtyQueue.hasPending()) return
+  markRuntimeCanvasDirty()
+})
+function previewEdgeCanvasOverscan() {
+  const visible = viewportWorldBounds(previewViewport.value, 1, 0)
+  return previewViewportOverscan({
+    width: visible.w,
+    height: visible.h,
+    pixelRatio: previewEdgeCanvasPixelRatio.value,
+    preferred: PREVIEW_EDGE_CANVAS_OVERSCAN
+  })
+}
+function clippedPreviewEdgeCanvasBounds(bufferPixels = previewEdgeCanvasOverscan()) {
   const raw = viewportWorldBounds(previewViewport.value, 1, bufferPixels)
   const left = Math.max(0, Math.min(stageWidth.value, raw.x))
   const top = Math.max(0, Math.min(stageHeight.value, raw.y))
@@ -2366,7 +2532,7 @@ function clippedPreviewEdgeCanvasBounds(bufferPixels = PREVIEW_EDGE_CANVAS_OVERS
 function previewEdgeCanvasBoundsNeedRefresh(bounds) {
   if (!bounds) return true
   const visible = clippedPreviewEdgeCanvasBounds(0)
-  const preferred = clippedPreviewEdgeCanvasBounds(PREVIEW_EDGE_CANVAS_OVERSCAN)
+  const preferred = clippedPreviewEdgeCanvasBounds(previewEdgeCanvasOverscan())
   const guard = PREVIEW_EDGE_CANVAS_GUARD
   return (bounds.x > 0 && visible.x < bounds.x + guard)
     || (bounds.y > 0 && visible.y < bounds.y + guard)
@@ -2402,7 +2568,7 @@ function syncPreviewEdgeCanvasBounds(force = false) {
   previewEdgeCanvasBounds.value = nextBounds
   return true
 }
-const previewEdgeCanvasPixelRatio = computed(() => previewBitmapPixelRatio(previewDevicePixelRatio.value))
+const previewEdgeCanvasPixelRatio = computed(() => previewViewportPixelRatio(previewDevicePixelRatio.value))
 const previewEdgeCanvasBitmapBudget = computed(() => {
   const bounds = previewEdgeCanvasBounds.value
   return previewBitmapPixelBudget({
@@ -2410,13 +2576,35 @@ const previewEdgeCanvasBitmapBudget = computed(() => {
     stageWidth: bounds?.w,
     stageHeight: bounds?.h,
     scale: 1,
-    devicePixelRatio: previewDevicePixelRatio.value
+    devicePixelRatio: previewDevicePixelRatio.value,
+    preservePixelRatio: true
   })
 })
 const previewEdgeCanvasPlanKey = computed(() => {
   const bounds = previewEdgeCanvasBounds.value
   if (!bounds) return ''
-  return `preview-edges:${bounds.x}:${bounds.y}:${bounds.w}:${bounds.h}:${edgeSpatialRevision.value}:${previewEdgeCanvasPixelRatio.value}`
+  return `preview-viewport:${bounds.x}:${bounds.y}:${bounds.w}:${bounds.h}:${projectRevision.value}:${nodeSpatialRevision.value}:${edgeSpatialRevision.value}:${drawingSpatialRevision.value}:${previewFitPlan.value.key}:${previewEdgeCanvasPixelRatio.value}`
+})
+const previewEdgeCanvasNodes = computed(() => {
+  const bounds = previewEdgeCanvasBounds.value
+  if (!previewDomEdgeCanvasActive.value || !bounds) return []
+  void nodeSpatialRevision.value
+  return nodeSpatialIndex.query(bounds, { sort: false })
+})
+const previewEdgeCanvasEdges = computed(() => {
+  const bounds = previewEdgeCanvasBounds.value
+  return previewDomEdgeCanvasActive.value && bounds ? edgesInBounds(bounds) : []
+})
+const previewEdgeCanvasDrawings = computed(() => {
+  const bounds = previewEdgeCanvasBounds.value
+  return previewDomEdgeCanvasActive.value && bounds ? drawingsInBounds(bounds) : []
+})
+const previewEdgeCanvasEntities = computed(() => {
+  const nodeIds = new Set(previewEdgeCanvasNodes.value.map(node => node.id))
+  const drawingIds = new Set(previewEdgeCanvasDrawings.value.map(drawing => drawing.id))
+  return layerEntries.value.filter(entry => (
+    entry.kind === 'node' ? nodeIds.has(entry.id) : drawingIds.has(entry.id)
+  ))
 })
 const previewEdgeCanvasFrameStyle = computed(() => {
   const bounds = previewEdgeCanvasCommittedBounds.value || previewEdgeCanvasBounds.value
@@ -2437,10 +2625,7 @@ const previewEdgeCanvasVisible = computed(() => (
 const previewVisibleEdges = computed(() => previewEdgeCandidates.value)
 const previewDomEdges = computed(() => {
   if (!previewDomMounted.value) return []
-  if (previewDomEdgeCanvasActive.value) {
-    if (previewEdgeCanvasVisible.value) return []
-    return previewVisibleEdges.value
-  }
+  if (previewDomEdgeCanvasActive.value) return []
   return previewDomFullDocumentRequested.value ? edges.value : previewVisibleEdges.value
 })
 const editorLodEdgeEntries = computed(() => {
@@ -2607,6 +2792,7 @@ function settleEditorLodGeometrySession(sessionId, session) {
     editorLodDetailFresh.value = false
     editorLodDetailReady.value = false
     editorLodDetailCommittedFrame.value = null
+    editorLodDetailAnimationTimestamp.value = null
   }
   editorLodRemovalCoverRegions.value = []
   editorLodRemovalFallbackReady.value = false
@@ -2630,9 +2816,18 @@ function completeEditorLodGeometryLayer(sessionId, layer, { failed = false } = {
   return false
 }
 
+function syncEditorLodAnimationTimestamp(target, event) {
+  const timestamp = Number(event?.animationTimestamp)
+  if (Number.isFinite(timestamp)) target.value = timestamp
+}
+
 function handleEditorLodRenderComplete(event) {
+  syncEditorLodAnimationTimestamp(editorLodFallbackAnimationTimestamp, event)
   if (event?.kind !== 'full' || event.renderPlanKey !== editorLodFallbackPlanKey.value) return
   editorLodCanvasReady.value = true
+  if (event?.pendingFull !== true && editorLodPendingInsertionNodeIds.value.length) {
+    editorLodPendingInsertionNodeIds.value = []
+  }
   if (!event.pendingFull && editorLodRemovalCoverRegions.value.length) {
     editorLodRemovalFallbackReady.value = true
   }
@@ -2674,6 +2869,7 @@ function patchRemovedEditorLodEntities(payload) {
 }
 
 function handleEditorLodDetailRenderComplete(event) {
+  syncEditorLodAnimationTimestamp(editorLodDetailAnimationTimestamp, event)
   if (event?.kind !== 'full' || event.pendingFull || event.renderPlanKey !== editorLodDetailPlanKey.value) return
   const session = editorLodGeometrySession.value
   if (session?.detailFailed) return
@@ -2707,6 +2903,7 @@ function handleEditorLodDetailRenderError() {
   if (!session) {
     editorLodDetailReady.value = false
     editorLodDetailCommittedFrame.value = null
+    editorLodDetailAnimationTimestamp.value = null
     editorLodRemovalCoverRegions.value = []
     editorLodRemovalFallbackReady.value = false
     queueEditorLodRecovery({ detail: true })
@@ -2752,7 +2949,7 @@ function handleEditorLodGeometryComplete(event) {
 const toolHint = computed(() => ({
   select: '拖动空白区域框选，Ctrl 或 Shift 多点选，Alt 或中键拖动画布，滚轮缩放',
   pencil: '按住并拖动绘制自由曲线',
-  polyline: '继续单击添加节点，双击或 Enter 完成，Esc 取消当前线段',
+  polyline: '单击确定终点并生成等分线段，Esc 取消',
   map: '鹰眼地图已开启', line: '依次点击两个组件创建连线'
 }[activeTool.value]))
 
@@ -2935,6 +3132,7 @@ function finishActiveFieldEdit() {
   return true
 }
 function flushPendingDocumentEdits() {
+  flushDocumentInputRender()
   finishActiveFieldEdit()
   flushPendingVideoUrlEdit()
 }
@@ -3173,15 +3371,16 @@ function edgeMarkerUrl(marker, scope) {
   return marker && marker !== 'none' ? `url(#${scope}-${marker})` : undefined
 }
 const visibleEdgeEntries = computed(() => visibleEdges.value.map(edge => ({ edge, ...edgeEndpoints(edge) })))
-function pointFromEvent(e) {
+function pointFromEvent(e, constrainToStage = true) {
   const rect = canvas.value.getBoundingClientRect()
   const viewportLeft = rect.left + canvas.value.clientLeft
   const viewportTop = rect.top + canvas.value.clientTop
   const renderZoom = projectedCanvasZoom?.canvas === canvas.value ? projectedCanvasZoom.zoom : zoom.value
-  return {
-    x: clampNumber((finiteNumber(e?.clientX, viewportLeft) - viewportLeft + canvas.value.scrollLeft) / renderZoom, 0, stageWidth.value),
-    y: clampNumber((finiteNumber(e?.clientY, viewportTop) - viewportTop + canvas.value.scrollTop) / renderZoom, 0, stageHeight.value)
-  }
+  const x = (finiteNumber(e?.clientX, viewportLeft) - viewportLeft + canvas.value.scrollLeft) / renderZoom
+  const y = (finiteNumber(e?.clientY, viewportTop) - viewportTop + canvas.value.scrollTop) / renderZoom
+  return constrainToStage
+    ? { x: clampNumber(x, 0, stageWidth.value), y: clampNumber(y, 0, stageHeight.value) }
+    : { x, y }
 }
 function editorLodEntityFromEvent(e) {
   if (!editorLodActive.value) return null
@@ -3197,22 +3396,22 @@ function editorLodEntityFromEvent(e) {
   const drawingCandidates = drawingsInBounds(hitBounds)
   return pickTopEditorEntity(nodeCandidates, drawingCandidates, point, padding)
 }
-function polylinePointFromEvent(e) {
-  const point = pointFromEvent(e)
+function polylinePointFromEvent(e, constrainToStage = true) {
+  const point = pointFromEvent(e, constrainToStage)
   if (!snap.value || e?.altKey) return point
-  return {
-    x: clampNumber(Math.round(point.x / gridSize.value) * gridSize.value, 0, stageWidth.value),
-    y: clampNumber(Math.round(point.y / gridSize.value) * gridSize.value, 0, stageHeight.value)
-  }
+  const x = Math.round(point.x / gridSize.value) * gridSize.value
+  const y = Math.round(point.y / gridSize.value) * gridSize.value
+  return constrainToStage
+    ? { x: clampNumber(x, 0, stageWidth.value), y: clampNumber(y, 0, stageHeight.value) }
+    : { x, y }
 }
 const polylineDraftRenderPoints = computed(() => {
   const draft = polylineDraft.value
   if (!draft?.points?.length) return []
-  const points = [...draft.points]
   const hover = draft.hover
-  const last = points.at(-1)
-  if (hover && (!last || Math.hypot(hover.x - last.x, hover.y - last.y) > .1 / zoom.value)) points.push(hover)
-  return points
+  const start = draft.points[0]
+  if (hover && Math.hypot(hover.x - start.x, hover.y - start.y) > .1 / zoom.value) return [draft.points[0], hover]
+  return [start]
 })
 const polylineDraftPointString = computed(() => polylineDraftRenderPoints.value.map(point => `${point.x},${point.y}`).join(' '))
 function movePolylineStartPoint(e) {
@@ -3247,6 +3446,60 @@ function startPolylineStartPointDrag(e) {
   window.addEventListener('pointercancel', endPolylineStartPointDrag)
   window.addEventListener('blur', endPolylineStartPointDrag)
 }
+const selectedPolylinePointPaths = computed(() => (
+  selected.value?.type === 'polyline'
+    ? polylinePointHandlePaths(selected.value)
+    : { all: '', endpoints: '' }
+))
+function startPolylinePointLayerDrag(e, node) {
+  if ((e.button ?? 0) !== 0 || node?.type !== 'polyline') return
+  const localPoint = worldPointToPolylineLocal(node, pointFromEvent(e, false))
+  const pointIndex = nearestPolylinePointIndex(node, localPoint, 12 / Math.max(.0001, zoom.value))
+  if (pointIndex >= 0) startPolylinePointDrag(e, node, pointIndex)
+}
+function startPolylinePointDrag(e, node, pointIndex) {
+  if (
+    (e.button ?? 0) !== 0
+    || activeTool.value !== 'select'
+    || selectedNodeCount.value !== 1
+    || node.type !== 'polyline' || node.locked
+    || operation.value
+  ) return
+  const points = polylineNormalizedPointsToLocal(node)
+  if (!points[pointIndex]) return
+  e.preventDefault()
+  e.stopPropagation()
+  beginPointerOperation(e, {
+    type: 'polylinePoint',
+    id: node.id,
+    pointIndex,
+    frame: {
+      x: node.x,
+      y: node.y,
+      w: node.w,
+      h: node.h,
+      rotate: node.rotate || 0,
+      polylineWidth: node.polylineWidth,
+      polylineStartMarker: node.polylineStartMarker,
+      polylineEndMarker: node.polylineEndMarker
+    },
+    points,
+    historyRecord: captureFieldRecord(node, ['x', 'y', 'w', 'h', 'polylinePoints'])
+  })
+}
+function polylineSegmentCount(node) {
+  return clampPolylineSegmentCount((Array.isArray(node?.polylinePoints) ? node.polylinePoints.length : 0) - 1, 1)
+}
+function setPolylineSegmentCount(node, value) {
+  if (node?.type !== 'polyline' || node.locked) return
+  const nextCount = clampPolylineSegmentCount(value)
+  if (nextCount === polylineSegmentCount(node)) return
+  const geometry = resamplePolylineNodeGeometry(node, nextCount)
+  if (!geometry) return
+  Object.assign(node, geometry)
+  updateNodeSpatialIndex(node)
+  markPreviewCanvasDocumentDirty()
+}
 function addPolylinePoint(e) {
   if ((e.button ?? 0) !== 0 || activeTool.value !== 'polyline' || operation.value) return false
   e.preventDefault()
@@ -3277,15 +3530,10 @@ function addPolylinePoint(e) {
   }
   const draft = polylineDraft.value
   const point = polylinePointFromEvent(e)
-  const last = draft.points.at(-1)
   draft.hover = point
-  if (last && Math.hypot(point.x - last.x, point.y - last.y) <= 2 / zoom.value) return true
-  if (draft.points.length >= MAX_POLYLINE_NODE_POINTS) {
-    notify(`单条线段最多支持 ${MAX_POLYLINE_NODE_POINTS} 个节点`)
-    return true
-  }
-  draft.points.push(point)
-  return true
+  if (Math.hypot(point.x - draft.points[0].x, point.y - draft.points[0].y) <= 2 / zoom.value) return true
+  draft.points = createEvenlySpacedPolylinePoints(draft.points[0], point, DEFAULT_POLYLINE_SEGMENT_COUNT)
+  return finishPolylineDrawing(e)
 }
 function finishPolylineDrawing(e) {
   if (activeTool.value !== 'polyline' || !polylineDraft.value) return false
@@ -3442,6 +3690,7 @@ const editorRenderedDrawingEntries = computed(() => {
 })
 const previewDomDrawings = computed(() => {
   if (!previewDomMounted.value) return []
+  if (previewDomEdgeCanvasActive.value) return []
   const source = (
     previewDomFullDocumentRequested.value ? drawings.value : previewDrawingCandidates.value
   )
@@ -3474,8 +3723,10 @@ watch(editorLodActive, active => {
     return
   }
   resetEditorLodRecovery()
+  editorLodFallbackAnimationTimestamp.value = null
   editorLodBootstrapNodeIds.value = []
   editorLodBootstrapDrawingIds.value = []
+  editorLodPendingInsertionNodeIds.value = []
   clearEditorLodGeometryVisualState()
 }, { flush: 'sync' })
 
@@ -3483,7 +3734,7 @@ function addNode(type, x = 350, y = 220) {
   if (nodes.value.length + drawings.value.length >= MAX_PROJECT_NODES) return notify(`图纸最多支持 ${MAX_PROJECT_NODES} 个组件和线稿`)
   const spec = shapeDefaults[type] || shapeDefaults.rect
   const id = createEntityId('node')
-  let n = { ...baseNodeOptions(), id, layer: reserveEntityLayers(), type, x, y, w: spec[1], h: spec[2], text: spec[0], fill: '#ffffff', stroke: '#16b89a', color: '#28323c', radius: type === 'circle' ? 50 : 6, animation: animationDefaults[type] || 'none', dataKey: animationDefaults[type] ? `demo.${type}.${id}` : '', ...(formNodeDefaults[type] || {}) }
+  let n = { ...baseNodeOptions(), id, layer: reserveEntityLayers(), type, x, y, w: spec[1], h: spec[2], text: spec[0], fill: '#ffffff', stroke: '#16b89a', color: '#28323c', visualPrimaryColor: builtInVisualPrimaryColor(type), radius: type === 'circle' ? 50 : 6, animation: animationDefaults[type] || 'none', dataKey: animationDefaults[type] ? `demo.${type}.${id}` : '', ...(formNodeDefaults[type] || {}) }
   if (type === 'lineShape') { n.fill = '#16b89a'; n.stroke = '#485563'; n.borderWidth = 2 }
   if (type === 'table') n = normalizeTableModel(n)
   if (type === 'select') n.selectOptions = normalizeSelectOptions(n)
@@ -3926,7 +4177,7 @@ function nodeRenderMemo(node) {
       node.fontSize, node.fontWeight, node.fontWeightScale, node.fontStyle, node.textAlign, node.textLayout,
       node.borderVisible, node.borderWidth, node.borderStyle, node.borderDashLength, node.borderDashGap,
       node.animation, node.animationPaused, node.animationDuration, node.animationDirection, node.animationDelay, node.animationEasing, node.animationIterations,
-      node.customEffect, node.motionDistance, node.motionScale, node.motionRotate, node.motionColor,
+      node.customEffect, node.motionDistance, node.motionScale, node.motionRotate, node.motionColor, node.visualPrimaryColor,
       node.imageUrl, node.imageFit, node.videoUrl, node.videoFit, node.videoAutoplay, node.videoControls, node.videoPlaybackRate, node.videoPlayCount, node.videoMuted,
       node.placeholder, node.options, node.signalColor, node.signalColorCount, node.signalColors?.join(','), node.signalOpacity
     ])
@@ -3946,8 +4197,16 @@ function nodeRenderMemo(node) {
   }
   return memo.value
 }
-function markPreviewCanvasDocumentDirty() {
+function previewCanvasOwnsNode(node) {
+  const nodeId = node?.id
+  if (!nodeId) return false
+  return previewFitExcludedNodeIds.value.includes(nodeId)
+    || previewFitCommittedOverlayNodes.value.some(item => item?.id === nodeId)
+}
+function markPreviewCanvasDocumentDirty(changedNode = null) {
   if (!showPreview.value) return
+  // 表单已由实时 DOM 层绘制时，其值变化不会改变下方静态 Canvas。
+  if (changedNode && previewCanvasOwnsNode(changedNode)) return
   invalidatePreviewFitDocument()
   if (!previewCanvasRenderActive.value) return
   clearTimeout(previewCanvasDocumentRenderTimer)
@@ -3958,7 +4217,7 @@ function markPreviewCanvasDocumentDirty() {
   }, 80)
 }
 function handleFormChange(node, event) {
-  markPreviewCanvasDocumentDirty()
+  markPreviewCanvasDocumentDirty(node)
   markDocumentInput()
   if (event?.type === 'button' && event.action === 'message') {
     buttonMessageDialog.value = {
@@ -4671,7 +4930,7 @@ function catalogItemTitle(item) {
 const signalColorDefaults = ['#21c58e', '#ef5350', '#ffc440', '#168eea', '#9c5de5', '#ffffff', '#26323d', '#ff7a45']
 function setSignalColorCount(value) {
   if (!selected.value || selected.value.locked) return
-  const count = Math.max(1, Math.min(8, Number(value) || 2))
+  const count = Math.max(1, Math.min(MAX_SIGNAL_COLORS, Math.trunc(Number(value) || 2)))
   selected.value.signalColorCount = count
   if (!Array.isArray(selected.value.signalColors)) selected.value.signalColors = []
   while (selected.value.signalColors.length < count) selected.value.signalColors.push(signalColorDefaults[selected.value.signalColors.length])
@@ -4688,8 +4947,7 @@ function dropItem(e) {
   }
   const type = e.dataTransfer.getData('shape')
   if (type === 'polyline') {
-    if (polylineDraft.value?.points?.length >= 2) finishPolylineDrawing()
-    else cancelPolylineDrawing()
+    cancelPolylineDrawing()
     setTool('polyline')
     addPolylinePoint(e)
     return
@@ -5446,6 +5704,13 @@ function cancelLargeSelectionCommit() {
 }
 
 function pointerGeometryHistory(op) {
+  if (op.type === 'polylinePoint') {
+    return {
+      kind: 'fields',
+      nodes: op.historyRecord ? [op.historyRecord] : [],
+      drawings: []
+    }
+  }
   if (['moveNodes', 'resizeNodes', 'rotateNodes'].includes(op.type)) {
     return { kind: 'geometry', nodes: geometryHistoryForNodes(op.items), drawings: [] }
   }
@@ -5468,7 +5733,7 @@ function editorLodGeometryPayload(op, geometryRevision, nodeOpacityMultiplier = 
   let activeDrawings = []
   if (['moveNodes', 'resizeNodes', 'rotateNodes'].includes(op?.type)) {
     activeNodes = op.items.map(item => nodeIndex.value.get(item.id)).filter(Boolean)
-  } else if (['resize', 'rotate'].includes(op?.type)) {
+  } else if (['resize', 'rotate', 'polylinePoint'].includes(op?.type)) {
     const node = nodeIndex.value.get(op.id)
     if (node) activeNodes = [node]
   } else if (['moveDrawing', 'resizeDrawing'].includes(op?.type)) {
@@ -5479,11 +5744,7 @@ function editorLodGeometryPayload(op, geometryRevision, nodeOpacityMultiplier = 
     nodes: activeNodes,
     edges: edgesForNodeIds(activeNodes.map(node => node.id), EDITOR_LOD_INTERACTION_EDGE_LIMIT),
     drawings: activeDrawings,
-    nodeOpacityMultiplier: nodeOpacityMultiplier ?? (
-      op?.nodeMoveInteractionActive === true
-        ? NODE_MOVE_INTERACTION_OPACITY
-        : 1
-    ),
+    nodeOpacityMultiplier: nodeOpacityMultiplier ?? 1,
     geometryRevision
   }
 }
@@ -6008,6 +6269,23 @@ function applyPointerMove() {
         if (updateDrawingIndex(drawing, false)) op.drawingSpatialIndexChanged = true
       }
     }
+    return
+  }
+  if (op.type === 'polylinePoint') {
+    const node = nodeIndex.value.get(op.id)
+    if (!node || node.type !== 'polyline' || node.locked || !op.points[op.pointIndex]) return
+    const point = worldPointToPolylineLocal(op.frame, polylinePointFromEvent(e, false))
+    const original = op.points[op.pointIndex]
+    if (Math.hypot(point.x - original.x, point.y - original.y) <= 1e-8) return
+    const points = op.points.map(item => ({ ...item }))
+    points[op.pointIndex] = point
+    const reframed = reframePolylineNode(op.frame, points, { pointIndex: op.pointIndex })
+    if (!reframed) return
+    beginEditorLodGeometry(op)
+    commitPointerOperation(op)
+    Object.assign(node, reframed)
+    if (updateNodeSpatialIndex(node, false)) op.spatialIndexChanged = true
+    requestEditorLodGeometryFrame(op)
     return
   }
   if (op.type === 'moveDrawing') {
@@ -6611,17 +6889,8 @@ function fittedPreviewScale(target = previewCanvas.value, contentRect = null) {
   const scale = Math.min(available.width / stageWidth.value, available.height / stageHeight.value)
   return Number.isFinite(scale) && scale > 0 ? scale : 1
 }
-function previewFitOffsetForScale(scale, target = previewCanvas.value, contentRect = null) {
-  if (!target) return { left: 0, top: 0 }
-  const available = previewAvailableSize(target, contentRect)
-  const rect = target.getBoundingClientRect()
-  const originLeft = rect.left + target.clientLeft + available.paddingLeft
-  const originTop = rect.top + target.clientTop + available.paddingTop
-  const options = { devicePixelRatio: previewDevicePixelRatio.value }
-  return {
-    left: previewPixelAlignedOffset({ ...options, available: available.width, rendered: stageWidth.value * scale, origin: originLeft }),
-    top: previewPixelAlignedOffset({ ...options, available: available.height, rendered: stageHeight.value * scale, origin: originTop })
-  }
+function previewFitOffsetForScale() {
+  return { left: 0, top: 0 }
 }
 function syncPreviewFitOffset(target = previewCanvas.value, contentRect = null) {
   if (!target) return false
@@ -6663,6 +6932,7 @@ function resetPreviewFitPresentation() {
   previewFitCommittedPixelRatio.value = 0
 }
 function resetPreviewDomReadyState() {
+  previewMediaReadinessGate.cancel(previewDomStage.value)
   previewDomNodesReady.value = false
   previewDomGeometryReady.value = false
 }
@@ -6672,12 +6942,19 @@ function resetPreviewDomHandoff({ target = true } = {}) {
   previewDomGeneration.value += 1
   resetPreviewDomReadyState()
 }
+function ensurePreviewDomHandoff() {
+  if (previewDomMounted.value && previewRenderTarget.value === 'dom') return false
+  resetPreviewDomHandoff()
+  return true
+}
 function clearPreviewFitCommittedPlan() {
   previewFitCommittedPlanKey.value = ''
   previewFitCommittedOverlayNodes.value = []
   previewFitCommittedOverlayDrawings.value = []
 }
 function resetPreviewFitCanvasState({ clearFailure = true } = {}) {
+  previewFitEnsureGeneration += 1
+  previewFitFallbackIdleTask.cancel()
   previewFitMounted.value = false
   previewFitCanvasReady.value = false
   previewFitFrameAvailable.value = false
@@ -6697,11 +6974,14 @@ function previewFitRenderPlanMatches(event) {
     && eventDrawingIds.every((id, index) => id === plan.overlayDrawingIds[index])
 }
 function canCommitPreviewFitFrame(event) {
+  if (event?.kind === 'full' && Number(event.pendingImages) !== 0) return false
   if (event?.kind === 'full' && !previewFitRenderPlanMatches(event)) return false
   return previewFrameFreshness.canCommitRender(event)
 }
-function handlePreviewFitRenderRejected() {
+function handlePreviewFitRenderRejected(event) {
   if (!showPreview.value || !previewFitMounted.value) return
+  // 图片 load/error 会合并触发下一次完整渲染；立即重试只会重复生成占位帧。
+  if (Number(event?.pendingImages) > 0) return
   void nextTick(() => {
     if (previewCanvasDocumentRenderTimer) return
     if (!previewFitCanvas.value?.renderState?.pending) requestPreviewFitDocumentRender()
@@ -6714,7 +6994,9 @@ function commitPreviewFitRenderPlan() {
   previewFitCommittedOverlayDrawings.value = plan.overlayDrawings.slice()
 }
 function releasePreviewFitCanvas() {
+  if (previewFallbackRequired.value) return false
   resetPreviewFitCanvasState({ clearFailure: false })
+  return true
 }
 function previewCanvasBoundsMatch(left, right) {
   return Boolean(left && right)
@@ -6730,20 +7012,25 @@ function previewEdgeCanvasFramePixelRatio(event) {
   )
 }
 function previewEdgeCanvasFrameMatchesRequest(event) {
-  return event?.kind === 'full'
+  return ['full', 'runtime'].includes(event?.kind)
     && previewDomEdgeCanvasActive.value
     && event.renderPlanKey === previewEdgeCanvasPlanKey.value
     && previewCanvasBoundsMatch(event.viewBox, previewEdgeCanvasBounds.value)
 }
 function canCommitPreviewEdgeCanvasFrame(event) {
-  return previewEdgeCanvasFrameMatchesRequest(event)
-    && previewBitmapIsSharp(
-      previewEdgeCanvasFramePixelRatio(event),
-      previewEdgeCanvasPixelRatio.value
-    )
+  if (!previewEdgeCanvasFrameMatchesRequest(event)) return false
+  if (!previewBitmapIsSharp(
+    previewEdgeCanvasFramePixelRatio(event),
+    previewEdgeCanvasPixelRatio.value
+  )) return false
+  if (event.kind === 'full') return true
+  return previewEdgeCanvasReady.value
+    && event.pendingFull !== true
+    && event.renderPlanKey === previewEdgeCanvasCommittedPlanKey.value
+    && previewCanvasBoundsMatch(event.viewBox, previewEdgeCanvasCommittedBounds.value)
 }
 function handlePreviewEdgeCanvasRenderRejected(event) {
-  if (!previewEdgeCanvasFrameMatchesRequest(event)) return
+  if (event?.kind !== 'full' || !previewEdgeCanvasFrameMatchesRequest(event)) return
   previewEdgeCanvasReady.value = false
   if (!previewBitmapIsSharp(
     previewEdgeCanvasFramePixelRatio(event),
@@ -6752,6 +7039,7 @@ function handlePreviewEdgeCanvasRenderRejected(event) {
 }
 function handlePreviewEdgeCanvasRenderComplete(event) {
   if (!previewEdgeCanvasFrameMatchesRequest(event)) return
+  if (event.kind === 'runtime') return
   const renderedPixelRatio = previewEdgeCanvasFramePixelRatio(event)
   if (!previewBitmapIsSharp(renderedPixelRatio, previewEdgeCanvasPixelRatio.value)) {
     handlePreviewEdgeCanvasRenderError()
@@ -6762,6 +7050,7 @@ function handlePreviewEdgeCanvasRenderComplete(event) {
   previewEdgeCanvasCommittedPixelRatio.value = renderedPixelRatio
   previewEdgeCanvasCommittedPlanKey.value = event.renderPlanKey
   previewEdgeCanvasReady.value = true
+  finishPreviewDomHandoff()
 }
 function handlePreviewEdgeCanvasRenderError() {
   previewEdgeCanvasReady.value = false
@@ -6769,14 +7058,37 @@ function handlePreviewEdgeCanvasRenderError() {
   previewEdgeCanvasCommittedPixelRatio.value = 0
   previewEdgeCanvasCommittedPlanKey.value = ''
   previewEdgeCanvasFailed.value = true
+  previewDomGeneration.value += 1
+  resetPreviewDomReadyState()
+  startPreviewFitCanvasFallback()
 }
 function handlePreviewDomRenderStart(event) {
   if (event?.generation !== previewDomGeneration.value) return
+  previewMediaReadinessGate.cancel(previewDomStage.value)
   previewDomNodesReady.value = false
 }
 function handlePreviewGeometryRenderStart(event) {
   if (event?.generation !== previewDomGeneration.value) return
   previewDomGeometryReady.value = false
+}
+function resumeVisiblePreviewAnimationClocks() {
+  if (!showPreview.value || !previewPresentationReady.value) return false
+  let resumed = false
+  if (previewCanvasVisible.value) {
+    resumed = previewFitCanvas.value?.resumeCommittedAnimationClock?.() === true || resumed
+  }
+  if (previewEdgeCanvasVisible.value) {
+    resumed = previewEdgeCanvas.value?.resumeCommittedAnimationClock?.() === true || resumed
+  }
+  return resumed
+}
+function presentPreparedPreview() {
+  if (previewPresentationReady.value) return
+  // 先保留编辑器完整画面，预览节点和几何都提交后再在同一响应式批次切换。
+  pauseEditorLodRendering()
+  clearEditorProgressiveDomMount()
+  previewPresentationReady.value = true
+  resumeWorkspaceSessionPersistenceAfterPreview()
 }
 function finishPreviewDomHandoff() {
   if (
@@ -6784,14 +7096,36 @@ function finishPreviewDomHandoff() {
     || !previewDomMounted.value
     || !previewDomReady.value
     || previewRenderTarget.value !== 'dom'
+    || (previewLivePlaneActive.value && !previewLivePlaneReady.value)
+    || (previewDomEdgeCanvasActive.value && !previewEdgeCanvasVisible.value)
   ) return
+  // 高清视口已经覆盖当前窗口时不等待整图兜底；兜底继续在空闲时生成，供快速滚动换帧使用。
+  // 视口 Canvas 不可用时仍等待整图兜底或完整 DOM，避免以漏绘换取首屏速度。
+  if (
+    previewFallbackRequired.value
+    && !previewDomFullDocumentRequested.value
+    && !previewFitFrameAvailable.value
+    && !previewEdgeCanvasVisible.value
+  ) return
+  previewViewportTransitioning.value = false
   previewDisplayMode.value = previewFitLayoutRequested.value ? 'dom-fit' : 'dom'
-  releasePreviewFitCanvas()
+  presentPreparedPreview()
+  if (previewEdgeCanvasVisible.value) schedulePreviewFitCanvasFallback()
+  // 原始尺寸视口滚动期间保留低清整图作瞬时底图；高清视口帧提交后会覆盖它。
+  if (!previewDomEdgeCanvasActive.value) releasePreviewFitCanvas()
   if (!previewFitLayoutRequested.value) void nextTick(restorePreviewScroll)
 }
-function handlePreviewDomRenderComplete(event) {
+async function handlePreviewDomRenderComplete(event) {
   if (event?.generation !== previewDomGeneration.value) return
   if (event?.count !== previewDomNodes.value.length) return
+  await nextTick()
+  if (event?.generation !== previewDomGeneration.value || event?.count !== previewDomNodes.value.length) return
+  const mountedCount = previewDomStage.value?.querySelectorAll('.preview-node').length ?? 0
+  if (mountedCount !== event.count) return
+  const mediaSettled = await previewMediaReadinessGate.wait(previewDomStage.value)
+  if (!mediaSettled) return
+  if (event?.generation !== previewDomGeneration.value || event?.count !== previewDomNodes.value.length) return
+  if ((previewDomStage.value?.querySelectorAll('.preview-node').length ?? 0) !== event.count) return
   previewDomNodesReady.value = true
   finishPreviewDomHandoff()
 }
@@ -6802,14 +7136,29 @@ function handlePreviewGeometryRenderComplete(event) {
   previewDomGeometryReady.value = true
   finishPreviewDomHandoff()
 }
-function handlePreviewLivePlaneRenderComplete(event) {
+function handlePreviewLivePlaneRenderStart(event) {
+  if (event?.generation !== previewLivePlaneGeneration.value) return
+  previewMediaReadinessGate.cancel(previewLivePlaneStage.value)
+  previewLivePlaneReady.value = false
+}
+async function handlePreviewLivePlaneRenderComplete(event) {
   if (event?.generation !== previewLivePlaneGeneration.value) return
   if (event?.count !== previewLivePlaneNodes.value.length) return
+  await nextTick()
+  if (event?.generation !== previewLivePlaneGeneration.value || event?.count !== previewLivePlaneNodes.value.length) return
+  const mountedCount = previewLivePlaneStage.value?.querySelectorAll('.preview-node').length ?? 0
+  if (mountedCount !== event.count) return
+  const mediaSettled = await previewMediaReadinessGate.wait(previewLivePlaneStage.value)
+  if (!mediaSettled) return
+  if (event?.generation !== previewLivePlaneGeneration.value || event?.count !== previewLivePlaneNodes.value.length) return
+  if ((previewLivePlaneStage.value?.querySelectorAll('.preview-node').length ?? 0) !== event.count) return
   previewLivePlaneReady.value = true
   if (previewRenderTarget.value === 'fit') showPreviewFitFrame({ resetScroll: false })
+  else finishPreviewDomHandoff()
 }
 function invalidatePreviewViewportSchedule() {
   previewViewportScheduler?.invalidate()
+  previewViewportTransitioning.value = false
 }
 function updatePreviewViewport(source = null) {
   const nextDevicePixelRatio = currentDevicePixelRatio()
@@ -6824,6 +7173,10 @@ function updatePreviewViewport(source = null) {
     && previewViewport.value.left === scrollTarget.scrollLeft
     && previewViewport.value.top === scrollTarget.scrollTop
   ) return
+  // 滚动事件先于下一次空间查询到达；同一任务内立即切到完整旧帧，避免浏览器先绘制空区。
+  if (scrollTarget && previewRenderTarget.value === 'dom' && previewFitFrameAvailable.value) {
+    previewViewportTransitioning.value = true
+  }
   schedulePreviewViewport({
     contentRect,
     scroll: source?.scroll,
@@ -6843,7 +7196,11 @@ function schedulePreviewViewport(update) {
 }
 function flushPreviewViewport({ contentRect, scroll, refreshFit }) {
   const target = previewCanvas.value
-  if (!target) return
+  if (!target) {
+    previewViewportTransitioning.value = false
+    return
+  }
+  const generationBefore = previewDomGeneration.value
   if (previewFitLayoutRequested.value) {
     previewFitScale.value = fittedPreviewScale(target, contentRect)
     syncPreviewFitOffset(target, contentRect)
@@ -6859,6 +7216,10 @@ function flushPreviewViewport({ contentRect, scroll, refreshFit }) {
   }
   if (previewDomEdgeCanvasActive.value) syncPreviewEdgeCanvasBounds()
   if (scroll) target.scrollTo(scroll)
+  // 仍在原保留区内时无需重挂 DOM，当前完整层可在本帧继续显示。
+  if (previewViewportTransitioning.value && previewDomGeneration.value === generationBefore) {
+    previewViewportTransitioning.value = false
+  }
   if (refreshFit && previewFitLayoutRequested.value && previewFitCanUseCanvas.value) {
     const scale = previewFitScale.value
     if (previewFitFrameAvailable.value) showPreviewFitFrame({ resetScroll: false })
@@ -6885,8 +7246,35 @@ function commitPreviewViewport(left, top, target = previewCanvas.value, contentR
 function previewCanvasHasFrame() {
   return previewFitCanvas.value?.getCanvasElement?.()?.dataset?.renderReady === 'true'
 }
+function previewFitFallbackCanMount() {
+  return showPreview.value && previewFallbackRequired.value && !previewFitMounted.value
+}
+function schedulePreviewFitCanvasFallback() {
+  if (
+    !previewFitFallbackCanMount()
+    || !previewPresentationReady.value
+    || !previewEdgeCanvasVisible.value
+  ) return false
+  if (previewFitFallbackIdleTask.pending) return true
+  return previewFitFallbackIdleTask.schedule(() => {
+    if (
+      !previewFitFallbackCanMount()
+      || !previewPresentationReady.value
+      || !previewEdgeCanvasVisible.value
+    ) return
+    void ensurePreviewFitCanvas({ target: false })
+  })
+}
+function startPreviewFitCanvasFallback() {
+  previewFitFallbackIdleTask.cancel()
+  if (!showPreview.value || !previewFallbackRequired.value) return false
+  void ensurePreviewFitCanvas({ target: false })
+  return true
+}
 async function ensurePreviewFitCanvas({ scale = null, target = true } = {}) {
+  previewFitFallbackIdleTask.cancel()
   if (!showPreview.value) return false
+  const ensureGeneration = previewFitEnsureGeneration
   if (target && !previewFitCanUseCanvas.value) {
     resetPreviewDomHandoff()
     return false
@@ -6899,7 +7287,6 @@ async function ensurePreviewFitCanvas({ scale = null, target = true } = {}) {
   previewFitScale.value = Number.isFinite(requestedScale) && requestedScale > 0
     ? requestedScale
     : fittedPreviewScale(previewCanvas.value)
-  if (!target && !previewFitMounted.value && !previewFitBootstrapCanRenderSharp.value) return false
   const targetEpochBefore = previewFrameFreshness.targetState().targetEpoch
   const mountedNow = !previewFitMounted.value
   if (mountedNow) {
@@ -6909,6 +7296,11 @@ async function ensurePreviewFitCanvas({ scale = null, target = true } = {}) {
     invalidatePreviewFitDocument()
   }
   await nextTick()
+  if (
+    !showPreview.value
+    || !previewFitMounted.value
+    || ensureGeneration !== previewFitEnsureGeneration
+  ) return false
   if (previewCanvasHasFrame()) {
     previewFitCanvasReady.value = true
     previewFitFrameAvailable.value = true
@@ -6934,6 +7326,7 @@ function showPreviewFitFrame({ resetScroll = true } = {}) {
   previewDisplayMode.value = 'fit'
   previewDomMounted.value = false
   resetPreviewDomReadyState()
+  presentPreparedPreview()
   if (resetScroll && (previewCanvas.value?.scrollLeft || previewCanvas.value?.scrollTop)) {
     updatePreviewViewport({ scroll: { left: 0, top: 0 } })
   }
@@ -6942,10 +7335,12 @@ function showPreviewFitFrame({ resetScroll = true } = {}) {
 function handlePreviewFitRenderComplete(event) {
   if (!['full', 'runtime'].includes(event?.kind)) return
   if (event.kind === 'full') {
-    if (!previewBitmapIsSharp(
+    const frameIsSharp = previewBitmapIsSharp(
       Math.min(finiteNumber(event.pixelRatioX, 0), finiteNumber(event.pixelRatioY, 0)),
       previewFitPixelRatio.value
-    )) return handlePreviewFitRenderError()
+    )
+    // 原始尺寸仅把低分辨率整图作为换代兜底；自适应最终画面仍必须达到清晰度门槛。
+    if (!frameIsSharp && previewRenderTarget.value === 'fit') return handlePreviewFitRenderError()
     if (!previewFitRenderPlanMatches(event)) {
       invalidatePreviewFitDocument()
       handlePreviewFitRenderRejected()
@@ -6961,6 +7356,8 @@ function handlePreviewFitRenderComplete(event) {
     previewFitFrameAvailable.value = true
     commitPreviewFitRenderPlan()
     commitPreviewFitPresentation(event)
+    // 原始尺寸模式也依赖这张完整帧完成首次交接，避免 DOM 先完成后立即滚动产生空白。
+    if (previewRenderTarget.value === 'dom') finishPreviewDomHandoff()
   }
   if (previewRenderTarget.value === 'fit') showPreviewFitFrame()
   else if (event.kind === 'full' && previewAutoFit.value && !previewFullscreen.value && previewFitCanUseCanvas.value) {
@@ -6968,15 +7365,30 @@ function handlePreviewFitRenderComplete(event) {
     showPreviewFitFrame({ resetScroll: false })
   }
 }
-function handlePreviewFitRenderError() {
+function handlePreviewFitRenderError(event = null) {
+  const retainsCommittedFrame = previewFitFrameAvailable.value
+    && event?.preservesVisibleFrame === true
   previewFitCanvasReady.value = false
+  invalidatePreviewFitDocument()
+  if (retainsCommittedFrame) {
+    // 私有面失败或提交已回滚时继续展示上一张权威帧，只在后台重试新帧。
+    previewFitCanvasFailed.value = false
+    void nextTick(() => {
+      if (!showPreview.value || !previewFitMounted.value || previewFitCanvas.value?.renderState?.pending) return
+      requestPreviewFitDocumentRender()
+    })
+    return
+  }
   previewFitFrameAvailable.value = false
   previewFitCanvasFailed.value = true
   resetPreviewFitPresentation()
-  invalidatePreviewFitDocument()
   if (!showPreview.value || previewRenderTarget.value !== 'fit') return
   resetPreviewDomHandoff()
-  previewDisplayMode.value = 'dom'
+  if (!retainsCommittedFrame) {
+    // Context 丢失时画布本身不可再作为兜底，先露出完整编辑画面，完整 DOM 就绪后再原子呈现。
+    previewDisplayMode.value = 'dom'
+    previewPresentationReady.value = false
+  }
 }
 function rememberPreviewScroll() {
   if (!previewCanvas.value || previewScrollBeforeFit) return
@@ -6994,15 +7406,18 @@ function restorePreviewScroll() {
 function fullscreenElement() {
   return document.fullscreenElement || document.webkitFullscreenElement || null
 }
+function previewFullscreenTarget() {
+  return document.documentElement
+}
 function handleFullscreenChange() {
   const wasFullscreen = previewFullscreen.value
-  const isFullscreen = fullscreenElement() === previewOverlay.value
+  const isFullscreen = fullscreenElement() === previewFullscreenTarget()
   if (wasFullscreen === isFullscreen) return
   invalidatePreviewViewportSchedule()
   if (isFullscreen) {
     previewScale.value = 1
     previewFullscreen.value = true
-    resetPreviewDomHandoff()
+    ensurePreviewDomHandoff()
     updatePreviewViewport({ scroll: { left: 0, top: 0 }, waitForContentRect: true })
     return
   }
@@ -7013,19 +7428,19 @@ function handleFullscreenChange() {
     if (previewFitCanUseCanvas.value) {
       updatePreviewViewport({ scroll: { left: 0, top: 0 }, refreshFit: true, waitForContentRect: true })
     } else {
-      resetPreviewDomHandoff()
+      ensurePreviewDomHandoff()
       updatePreviewViewport({ scroll: { left: 0, top: 0 }, waitForContentRect: true })
     }
     return
   }
   const position = previewScrollBeforeFullscreen || { left: 0, top: 0 }
   previewScrollBeforeFullscreen = null
-  resetPreviewDomHandoff()
+  ensurePreviewDomHandoff()
   updatePreviewViewport({ scroll: position, waitForContentRect: true })
 }
 function reconcilePreviewFullscreenState() {
   if (!showPreview.value || previewFullscreenPending.value) return
-  const isFullscreen = fullscreenElement() === previewOverlay.value
+  const isFullscreen = fullscreenElement() === previewFullscreenTarget()
   if (previewFullscreen.value !== isFullscreen) handleFullscreenChange()
 }
 function handlePreviewWindowResize(event) {
@@ -7033,29 +7448,34 @@ function handlePreviewWindowResize(event) {
   updatePreviewViewport(event)
 }
 async function togglePreviewAutoFit() {
-  if (previewFullscreenPending.value) return
-  const enable = !previewAutoFit.value
-  if (enable) {
-    rememberPreviewScroll()
-    previewFitScale.value = fittedPreviewScale()
-    previewAutoFit.value = true
-    syncPreviewFitOffset()
-    if (previewFitCanUseCanvas.value) {
-      if (await ensurePreviewFitCanvas()) showPreviewFitFrame()
-    } else resetPreviewDomHandoff()
-    return
+  if (previewModeTransitionPending.value) return
+  previewAutoFitPending.value = true
+  try {
+    const enable = !previewAutoFit.value
+    if (enable) {
+      rememberPreviewScroll()
+      previewFitScale.value = fittedPreviewScale()
+      previewAutoFit.value = true
+      syncPreviewFitOffset()
+      if (previewFitCanUseCanvas.value) {
+        if (await ensurePreviewFitCanvas()) showPreviewFitFrame()
+      } else resetPreviewDomHandoff()
+      return
+    }
+    const position = previewScrollBeforeFit || { left: 0, top: 0 }
+    previewAutoFit.value = false
+    previewFitOffset.value = { left: 0, top: 0 }
+    resetPreviewDomHandoff()
+    commitPreviewViewport(position.left, position.top)
+    previewScale.value = 1
+    await nextTick()
+  } finally {
+    previewAutoFitPending.value = false
   }
-  const position = previewScrollBeforeFit || { left: 0, top: 0 }
-  previewAutoFit.value = false
-  previewFitOffset.value = { left: 0, top: 0 }
-  resetPreviewDomHandoff()
-  commitPreviewViewport(position.left, position.top)
-  previewScale.value = 1
-  await nextTick()
 }
 async function enterPreviewFullscreen() {
-  if (!showPreview.value || previewFullscreenPending.value) return
-  const target = previewOverlay.value
+  if (!showPreview.value || previewModeTransitionPending.value) return
+  const target = previewFullscreenTarget()
   const standardRequest = target?.requestFullscreen
   const legacyRequest = target?.webkitRequestFullscreen
   if (!standardRequest && !legacyRequest) return notify('当前浏览器不支持全屏预览')
@@ -7065,7 +7485,7 @@ async function enterPreviewFullscreen() {
   }
   previewFullscreenPending.value = true
   try {
-    if (standardRequest) await standardRequest.call(target, { navigationUI: 'hide' })
+    if (standardRequest) await standardRequest.call(target)
     else await legacyRequest.call(target)
     if (fullscreenElement() !== target) throw new Error('浏览器未进入全屏模式')
     handleFullscreenChange()
@@ -7077,8 +7497,8 @@ async function enterPreviewFullscreen() {
   }
 }
 async function exitPreviewFullscreen() {
-  if (previewFullscreenPending.value) return
-  if (fullscreenElement() !== previewOverlay.value) {
+  if (previewModeTransitionPending.value) return
+  if (fullscreenElement() !== previewFullscreenTarget()) {
     handleFullscreenChange()
     return
   }
@@ -7095,16 +7515,19 @@ async function exitPreviewFullscreen() {
   }
 }
 function togglePreviewFullscreen() {
-  if (previewFullscreenPending.value) return
+  if (previewModeTransitionPending.value) return
   return previewFullscreen.value ? exitPreviewFullscreen() : enterPreviewFullscreen()
 }
 async function closePreview() {
-  if (fullscreenElement() === previewOverlay.value) await exitPreviewFullscreen()
+  if (fullscreenElement() === previewFullscreenTarget()) await exitPreviewFullscreen()
   invalidatePreviewViewportSchedule()
+  previewMediaReadinessGate.cancelAll()
   closeButtonMessage()
   closeTableCellViewer()
   restartEditorProgressiveDomMount()
   showPreview.value = false
+  previewPresentationReady.value = false
+  previewViewportTransitioning.value = false
   previewFullscreen.value = false
   previewDisplayMode.value = 'dom'
   previewDomMounted.value = false
@@ -7112,26 +7535,31 @@ async function closePreview() {
   resetPreviewEdgeCanvas({ clearFailure: true })
   resetPreviewFitCanvasState()
   resetPreviewDomReadyState()
+  resetPreviewDomQueryBounds()
   clearTimeout(previewCanvasDocumentRenderTimer)
   previewCanvasDocumentRenderTimer = 0
   previewScrollBeforeFit = null
   previewScrollBeforeFullscreen = null
   previewResizeObserver?.disconnect()
+  resumeWorkspaceSessionPersistenceAfterPreview()
   await nextTick()
   markEditorLodDirty()
 }
 async function openPreview() {
   if (operation.value) pointerUp()
-  pauseEditorLodRendering()
-  clearEditorProgressiveDomMount()
+  flushPendingDocumentEdits()
+  deferWorkspaceSessionPersistenceForPreview()
   invalidatePreviewViewportSchedule()
   resetFormPreviewState()
   closeButtonMessage()
   closeTableCellViewer()
   previewFullscreen.value = false
+  previewPresentationReady.value = false
+  previewViewportTransitioning.value = false
   previewDisplayMode.value = 'dom'
   resetPreviewEdgeCanvas({ clearFailure: true })
   resetPreviewFitCanvasState()
+  resetPreviewDomQueryBounds()
   resetPreviewDomHandoff()
   previewScale.value = 1
   previewScrollBeforeFit = null
@@ -7142,22 +7570,47 @@ async function openPreview() {
   if (previewCanvas.value) previewResizeObserver?.observe(previewCanvas.value)
   previewCanvas.value?.scrollTo({ left: 0, top: 0 })
   commitPreviewViewport(0, 0)
+  if (syncPreviewDomQueryBounds(true)) {
+    previewDomGeneration.value += 1
+    resetPreviewDomReadyState()
+  }
   if (previewDomEdgeCanvasActive.value) syncPreviewEdgeCanvasBounds(true)
   if (previewAutoFit.value) {
     previewFitScale.value = fittedPreviewScale(previewCanvas.value)
     syncPreviewFitOffset(previewCanvas.value)
     if (await ensurePreviewFitCanvas()) showPreviewFitFrame()
-  } else if (previewDomLimited.value) await ensurePreviewFitCanvas({ target: false })
+  } else if (previewFallbackRequired.value && !previewViewportCanvasPlanned.value) {
+    await ensurePreviewFitCanvas({ target: false })
+  }
 }
 
 watch([stageWidth, stageHeight, previewAutoFit], () => {
-  if (showPreview.value) updatePreviewViewport()
+  if (!showPreview.value) return
+  updatePreviewViewport()
+  if (syncPreviewDomQueryBounds(true)) {
+    previewDomGeneration.value += 1
+    resetPreviewDomReadyState()
+  }
 })
-watch([previewViewport, nodeSpatialRevision, edgeSpatialRevision, drawingSpatialRevision], () => {
+watch(previewViewport, () => {
+  if (!showPreview.value || !previewDomMounted.value) return
+  if (syncPreviewDomQueryBounds()) {
+    previewDomGeneration.value += 1
+    resetPreviewDomReadyState()
+  }
+  if (previewDomEdgeCanvasActive.value) syncPreviewEdgeCanvasBounds()
+}, { flush: 'sync' })
+watch([nodeSpatialRevision, edgeSpatialRevision, drawingSpatialRevision], () => {
   if (!showPreview.value || !previewDomMounted.value) return
   previewDomGeneration.value += 1
   resetPreviewDomReadyState()
-  if (previewDomEdgeCanvasActive.value) syncPreviewEdgeCanvasBounds()
+}, { flush: 'sync' })
+watch(previewDomFullDocumentRequested, requested => {
+  if (!showPreview.value || !previewDomMounted.value) return
+  if (requested) resetPreviewDomQueryBounds()
+  else syncPreviewDomQueryBounds(true)
+  previewDomGeneration.value += 1
+  resetPreviewDomReadyState()
 }, { flush: 'sync' })
 watch(previewDomEdgeCanvasRequested, requested => {
   if (!requested) {
@@ -7171,12 +7624,17 @@ watch(previewDomEdgeCanvasRequested, requested => {
   syncPreviewEdgeCanvasBounds(true)
 }, { flush: 'post' })
 watch(previewLivePlaneKey, key => {
+  previewMediaReadinessGate.cancel(previewLivePlaneStage.value)
   previewLivePlaneGeneration.value += 1
   previewLivePlaneReady.value = !key
 }, { flush: 'sync' })
-watch(previewDomLimited, limited => {
-  if (!limited || !showPreview.value) return
-  void ensurePreviewFitCanvas({ bootstrap: false, target: false })
+watch([previewFallbackRequired, previewViewportCanvasPlanned], ([required, viewportCanvasPlanned]) => {
+  if (!required) {
+    previewFitFallbackIdleTask.cancel()
+    return
+  }
+  if (!showPreview.value || viewportCanvasPlanned) return
+  startPreviewFitCanvasFallback()
 })
 watch([previewFitExcludedNodeIds, previewFitExcludedDrawingIds], () => {
   if (!showPreview.value || !previewFitMounted.value) return
@@ -7190,6 +7648,11 @@ watch(previewFitCanUseCanvas, canUse => {
   resetPreviewDomHandoff()
   previewDisplayMode.value = 'dom'
 })
+watch(
+  [previewPresentationReady, previewCanvasVisible, previewEdgeCanvasVisible],
+  resumeVisiblePreviewAnimationClocks,
+  { flush: 'post' }
+)
 
 // 结构页只渲染当前滚动窗口；切换页签或重新展开属性栏时同步真实容器高度。
 watch([rightTab, rightOpen], async ([tab, open]) => {
@@ -7761,6 +8224,7 @@ function cacheWorkspacePaperSessions(workspace, cached) {
   workspacePaperSessions.set(workspace, cached)
 }
 async function persistWorkspacePaperSessions(workspace = workspaceId.value, cached = null) {
+  if (workspaceSessionPersistenceIsDeferred(workspace)) return false
   let current = cached
   if (!current && workspace === workspaceId.value) {
     workspaceSessionPersistenceCapturing = true
@@ -7779,7 +8243,10 @@ async function persistWorkspacePaperSessions(workspace = workspaceId.value, cach
     ? workspaceSessionSnapshot(workspace, current, false)
     : null
   const result = await workspaceSessionSaveQueue.save(workspace, snapshot, fallbackSnapshot, {
-    isFresh: () => workspacePaperSessions.isSaveCurrent(workspace, saveVersion)
+    isFresh: () => (
+      workspacePaperSessions.isSaveCurrent(workspace, saveVersion)
+      && !workspaceSessionPersistenceIsDeferred(workspace)
+    )
   })
   if (result.stale) return false
   if (!result.ok) {
@@ -7797,8 +8264,28 @@ function cancelScheduledWorkspaceSessionPersistence() {
   workspaceSessionPersistTimer = 0
   workspaceSessionIdleTask.cancel()
 }
+function workspaceSessionPersistenceIsDeferred(workspace) {
+  return workspaceSessionPersistenceDeferredWorkspace === workspace
+}
+function deferWorkspaceSessionPersistenceForPreview() {
+  workspaceSessionPersistenceDeferredWorkspace = workspaceId.value
+  cancelScheduledWorkspaceSessionPersistence()
+}
+function resumeWorkspaceSessionPersistenceAfterPreview(delay = WORKSPACE_SESSION_RETRY_DELAY_MS) {
+  const deferredWorkspace = workspaceSessionPersistenceDeferredWorkspace
+  if (!deferredWorkspace) return false
+  workspaceSessionPersistenceDeferredWorkspace = ''
+  if (deferredWorkspace !== workspaceId.value || !workspacePaperSessions.isDirty(deferredWorkspace)) return false
+  return scheduleWorkspaceSessionPersistence(delay, false)
+}
 function workspaceSessionPersistenceBlocked() {
-  if (operation.value || interactionCommitBarrier.state.active || fileOperationPending.value || workspaceSwitchPending.value) return true
+  if (
+    workspaceSessionPersistenceIsDeferred(workspaceId.value)
+    || operation.value
+    || interactionCommitBarrier.state.active
+    || fileOperationPending.value
+    || workspaceSwitchPending.value
+  ) return true
   try {
     return globalThis.navigator?.scheduling?.isInputPending?.({ includeContinuous: true }) === true
   } catch {
@@ -7813,11 +8300,13 @@ function workspaceSessionHasIdleBudget(deadline) {
     return false
   }
 }
-function scheduleWorkspaceSessionPersistence(delay = 1500) {
+function scheduleWorkspaceSessionPersistence(delay = 1500, markDirty = true) {
   if (workspaceSessionPersistenceCapturing) return
   const scheduledWorkspace = workspaceId.value
-  workspacePaperSessions.markDirty(scheduledWorkspace)
+  if (markDirty) workspacePaperSessions.markDirty(scheduledWorkspace)
+  else if (!workspacePaperSessions.isDirty(scheduledWorkspace)) return false
   cancelScheduledWorkspaceSessionPersistence()
+  if (workspaceSessionPersistenceIsDeferred(scheduledWorkspace)) return false
   workspaceSessionPersistTimer = setTimeout(() => {
     workspaceSessionPersistTimer = 0
     if (workspaceId.value !== scheduledWorkspace) return
@@ -7834,6 +8323,7 @@ function scheduleWorkspaceSessionPersistence(delay = 1500) {
       void persistWorkspacePaperSessions(scheduledWorkspace)
     })
   }, delay)
+  return true
 }
 async function storeWorkspacePaperSessions() {
   cancelScheduledWorkspaceSessionPersistence()
@@ -8775,7 +9265,7 @@ function keydown(e) {
       return
     }
     if (showPreview.value) {
-      if (previewFullscreenPending.value || previewFullscreen.value || fullscreenElement() === previewOverlay.value) return
+      if (previewFullscreenPending.value || previewFullscreen.value || fullscreenElement() === previewFullscreenTarget()) return
       e.preventDefault()
       closePreview()
       return
@@ -8894,6 +9384,7 @@ onMounted(async () => {
 })
 onUnmounted(() => {
   componentLifecycleActive = false
+  previewMediaReadinessGate.cancelAll()
   invalidateProjectCacheTasks()
   invalidateRuntimeDataReplays()
   abortActiveNodeFileReaders()
@@ -8913,6 +9404,7 @@ onUnmounted(() => {
   workspaceSessionStore.close()
   cancelScheduledWorkspaceSessionPersistence()
   workspaceSessionIdleTask.dispose()
+  previewFitFallbackIdleTask.dispose()
   if (bundlePrewarmFrame) cancelBundleFrame(bundlePrewarmFrame)
   bundlePrewarmFrame = 0
   bundleReadyInstances.clear()
@@ -8963,7 +9455,7 @@ onUnmounted(() => {
 <template>
 <div class="app-shell" :inert="workspaceSwitchPending" :aria-busy="workspaceSwitchPending">
   <div v-if="largeSelectionCommitPending" class="geometry-commit-shield" role="status" aria-label="正在完成组合变换"></div>
-  <header class="topbar">
+  <header v-show="!showPreview" class="topbar">
     <div class="brand">
       <BrandMark :label="BRAND_NAME" />
       <span>{{ BRAND_NAME }}</span>
@@ -8993,7 +9485,7 @@ onUnmounted(() => {
     <div class="top-actions"><button class="preview-button" @click="openPreview"><Play :size="16" />预览</button></div>
   </header>
 
-  <main class="workspace">
+  <main v-show="!showPreview" class="workspace">
     <aside class="left-panel">
       <div class="search"><Search /><input v-model="search" :placeholder="searchPlaceholder" :aria-label="searchPlaceholder" data-testid="library-search" /></div>
       <nav class="tabs"><button v-for="t in ['图纸', '组件', '我的']" :key="t" :class="{ on: leftTab === t }" @click="setLeftTab(t)">{{ t }}</button></nav>
@@ -9047,7 +9539,7 @@ onUnmounted(() => {
         <div ref="stageSpace" class="stage-space" :style="{ width: stageWidth * zoom + 'px', height: stageHeight * zoom + 'px' }">
         <div v-if="editorLodActive" v-show="!editorRenderPaused" ref="editorLodSurface" class="editor-lod-surface" :style="{ width: Math.max(1, stageWidth * zoom) + 'px', height: Math.max(1, stageHeight * zoom) + 'px' }">
           <div class="editor-lod-background" :class="{ 'grid-line': showGrid && gridStyle === 'line', 'grid-dot': showGrid && gridStyle === 'dot' }" :style="{ backgroundColor: canvasBg, boxShadow: `inset 0 0 0 ${Math.max(.2, canvasBorderWidth * zoom)}px ${canvasBorderColor}`, '--editor-lod-grid-size': `${editorLodGridAppearance.screenPitch}px`, '--editor-lod-grid-color': gridColor, '--editor-lod-grid-stroke': `${editorLodGridAppearance.stroke}px`, '--editor-lod-grid-dot-size': `${editorLodGridAppearance.dotSize}px` }" aria-hidden="true"></div>
-          <MiniMapPreview ref="editorLodCanvas" class="editor-lod-canvas" data-testid="editor-lod-canvas" :nodes="nodes" :edges="edges" :drawings="drawings" :render-nodes="editorLodCanvasRendersEntities" :render-drawings="editorLodCanvasRendersEntities" :node-index="nodeIndex" :ordered-entities="layerEntries" :spatial-index="nodeSpatialIndex" :drawing-spatial-index="drawingSpatialIndex" :stage-width="stageWidth" :stage-height="stageHeight" :render-plan-key="editorLodFallbackPlanKey" :width="Math.max(1, stageWidth * zoom)" :height="Math.max(1, stageHeight * zoom)" :runtime-store="runtimeData" :max-bitmap-pixels="EDITOR_LOD_FALLBACK_BITMAP_PIXELS" background="transparent" fit-mode="stretch" render-mode="frame" incremental-runtime geometry-interactive faithful aria-label="低倍率编辑画布" @render-complete="handleEditorLodRenderComplete" @render-error="handleEditorLodRenderError" @geometry-complete="handleEditorLodGeometryComplete" />
+          <MiniMapPreview ref="editorLodCanvas" class="editor-lod-canvas" data-testid="editor-lod-canvas" :active="!editorRenderPaused" :nodes="nodes" :edges="edges" :drawings="drawings" :render-nodes="editorLodCanvasRendersEntities" :render-drawings="editorLodCanvasRendersEntities" :node-index="nodeIndex" :ordered-entities="layerEntries" :spatial-index="nodeSpatialIndex" :drawing-spatial-index="drawingSpatialIndex" :stage-width="stageWidth" :stage-height="stageHeight" :render-plan-key="editorLodFallbackPlanKey" :width="Math.max(1, stageWidth * zoom)" :height="Math.max(1, stageHeight * zoom)" :runtime-store="runtimeData" :minimum-screen-stroke-size=".75" :max-bitmap-pixels="EDITOR_LOD_FALLBACK_BITMAP_PIXELS" background="transparent" fit-mode="stretch" render-mode="frame" incremental-runtime geometry-interactive faithful aria-label="低倍率编辑画布" @render-complete="handleEditorLodRenderComplete" @render-error="handleEditorLodRenderError" @geometry-complete="handleEditorLodGeometryComplete" />
           <div v-if="editorLodDetailBounds && !editorRenderPaused" class="editor-lod-detail-window" :class="{ 'is-ready': editorLodDetailVisible, 'is-stale': !editorLodDetailFresh }" :data-frame-fresh="editorLodDetailFresh ? 'true' : 'false'" :style="editorLodDetailFrameStyle" aria-hidden="true">
             <div class="editor-lod-detail-background" :class="{ 'grid-line': showGrid && gridStyle === 'line', 'grid-dot': showGrid && gridStyle === 'dot' }" :style="editorLodDetailGridStyle"></div>
             <MiniMapPreview ref="editorLodDetailCanvas" class="editor-lod-detail-canvas" :nodes="editorLodDetailNodes" :edges="editorLodDetailEdges" :drawings="editorLodDetailDrawings" :render-nodes="editorLodCanvasRendersEntities" :render-drawings="editorLodCanvasRendersEntities" :node-index="nodeIndex" :ordered-entities="editorLodDetailEntities" :spatial-index="nodeSpatialIndex" :edge-spatial-index="edgeSpatialIndex" :drawing-spatial-index="drawingSpatialIndex" :stage-width="stageWidth" :stage-height="stageHeight" :view-box="editorLodDetailBounds" :render-plan-key="editorLodDetailPlanKey" :width="Math.max(1, editorLodDetailBounds.w * zoom)" :height="Math.max(1, editorLodDetailBounds.h * zoom)" :runtime-store="runtimeData" :minimum-screen-text-size="EDITOR_LOD_MIN_TEXT_SCREEN_SIZE" :minimum-screen-stroke-size="1" :max-bitmap-pixels="editorLodDetailBitmapBudget" :pixel-ratio="editorLodDetailPixelRatio" :render-budget-ms="6" background="transparent" fit-mode="stretch" render-mode="task" incremental-runtime geometry-interactive atomic-css-size faithful test-id="editor-lod-detail-canvas" aria-label="编辑画布清晰视口" @render-complete="handleEditorLodDetailRenderComplete" @render-error="handleEditorLodDetailRenderError" @geometry-complete="handleEditorLodDetailGeometryComplete" />
@@ -9078,7 +9570,7 @@ onUnmounted(() => {
             <i v-for="dir in resizeDirections" :key="dir" class="resize-handle" :class="dir" @pointerdown="startDrawingResize($event, selectedDrawingEntry.drawing, dir)"></i>
           </div>
 
-          <div v-if="activeTool === 'select' && selectedNodeCount > 1 && selectedNodeInteractionBounds" class="group-transform-box node-shell selected selection-primary" :class="{ grouped: selectedNodesAreSingleGroup, 'rotate-handle-below': rotateHandleBelow(selectedNodeInteractionBounds), 'transient-transform': Boolean(largeSelectionPreviewBounds) }" data-testid="group-transform-box" :style="{ left: selectedNodeInteractionBounds.x + 'px', top: selectedNodeInteractionBounds.y + 'px', width: selectedNodeInteractionBounds.w + 'px', height: selectedNodeInteractionBounds.h + 'px', opacity: largeSelectionPreviewBounds ? NODE_MOVE_INTERACTION_OPACITY : 1 }">
+          <div v-if="activeTool === 'select' && selectedNodeCount > 1 && selectedNodeInteractionBounds" class="group-transform-box node-shell selected selection-primary" :class="{ grouped: selectedNodesAreSingleGroup, 'rotate-handle-below': rotateHandleBelow(selectedNodeInteractionBounds), 'transient-transform': Boolean(largeSelectionPreviewBounds) }" data-testid="group-transform-box" :style="{ left: selectedNodeInteractionBounds.x + 'px', top: selectedNodeInteractionBounds.y + 'px', width: selectedNodeInteractionBounds.w + 'px', height: selectedNodeInteractionBounds.h + 'px' }">
             <template v-if="!selectedNodesContainLocked">
               <i v-for="dir in resizeDirections" :key="dir" class="resize-handle" :class="dir" @pointerdown="startSelectedNodesResize($event, dir)"></i>
               <button class="rotate-handle" @pointerdown="startSelectedNodesRotate" title="旋转组合"><RotateCcw /></button>
@@ -9086,13 +9578,20 @@ onUnmounted(() => {
           </div>
 
           <div v-if="activeTool === 'select' && selected && selectedNodeCount === 1 && !selected.locked" class="single-node-transform-box node-shell selected selection-primary" :class="{ 'rotate-handle-below': rotateHandleBelow(selected), 'compact-resize-handles': Math.min(selected.w, selected.h) * zoom < 24 }" data-testid="single-node-transform-box" :style="{ left: selected.x + 'px', top: selected.y + 'px', width: selected.w + 'px', height: selected.h + 'px', transform: `rotate(${selected.rotate || 0}deg)`, '--node-counter-rotation': `${-(Number(selected.rotate) || 0)}deg` }">
+            <svg v-if="selected.type === 'polyline'" class="polyline-point-editor" :viewBox="`0 0 ${Math.max(.1, selected.w)} ${Math.max(.1, selected.h)}`" preserveAspectRatio="none" aria-label="线段节点编辑">
+              <path class="polyline-point-handle-layer" data-testid="polyline-point-handle-layer" :data-point-count="selected.polylinePoints.length" :d="selectedPolylinePointPaths.all" :stroke-width="24 / zoom" @pointerdown="startPolylinePointLayerDrag($event, selected)" />
+              <path class="polyline-point-dot-outer" :d="selectedPolylinePointPaths.all" :stroke-width="12 / zoom" />
+              <path class="polyline-point-dot-inner" :d="selectedPolylinePointPaths.all" :stroke-width="8 / zoom" />
+              <path class="polyline-point-endpoint-outer" :d="selectedPolylinePointPaths.endpoints" :stroke-width="12 / zoom" />
+              <path class="polyline-point-endpoint-inner" :d="selectedPolylinePointPaths.endpoints" :stroke-width="8 / zoom" />
+            </svg>
             <i v-for="dir in resizeDirections" :key="dir" class="resize-handle" :class="dir" :style="{ cursor: resizeHandleCursor(dir, selected.rotate) }" @pointerdown="startResize($event, selected, dir)"></i>
             <button class="rotate-handle" @pointerdown="startRotate($event, selected)" title="拖动旋转"><RotateCcw /></button>
           </div>
 
-          <div v-for="n in editorRenderedNodes" :key="n.id" :data-node-id="n.id" v-memo="[nodeRenderMemo(n),isNodeSelected(n.id),selectedId === n.id,selectedId === n.id && selectedNodeCount === 1,connectFrom === n.id,editingText?.id === n.id,editingFormId === n.id,nodeMoveInteractionOpacity(n.id),editorProgressiveDomNodeHidden(n.id)]" class="node-shell" :class="{ selected: isNodeSelected(n.id), 'selection-primary': selectedId === n.id, 'single-transform-source': selectedId === n.id && selectedNodeCount === 1 && !n.locked, 'multi-selected': selectedNodeCount > 1 && isNodeSelected(n.id), connecting: connectFrom === n.id, locked: n.locked, 'line-node': ['lineShape','polyline'].includes(n.type), 'form-interacting': editingFormId === n.id && !n.locked, 'progressive-dom-hidden': editorProgressiveDomNodeHidden(n.id) }" :style="{ left: n.x + 'px', top: n.y + 'px', width: n.w + 'px', height: n.h + 'px', zIndex: nodeLayerIndex.get(n.id), transform: `rotate(${n.rotate || 0}deg)`, opacity: nodeMoveInteractionOpacity(n.id) }" @pointerdown="nodePointerDown($event, n)" @dblclick="handleNodeDoubleClick($event, n)" @contextmenu="openContextMenu($event, n)">
+          <div v-for="n in editorRenderedNodes" :key="n.id" :data-node-id="n.id" v-memo="[nodeRenderMemo(n),isNodeSelected(n.id),selectedId === n.id,selectedId === n.id && selectedNodeCount === 1,connectFrom === n.id,editingText?.id === n.id,editingFormId === n.id,editorProgressiveDomNodeHidden(n.id),editorLodSignalAnimationTimestamp(n)]" class="node-shell" :class="{ selected: isNodeSelected(n.id), 'selection-primary': selectedId === n.id, 'single-transform-source': selectedId === n.id && selectedNodeCount === 1 && !n.locked, 'multi-selected': selectedNodeCount > 1 && isNodeSelected(n.id), connecting: connectFrom === n.id, locked: n.locked, 'line-node': ['lineShape','polyline'].includes(n.type), 'form-interacting': editingFormId === n.id && !n.locked, 'progressive-dom-hidden': editorProgressiveDomNodeHidden(n.id) }" :style="{ left: n.x + 'px', top: n.y + 'px', width: n.w + 'px', height: n.h + 'px', zIndex: nodeLayerIndex.get(n.id), transform: `rotate(${n.rotate || 0}deg)` }" @pointerdown="nodePointerDown($event, n)" @dblclick="handleNodeDoubleClick($event, n)" @contextmenu="openContextMenu($event, n)">
             <i class="node-move-hit" data-testid="node-move-hit" aria-hidden="true"></i>
-            <NodeVisual :key="`${n.id}:${n.dataKey}`" v-show="!editorLodGeometryHiddenNodeIds.has(n.id)" :node="n" :runtime-store="runtimeData" :time-context="timeRenderContext" :interactive="editingFormId === n.id && !n.locked" @form-change="handleFormChange(n, $event)" @table-cell-view="openTableCellViewer(n, $event)" @table-edit="openTableDataEditor(n)" />
+            <NodeVisual :key="`${n.id}:${n.dataKey}`" v-show="!editorLodGeometryHiddenNodeIds.has(n.id)" :node="n" :runtime-store="runtimeData" :time-context="timeRenderContext" :signal-animation-timestamp="editorLodSignalAnimationTimestamp(n)" :interactive="editingFormId === n.id && !n.locked" @form-change="handleFormChange(n, $event)" @table-cell-view="openTableCellViewer(n, $event)" @table-edit="openTableDataEditor(n)" />
             <input v-if="editingText?.id === n.id && !n.locked" ref="textEditor" v-model="n.text" data-testid="inline-text-editor" lang="zh-CN" inputmode="text" autocomplete="off" class="inline-text-editor" @pointerdown.stop @dblclick.stop @compositionstart="inlineTextComposing = true" @compositionend="inlineTextComposing = false" @keydown="handleInlineTextEditorKeydown" @blur="inlineTextComposing = false; finishTextEdit()" />
             <span v-if="n.locked" class="lock-badge" title="组件已锁定，请使用属性栏或右键菜单解锁" @pointerdown.stop="handleLockedBadgePointerDown($event, n)" @dblclick.stop="handleNodeDoubleClick($event, n)"><Lock /></span>
           </div>
@@ -9102,7 +9601,7 @@ onUnmounted(() => {
 
       <div v-if="showMiniMap" class="minimap">
         <div class="minimap-stage" @pointerdown="navigateMiniMap">
-          <MiniMapPreview ref="miniMapPreview" :nodes="nodes" :edges="edges" :drawings="drawings" :node-index="nodeIndex" :ordered-entities="layerEntries" :spatial-index="nodeSpatialIndex" :drawing-spatial-index="drawingSpatialIndex" :stage-width="stageWidth" :stage-height="stageHeight" :width="miniMapWidth" :height="miniMapHeight" :runtime-store="runtimeData" :background="canvasBg" fit-mode="contain" incremental-runtime faithful />
+          <MiniMapPreview ref="miniMapPreview" :active="showMiniMap && !showPreview" :nodes="nodes" :edges="edges" :drawings="drawings" :node-index="nodeIndex" :ordered-entities="layerEntries" :spatial-index="nodeSpatialIndex" :drawing-spatial-index="drawingSpatialIndex" :stage-width="stageWidth" :stage-height="stageHeight" :width="miniMapWidth" :height="miniMapHeight" :runtime-store="runtimeData" :background="canvasBg" fit-mode="contain" incremental-runtime faithful />
           <b class="minimap-canvas-frame" :style="miniMapCanvasStyle" aria-hidden="true"></b>
           <b class="minimap-viewport" :style="miniMapViewportStyle" aria-hidden="true"></b>
           <span class="minimap-current-label">当前窗口</span>
@@ -9153,6 +9652,7 @@ onUnmounted(() => {
               <label class="field">轮廓颜色<input type="color" v-model="selected.stroke"></label>
               <label class="field">轮廓宽度<input type="number" min="0" max="20" step="0.1" v-model.number="selected.borderWidth"></label>
               <h3>线段属性</h3>
+              <label class="field">分段数<input type="number" min="1" max="9999" step="1" :value="polylineSegmentCount(selected)" data-testid="polyline-segment-count" @change="setPolylineSegmentCount(selected, $event.target.value)"></label>
               <label class="field">线条宽度<input type="number" min="0.1" max="100" step="0.1" v-model.number="selected.polylineWidth"></label>
               <label class="field">箭头大小<input type="number" min="1" max="100" step="1" v-model.number="selected.polylineArrowSize" data-testid="polyline-arrow-size"></label>
               <label class="field">起点样式<select v-model="selected.polylineStartMarker"><option value="none">无</option><option value="arrow">箭头</option></select></label>
@@ -9160,7 +9660,7 @@ onUnmounted(() => {
               <label class="field">端点<select v-model="selected.polylineLineCap"><option value="round">圆形</option><option value="butt">平直</option><option value="square">方形</option></select></label>
               <label class="field">连接<select v-model="selected.polylineLineJoin"><option value="round">圆角</option><option value="bevel">斜角</option><option value="miter">尖角</option></select></label>
             </template>
-            <template v-if="!['lineShape','pencil','polyline'].includes(selected.type) && !['table','input','select','time','formProgress'].includes(selected.type)">
+            <template v-if="!['lineShape','pencil','polyline','flowPipe','rotatingFan','signalLight','waterTank','heartbeat','particles'].includes(selected.type) && !['table','input','select','time','formProgress'].includes(selected.type)">
               <h3>文字编辑</h3>
               <label class="field">内容<input v-model="selected.text" data-testid="selected-text-content" lang="zh-CN" inputmode="text" autocomplete="off"></label>
               <div v-if="selected.type === 'text'" class="field"><span>文字排布</span><div class="text-layout-control" role="radiogroup" aria-label="文字排布" data-testid="text-layout-control"><label><input type="radio" v-model="selected.textLayout" value="horizontal" aria-label="横向排布"><span>横向</span></label><label><input type="radio" v-model="selected.textLayout" value="vertical" aria-label="竖向排布"><span>竖向</span></label></div></div>
@@ -9320,8 +9820,9 @@ onUnmounted(() => {
               <h3>网络属性</h3><label class="field vertical">地址<input v-model="selected.address" placeholder="192.168.1.10"></label><label class="field vertical">数据键<input :value="selected.dataKey" placeholder="network.status" @input="setSelectedDataKey($event.target.value)"></label><label class="field">状态<select v-model="selected.status"><option>正常</option><option>告警</option><option>离线</option></select></label>
             </template>
             <template v-if="selectedCategory === '动效组件'">
-              <template v-if="selected.type === 'signalLight'"><h3>信号灯属性</h3><label class="field">切换颜色数量<input type="number" min="1" max="8" :value="selected.signalColorCount" @input="setSignalColorCount($event.target.value)"></label><label v-for="index in selected.signalColorCount" :key="index" class="field">颜色 {{ index }}<input type="color" v-model="selected.signalColors[index - 1]"></label><label class="switch-row">完全透明<input type="checkbox" :checked="selected.signalOpacity === 0" @change="selected.signalOpacity = $event.target.checked ? 0 : 1"><i></i></label><label class="field">灯光不透明度<input type="range" min="0" max="1" step="0.05" v-model.number="selected.signalOpacity"><span>{{ Math.round((selected.signalOpacity ?? 1) * 100) }}%</span></label></template>
-              <h3>动效属性</h3><label class="field">动画类型<select v-model="selected.animation"><option value="pulse">呼吸</option><option value="float">浮动</option><option value="flow">流动/旋转</option><option value="blink">闪烁</option><option value="none">无</option></select></label><label class="field">动画周期（秒）<input type="number" min="0.2" max="5" step="0.1" v-model.number="selected.animationDuration"></label><label class="field">播放方向<select v-model="selected.animationDirection"><option value="normal">正向</option><option value="reverse">反向</option><option value="alternate">往返</option></select></label><label class="switch-row">暂停动画<input type="checkbox" v-model="selected.animationPaused"><i></i></label><label class="switch-row">显示边框<input type="checkbox" v-model="selected.borderVisible"><i></i></label>
+              <template v-if="selected.type === 'signalLight'"><h3>信号灯属性</h3><label class="field">切换颜色数量<input type="number" min="1" :max="MAX_SIGNAL_COLORS" :value="selected.signalColorCount" @input="setSignalColorCount($event.target.value)"></label><label v-for="index in selected.signalColorCount" :key="index" class="field">颜色 {{ index }}<input type="color" v-model="selected.signalColors[index - 1]"></label><label class="switch-row">完全透明<input type="checkbox" :checked="selected.signalOpacity === 0" @change="selected.signalOpacity = $event.target.checked ? 0 : 1"><i></i></label><label class="field">灯光不透明度<input type="range" min="0" max="1" step="0.05" v-model.number="selected.signalOpacity"><span>{{ Math.round((selected.signalOpacity ?? 1) * 100) }}%</span></label></template>
+              <template v-else><h3>主体属性</h3><label class="field">主体颜色<input type="color" v-model="selected.visualPrimaryColor" data-testid="visual-primary-color"></label><label v-if="selected.type === 'waterTank'" class="field">液位（%）<input type="number" min="0" max="100" step="0.1" v-model.number="selected.progressValue" @change="normalizeWaterTankProgress(selected)"></label></template>
+              <h3>动效属性</h3><label class="field">动画类型<select v-model="selected.animation"><option v-for="option in builtInAnimationOptions(selected)" :key="option.value" :value="option.value">{{ option.label }}</option></select></label><label class="field">动画周期（秒）<input type="number" :min="ANIMATION_DURATION_MIN_SECONDS" :max="BUILT_IN_ANIMATION_DURATION_MAX_SECONDS" step="0.1" v-model.number="selected.animationDuration" @change="normalizeBuiltInAnimationDuration(selected)"></label><label class="field">播放方向<select v-model="selected.animationDirection"><option value="normal">正向</option><option value="reverse">反向</option><option value="alternate">往返</option></select></label><label class="switch-row">暂停动画<input type="checkbox" v-model="selected.animationPaused"><i></i></label><label class="switch-row">显示边框<input type="checkbox" v-model="selected.borderVisible"><i></i></label>
             </template>
             <template v-else-if="selectedCategory === '自定义动效'">
               <h3>自定义动效</h3><label class="field">效果<select v-model="selected.customEffect"><option value="bounce">弹跳</option><option value="slide">水平移动</option><option value="rotate">旋转</option><option value="scale">缩放</option><option value="fade">淡入淡出</option><option value="color">颜色变化</option></select></label><label class="field">周期（秒）<input type="number" min="0.2" max="20" step="0.1" v-model.number="selected.animationDuration"></label><label class="field">延迟（秒）<input type="number" min="0" max="20" step="0.1" v-model.number="selected.animationDelay"></label><label class="field">缓动<select v-model="selected.animationEasing"><option value="linear">匀速</option><option value="ease-in-out">平滑</option><option value="ease-out">减速</option><option value="steps(4,end)">步进</option></select></label><label class="field">循环<select v-model="selected.animationIterations"><option value="infinite">无限</option><option value="1">1 次</option><option value="2">2 次</option><option value="3">3 次</option></select></label><label class="field">方向<select v-model="selected.animationDirection"><option value="normal">正向</option><option value="reverse">反向</option><option value="alternate">往返</option></select></label><label v-if="['bounce','slide'].includes(selected.customEffect)" class="field">位移距离<input type="number" min="1" max="200" v-model.number="selected.motionDistance"></label><label v-if="selected.customEffect === 'scale'" class="field">缩放倍数<input type="number" min="0.1" max="3" step="0.05" v-model.number="selected.motionScale"></label><label v-if="selected.customEffect === 'rotate'" class="field">旋转角度<input type="number" min="1" max="1440" v-model.number="selected.motionRotate"></label><label v-if="selected.customEffect === 'color'" class="field">目标颜色<input type="color" v-model="selected.motionColor"></label><label class="switch-row">暂停动画<input type="checkbox" v-model="selected.animationPaused"><i></i></label><label class="switch-row">显示边框<input type="checkbox" v-model="selected.borderVisible"><i></i></label>
@@ -9376,7 +9877,6 @@ onUnmounted(() => {
           :parameters="selectedBindingParameters"
           :gateway="pointCatalogGateway"
           :source-revision="dataSourceRevision"
-          :runtime-store="runtimeData"
           :locked="selectedNodesContainLocked"
           @bind="bindSelectedParameter"
           @unbind="unbindSelectedParameter"
@@ -9452,12 +9952,11 @@ onUnmounted(() => {
     </section>
   </div>
 
-  <div v-if="showPreview" ref="previewOverlay" class="preview-overlay" :class="{ 'is-fullscreen': previewFullscreen }" data-testid="preview-overlay">
-    <header v-if="!previewFullscreen"><b>{{ fileName }}</b><span>预览模式 · {{ stageWidth }} × {{ stageHeight }}</span><div class="preview-actions"><button :disabled="previewFullscreenPending" :class="{ active: previewAutoFit }" :aria-pressed="previewAutoFit" @click="togglePreviewAutoFit" :title="previewAutoFit ? '恢复原始尺寸预览' : '自适应预览'"><Scaling /><span>{{ previewAutoFit ? '原始尺寸' : '自适应预览' }}</span></button><button :disabled="previewFullscreenPending" @click="togglePreviewFullscreen" title="全屏预览"><Maximize2 /><span>全屏预览</span></button><button class="preview-close" :disabled="previewFullscreenPending" @click="closePreview" title="关闭预览"><X /></button></div></header>
-    <div ref="previewCanvas" class="preview-canvas" :class="{ 'preview-fit': previewFittedVisible }" data-testid="preview-canvas" @scroll.passive="updatePreviewViewport"><div class="preview-stage-space" :style="{ width: stageWidth * previewRenderScale + 'px', height: stageHeight * previewRenderScale + 'px', marginLeft: previewFittedVisible ? previewFitPresentationOffset.left + 'px' : '0px', marginTop: previewFittedVisible ? previewFitPresentationOffset.top + 'px' : '0px', backgroundColor: canvasBg, boxShadow: previewFitVisible ? `inset 0 0 0 ${canvasBorderWidth * previewRenderScale}px ${canvasBorderColor}, 0 4px 18px #26323d26` : undefined }">
-      <MiniMapPreview v-if="previewFitMounted" ref="previewFitCanvas" class="preview-fit-canvas" :class="{ 'is-visible': previewCanvasVisible }" :active="previewCanvasRenderActive" :nodes="nodes" :edges="edges" :drawings="drawings" :node-index="nodeIndex" :ordered-entities="layerEntries" :excluded-node-ids="previewFitExcludedNodeIds" :excluded-drawing-ids="previewFitExcludedDrawingIds" :render-plan-key="previewFitPlan.key" :frame-commit-token="previewFitFrameCommitToken" :frame-commit-guard="canCommitPreviewFitFrame" :spatial-index="nodeSpatialIndex" :drawing-spatial-index="drawingSpatialIndex" :runtime-store="runtimeData" :time-context="timeRenderContext" :stage-width="stageWidth" :stage-height="stageHeight" :width="previewFitCanvasWidth" :height="previewFitCanvasHeight" :background="canvasBg" :max-bitmap-pixels="previewFitBitmapPixelBudget" :pixel-ratio="previewFitPixelRatio" :render-budget-ms="previewFitActive ? 4 : 2" fit-mode="stretch" :render-mode="previewFitActive ? 'task' : 'idle'" incremental-runtime atomic-css-size faithful test-id="preview-fit-canvas" aria-label="图纸自适应预览" @render-complete="handlePreviewFitRenderComplete" @render-rejected="handlePreviewFitRenderRejected" @render-error="handlePreviewFitRenderError" />
-      <MiniMapPreview v-if="previewEdgeCanvasBounds" ref="previewEdgeCanvas" class="preview-edge-canvas" :class="{ 'is-visible': previewEdgeCanvasVisible }" :active="previewDomEdgeCanvasActive" :style="previewEdgeCanvasFrameStyle" :nodes="nodes" :edges="EMPTY_RENDER_LIST" :drawings="EMPTY_RENDER_LIST" :render-nodes="false" :render-drawings="false" :node-index="nodeIndex" :edge-spatial-index="edgeSpatialIndex" :ordered-entities="EMPTY_RENDER_LIST" :stage-width="stageWidth" :stage-height="stageHeight" :view-box="previewEdgeCanvasBounds" :render-plan-key="previewEdgeCanvasPlanKey" :frame-commit-guard="canCommitPreviewEdgeCanvasFrame" :width="Math.max(1, previewEdgeCanvasBounds.w)" :height="Math.max(1, previewEdgeCanvasBounds.h)" :background="canvasBg" :max-bitmap-pixels="previewEdgeCanvasBitmapBudget" :pixel-ratio="previewEdgeCanvasPixelRatio" :render-budget-ms="4" fit-mode="stretch" render-mode="task" incremental-runtime atomic-css-size faithful test-id="preview-edge-canvas" aria-label="高密连线预览层" @render-complete="handlePreviewEdgeCanvasRenderComplete" @render-rejected="handlePreviewEdgeCanvasRenderRejected" @render-error="handlePreviewEdgeCanvasRenderError" />
-      <div v-if="previewDomMounted" class="preview-stage" :class="{ 'is-hidden': !previewDomVisible }" data-testid="preview-dom-stage" :data-preview-ready="previewDomReady" :aria-hidden="!previewDomVisible" :inert="!previewDomVisible" :style="{ width: stageWidth + 'px', height: stageHeight + 'px', backgroundColor: previewEdgeCanvasVisible ? 'transparent' : canvasBg, boxShadow: `inset 0 0 0 ${canvasBorderWidth}px ${canvasBorderColor}`, transform: `scale(${previewRenderScale})` }">
+  <div v-if="showPreview" ref="previewOverlay" class="preview-overlay" :class="{ 'is-fullscreen': previewFullscreen, 'is-preparing': !previewPresentationReady }" :aria-busy="!previewPresentationReady" data-testid="preview-overlay">
+    <div class="preview-viewport-clip" data-testid="preview-viewport-clip"><div ref="previewCanvas" class="preview-canvas" :class="{ 'preview-fit': previewFittedVisible }" data-testid="preview-canvas" @scroll.passive="updatePreviewViewport"><div class="preview-stage-space" :style="{ width: stageWidth * previewRenderScale + 'px', height: stageHeight * previewRenderScale + 'px', marginLeft: previewFittedVisible ? previewFitPresentationOffset.left + 'px' : '0px', marginTop: previewFittedVisible ? previewFitPresentationOffset.top + 'px' : '0px', backgroundColor: canvasBg, boxShadow: previewFitVisible ? `inset 0 0 0 ${canvasBorderWidth * previewRenderScale}px ${canvasBorderColor}, 0 4px 18px #26323d26` : undefined }">
+      <MiniMapPreview v-if="previewFitMounted" ref="previewFitCanvas" class="preview-fit-canvas" :class="{ 'is-visible': previewCanvasVisible }" :active="previewCanvasRenderActive" :nodes="nodes" :edges="edges" :drawings="drawings" :node-index="nodeIndex" :ordered-entities="layerEntries" :excluded-node-ids="previewFitExcludedNodeIds" :excluded-drawing-ids="previewFitExcludedDrawingIds" :render-plan-key="previewFitPlan.key" :frame-commit-token="previewFitFrameCommitToken" :frame-commit-guard="canCommitPreviewFitFrame" :spatial-index="nodeSpatialIndex" :drawing-spatial-index="drawingSpatialIndex" :runtime-store="runtimeData" :time-context="timeRenderContext" :stage-width="stageWidth" :stage-height="stageHeight" :width="previewFitCanvasWidth" :height="previewFitCanvasHeight" :background="canvasBg" :max-bitmap-pixels="previewFitBitmapPixelBudget" :pixel-ratio="previewFitPixelRatio" :render-budget-ms="previewFitRenderBudgetMs" :respect-reduced-motion="false" fit-mode="stretch" :render-mode="previewFitRenderMode" wait-for-images incremental-runtime atomic-css-size faithful test-id="preview-fit-canvas" aria-label="图纸自适应预览" @render-complete="handlePreviewFitRenderComplete" @render-rejected="handlePreviewFitRenderRejected" @render-error="handlePreviewFitRenderError" />
+      <MiniMapPreview v-if="previewEdgeCanvasBounds" ref="previewEdgeCanvas" class="preview-edge-canvas" :class="{ 'is-visible': previewEdgeCanvasVisible }" :active="previewDomEdgeCanvasActive" :style="previewEdgeCanvasFrameStyle" :nodes="previewEdgeCanvasNodes" :edges="previewEdgeCanvasEdges" :drawings="previewEdgeCanvasDrawings" :node-index="nodeIndex" :edge-spatial-index="edgeSpatialIndex" :drawing-spatial-index="drawingSpatialIndex" :spatial-index="nodeSpatialIndex" :ordered-entities="previewEdgeCanvasEntities" :excluded-node-ids="previewFitExcludedNodeIds" :excluded-drawing-ids="previewFitExcludedDrawingIds" :render-revision="projectRevision" :stage-width="stageWidth" :stage-height="stageHeight" :view-box="previewEdgeCanvasBounds" :render-plan-key="previewEdgeCanvasPlanKey" :frame-commit-guard="canCommitPreviewEdgeCanvasFrame" :width="Math.max(1, previewEdgeCanvasBounds.w)" :height="Math.max(1, previewEdgeCanvasBounds.h)" :runtime-store="runtimeData" :time-context="timeRenderContext" :background="canvasBg" :max-bitmap-pixels="previewEdgeCanvasBitmapBudget" :pixel-ratio="previewEdgeCanvasPixelRatio" :render-budget-ms="4" :respect-reduced-motion="false" fit-mode="stretch" render-mode="task" wait-for-images incremental-runtime atomic-css-size faithful test-id="preview-edge-canvas" aria-label="高清视口预览层" @render-complete="handlePreviewEdgeCanvasRenderComplete" @render-rejected="handlePreviewEdgeCanvasRenderRejected" @render-error="handlePreviewEdgeCanvasRenderError" />
+      <div v-if="previewDomMounted" ref="previewDomStage" class="preview-stage" :class="{ 'is-hidden': !previewDomVisible }" data-testid="preview-dom-stage" :data-preview-ready="previewDomReady" :aria-hidden="!previewDomVisible" :inert="!previewDomVisible" :style="{ width: stageWidth + 'px', height: stageHeight + 'px', backgroundColor: previewDomEdgeCanvasActive ? 'transparent' : canvasBg, boxShadow: `inset 0 0 0 ${canvasBorderWidth}px ${canvasBorderColor}`, transform: `scale(${previewRenderScale})` }">
       <ProgressivePreviewGeometry
         :edges="previewDomEdges"
         :drawings="previewDomDrawings"
@@ -9472,12 +9971,13 @@ onUnmounted(() => {
       />
       <ProgressivePreviewNodes :nodes="previewDomNodes" :generation="previewDomGeneration" progressive :batch-size="8" :mount-cost-budget="64" :runtime-store="runtimeData" :time-context="timeRenderContext" @render-start="handlePreviewDomRenderStart" @render-complete="handlePreviewDomRenderComplete" @form-change="handleFormChange" @table-cell-view="openTableCellViewer" />
       </div>
-      <div v-if="previewLivePlaneActive" class="preview-stage is-live-plane" data-testid="preview-live-plane" :data-preview-ready="previewLivePlaneReady" :style="{ width: stageWidth + 'px', height: stageHeight + 'px', transform: `scale(${previewRenderScale})` }">
+      <div v-if="previewLivePlaneActive" ref="previewLivePlaneStage" class="preview-stage is-live-plane" data-testid="preview-live-plane" :data-preview-ready="previewLivePlaneReady" :style="{ width: stageWidth + 'px', height: stageHeight + 'px', transform: `scale(${previewRenderScale})` }">
         <svg v-for="entry in previewLivePlaneDrawingEntries" :key="entry.drawing.id" class="drawing-layer preview-drawing" :style="{ left: entry.frame.x + 'px', top: entry.frame.y + 'px', width: entry.frame.w + 'px', height: entry.frame.h + 'px', zIndex: drawingLayerIndex.get(entry.drawing.id) }" :viewBox="`${entry.frame.x} ${entry.frame.y} ${entry.frame.w} ${entry.frame.h}`" preserveAspectRatio="none"><path :d="entry.path" :fill="entry.drawing.closed ? `${entry.drawing.color}22` : 'none'" :stroke="entry.drawing.color" :stroke-width="entry.drawing.width" :stroke-dasharray="entry.drawing.dash ? '8 6' : ''" :stroke-linecap="entry.drawing.lineCap || 'round'" :stroke-linejoin="entry.drawing.lineJoin || 'round'" :opacity="entry.drawing.opacity ?? 1" /></svg>
-        <ProgressivePreviewNodes :nodes="previewLivePlaneNodes" :generation="previewLivePlaneGeneration" progressive :batch-size="PREVIEW_HYBRID_MAX_DOM_NODES" :mount-cost-budget="PREVIEW_HYBRID_MAX_DOM_COST" :runtime-store="runtimeData" :time-context="timeRenderContext" @render-complete="handlePreviewLivePlaneRenderComplete" @form-change="handleFormChange" @table-cell-view="openTableCellViewer" />
+        <ProgressivePreviewNodes :nodes="previewLivePlaneNodes" :generation="previewLivePlaneGeneration" progressive :batch-size="PREVIEW_HYBRID_MAX_DOM_NODES" :mount-cost-budget="PREVIEW_HYBRID_MAX_DOM_COST" :runtime-store="runtimeData" :time-context="timeRenderContext" @render-start="handlePreviewLivePlaneRenderStart" @render-complete="handlePreviewLivePlaneRenderComplete" @form-change="handleFormChange" @table-cell-view="openTableCellViewer" />
       </div>
-    </div></div>
+    </div></div></div>
   </div>
+  <header v-if="showPreview && !previewFullscreen" class="preview-header" data-testid="preview-header"><b>{{ fileName }}</b><span>预览模式 · {{ stageWidth }} × {{ stageHeight }}</span><div class="preview-actions"><button :disabled="previewModeTransitionPending" :class="{ active: previewAutoFit }" :aria-pressed="previewAutoFit" :aria-label="previewAutoFit ? '恢复原始尺寸预览' : '自适应预览'" @click="togglePreviewAutoFit"><Scaling /><span>{{ previewAutoFit ? '原始尺寸' : '自适应预览' }}</span></button><button :disabled="previewModeTransitionPending" aria-label="全屏预览" @click="togglePreviewFullscreen"><Maximize2 /><span>全屏预览</span></button><button class="preview-close" :disabled="previewFullscreenPending" aria-label="关闭预览" @click="closePreview"><X /></button></div></header>
 
   <Teleport v-if="buttonMessageDialog.show" :to="showPreview && previewCanvas ? previewCanvas : 'body'">
     <div class="button-message-backdrop" @pointerdown.self="closeButtonMessage">

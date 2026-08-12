@@ -8,12 +8,78 @@ import {
   polylineLineStyle
 } from '../utils/polylineGeometry.js'
 import { normalizeTextLayout } from '../utils/textLayout.js'
+import {
+  ANIMATION_DURATION_MIN_SECONDS,
+  BUILT_IN_ANIMATION_DURATION_MAX_SECONDS,
+  CUSTOM_ANIMATION_DURATION_MAX_SECONDS,
+  MAX_SIGNAL_COLORS
+} from '../config/componentBindingSchema.js'
 import { normalizeDataBindings } from './dataBindingModel.js'
 
 export const TABLE_COLUMN_MIN_WIDTH = 40
 export const TABLE_COLUMN_MAX_WIDTH = 2000
 export const EDGE_MARKER_TYPES = new Set(['none', 'arrow', 'circle', 'square'])
 export const EDGE_ANCHOR_MODES = new Set(['edge', 'center'])
+
+const ANIMATION_VALUES = new Set(['none', 'pulse', 'float', 'flow', 'blink'])
+const ANIMATION_DIRECTIONS = new Set(['normal', 'reverse', 'alternate'])
+const BUILT_IN_ANIMATION_VALUES = Object.freeze({
+  flowPipe: new Set(['none', 'flow']),
+  rotatingFan: new Set(['none', 'flow']),
+  signalLight: new Set(['none', 'blink']),
+  waterTank: new Set(['none', 'flow']),
+  heartbeat: new Set(['none', 'pulse']),
+  particles: new Set(['none', 'flow'])
+})
+const SIGNAL_COLOR_DEFAULTS = Object.freeze([
+  '#21c58e', '#ef5350', '#ffc440', '#168eea', '#9c5de5', '#ffffff', '#26323d', '#ff7a45'
+])
+const BUILT_IN_VISUAL_PRIMARY_COLORS = Object.freeze({
+  flowPipe: '#16b89a',
+  rotatingFan: '#16b89a',
+  signalLight: '#21c58e',
+  waterTank: '#3bb9df',
+  heartbeat: '#ef5350',
+  particles: '#16b89a'
+})
+
+export function builtInVisualPrimaryColor(type) {
+  return BUILT_IN_VISUAL_PRIMARY_COLORS[type] || '#16b89a'
+}
+
+function normalizeAnimationValue(type, value) {
+  const candidate = String(value ?? 'none').trim()
+  const allowed = BUILT_IN_ANIMATION_VALUES[type] || ANIMATION_VALUES
+  return allowed.has(candidate) ? candidate : 'none'
+}
+
+function normalizeAnimationDuration(type, value) {
+  const parsed = typeof value === 'string' && !value.trim() ? Number.NaN : Number(value)
+  const duration = Number.isFinite(parsed) ? parsed : 1.5
+  return clampNumber(
+    duration,
+    ANIMATION_DURATION_MIN_SECONDS,
+    BUILT_IN_ANIMATION_VALUES[type]
+      ? BUILT_IN_ANIMATION_DURATION_MAX_SECONDS
+      : CUSTOM_ANIMATION_DURATION_MAX_SECONDS
+  )
+}
+
+function normalizeBoolean(value, fallback = false) {
+  if (value === true || value === false) return value
+  if (typeof value === 'number') return Number.isFinite(value) ? value !== 0 : fallback
+  if (typeof value !== 'string') return fallback
+  const candidate = value.trim().toLowerCase()
+  if (['true', '1', 'yes', 'on'].includes(candidate)) return true
+  if (['false', '0', 'no', 'off', ''].includes(candidate)) return false
+  return fallback
+}
+
+function normalizeSignalColor(value, index) {
+  return typeof value === 'string' && value.trim()
+    ? value.trim()
+    : SIGNAL_COLOR_DEFAULTS[index] || SIGNAL_COLOR_DEFAULTS[0]
+}
 
 // 每次创建全新的数组字段，防止两个节点共享颜色、路径或表格合并状态。
 export function baseNodeOptions() {
@@ -25,7 +91,7 @@ export function baseNodeOptions() {
     borderWidth: 2, borderStyle: 'solid', borderDashLength: 8, borderDashGap: 6, borderVisible: true, backgroundOpacity: 1, opacity: 1,
     animationDuration: 1.5, animationDirection: 'normal', animationPaused: false,
     animationDelay: 0, animationEasing: 'ease-in-out', animationIterations: 'infinite',
-    customEffect: 'bounce', motionDistance: 18, motionScale: 1.18, motionRotate: 360, motionColor: '#16b89a',
+    customEffect: 'bounce', motionDistance: 18, motionScale: 1.18, motionRotate: 360, motionColor: '#16b89a', visualPrimaryColor: '#16b89a',
     // 媒体与通用表单
     imageUrl: '', imageFit: 'contain', videoUrl: '', videoFit: 'contain', videoAutoplay: false, videoControls: true, videoPlaybackRate: 1, videoPlayCount: 0, videoMuted: true,
     formName: '', value: '', defaultValue: '', placeholder: '请输入内容', options: '选项一:option1,选项二:option2,选项三:option3', selectOptions: null, checked: false, defaultChecked: false, disabled: false, required: false, readOnly: false,
@@ -172,8 +238,37 @@ export function normalizeNode(node) {
   normalized.textLayout = normalizeTextLayout(source.textLayout)
   delete normalized.fontWeightScale
   // 兼容早期媒体和动效字段，并把数值限制在属性面板允许的范围内。
-  if (!Array.isArray(source.signalColors)) normalized.signalColors = [source.signalColor || '#21c58e', '#ef5350']
-  normalized.signalColorCount = Math.max(1, Math.min(8, Number(normalized.signalColorCount) || 2))
+  normalized.visualPrimaryColor = typeof source.visualPrimaryColor === 'string' && source.visualPrimaryColor.trim()
+    ? source.visualPrimaryColor.trim()
+    : builtInVisualPrimaryColor(normalized.type)
+  normalized.animation = normalizeAnimationValue(normalized.type, normalized.animation)
+  normalized.animationDuration = normalizeAnimationDuration(normalized.type, normalized.animationDuration)
+  normalized.animationDirection = ANIMATION_DIRECTIONS.has(normalized.animationDirection)
+    ? normalized.animationDirection
+    : 'normal'
+  normalized.animationPaused = normalizeBoolean(source.animationPaused)
+  const signalColorCount = Number(source.signalColorCount ?? normalized.signalColorCount)
+  normalized.signalColorCount = clampNumber(
+    Number.isFinite(signalColorCount) ? Math.trunc(signalColorCount) : 2,
+    1,
+    MAX_SIGNAL_COLORS
+  )
+  const sourceSignalColors = Array.isArray(source.signalColors)
+    ? source.signalColors.slice(0, MAX_SIGNAL_COLORS)
+    : [source.signalColor, SIGNAL_COLOR_DEFAULTS[1]]
+  const signalPaletteLength = Math.min(
+    MAX_SIGNAL_COLORS,
+    Math.max(normalized.signalColorCount, sourceSignalColors.length)
+  )
+  normalized.signalColors = Array.from(
+    { length: signalPaletteLength },
+    (_, index) => normalizeSignalColor(sourceSignalColors[index], index)
+  )
+  const signalOpacity = normalized.signalOpacity == null ? Number.NaN : Number(normalized.signalOpacity)
+  normalized.signalOpacity = clampNumber(Number.isFinite(signalOpacity) ? signalOpacity : 1, 0, 1)
+  if (normalized.type === 'waterTank') {
+    normalized.progressValue = clampNumber(finiteNumber(source.progressValue, 68), 0, 100)
+  }
   normalized.videoPlaybackRate = Math.max(.25, Math.min(4, Number(normalized.videoPlaybackRate) || 1))
   normalized.videoPlayCount = Math.max(0, Math.min(999, Math.round(Number(normalized.videoPlayCount) || 0)))
   normalized.videoAutoplay = source.videoAutoplay == null ? Boolean(source.videoPlaying) : Boolean(source.videoAutoplay)

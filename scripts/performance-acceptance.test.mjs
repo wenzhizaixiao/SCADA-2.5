@@ -261,6 +261,8 @@ test('6016 component bindings share source paths and derive the latest snapshot 
   }))
   const updates = new Map()
   const sliceSamples = []
+  const rebuildSliceSamples = []
+  const derivationSliceSamples = []
   const runtime = createSourceBindingRuntime({
     schedule: callback => scheduler.schedule(callback),
     cancel: handle => scheduler.cancel(handle),
@@ -290,18 +292,27 @@ test('6016 component bindings share source paths and derive the latest snapshot 
   })
 
   while (scheduler.size) {
+    const before = runtime.state
     const startedAt = performance.now()
     scheduler.flushOne()
-    sliceSamples.push(performance.now() - startedAt)
+    const duration = performance.now() - startedAt
+    const after = runtime.state
+    sliceSamples.push(duration)
+    if (after.evaluations > before.evaluations) derivationSliceSamples.push(duration)
+    else rebuildSliceSamples.push(duration)
     assert.ok(sliceSamples.length < 100)
   }
   const timing = summarizeDurations(sliceSamples)
+  const rebuildTiming = summarizeDurations(rebuildSliceSamples)
+  const derivationTiming = summarizeDurations(derivationSliceSamples)
   t.diagnostic(JSON.stringify({
     components: LARGE_RUNTIME_KEY_COUNT,
     uniquePaths: uniquePathCount,
     rebuildCallerMs,
     slices: sliceSamples.length,
-    sliceMs: timing
+    sliceMs: timing,
+    rebuildSliceMs: rebuildTiming,
+    derivationSliceMs: derivationTiming
   }))
 
   assert.equal(runtime.state.evaluations, uniquePathCount)
@@ -311,6 +322,8 @@ test('6016 component bindings share source paths and derive the latest snapshot 
   assert.equal(updates.size, uniquePathCount)
   assert.ok([...updates.values()].every(value => value >= 1_000))
   assert.ok(rebuildCallerMs < FRAME_BUDGET_MS, `deferred rebuild caller took ${rebuildCallerMs.toFixed(2)}ms`)
+  assert.ok(rebuildTiming.max < FRAME_BUDGET_MS, `source index rebuild slice took ${rebuildTiming.max.toFixed(2)}ms`)
+  assert.ok(derivationTiming.max < FRAME_BUDGET_MS, `source derivation slice took ${derivationTiming.max.toFixed(2)}ms`)
   assert.ok(timing.max < FRAME_BUDGET_MS, `source derivation slice took ${timing.max.toFixed(2)}ms`)
   runtime.dispose()
 })

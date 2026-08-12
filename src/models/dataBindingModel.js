@@ -185,8 +185,6 @@ export function bindingPointIds(node, { enabledOnly = true, includeLegacy = fals
   return [...runtimeKeys]
 }
 
-export const bindingRuntimeKeys = bindingPointIds
-
 function upsertArguments(targetOrBinding, pointId, adapter) {
   if (plainObject(targetOrBinding)) return targetOrBinding
   return { target: targetOrBinding, pointId, ...(adapter == null ? {} : { adapter }) }

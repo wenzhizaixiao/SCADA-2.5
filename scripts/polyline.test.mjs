@@ -16,16 +16,29 @@ import {
   validateProjectForFrontend
 } from '../src/utils/projectValidation.js'
 import {
+  clampPolylineSegmentCount,
+  createEvenlySpacedPolylinePoints,
+  DEFAULT_POLYLINE_SEGMENT_COUNT,
+  MAX_POLYLINE_SEGMENT_COUNT,
   normalizeWorldPolylinePoints,
+  nearestPolylinePointIndex,
   polylineArrowSize,
   polylineDashArray,
   polylineDashSegments,
   polylineFrameFromWorldPoints,
+  polylineLocalPointToWorld,
   polylineLineOpacity,
   polylineLineStyle,
   polylineLineWidth,
+  polylineNormalizedPointsToLocal,
   polylineOutlineWidth,
-  polylineStrokeLineCap
+  polylinePointHandlePaths,
+  polylineStrokeLineCap,
+  reframePolylineNode,
+  resamplePolylineNodeGeometry,
+  resamplePolylineNodePoints,
+  resamplePolylinePoints,
+  worldPointToPolylineLocal
 } from '../src/utils/polylineGeometry.js'
 
 const appSource = readFileSync(new URL('../src/App.vue', import.meta.url), 'utf8')
@@ -227,85 +240,210 @@ test('builds a padded frame and reconstructs every world point from normalized c
   assert.equal(polylineFrameFromWorldPoints([{ x: 1, y: 1 }], { stageWidth: 10, stageHeight: 10 }), null)
 })
 
-test('adds one vertex per click and previews straight segments between adjacent vertices', () => {
+test('creates N equal straight segments while preserving exact endpoints', () => {
+  assert.equal(DEFAULT_POLYLINE_SEGMENT_COUNT, 4)
+  assert.equal(MAX_POLYLINE_SEGMENT_COUNT, 9999)
+  assert.equal(clampPolylineSegmentCount(0), 1)
+  assert.equal(clampPolylineSegmentCount(7.9), 7)
+  assert.equal(clampPolylineSegmentCount(Number.NaN), DEFAULT_POLYLINE_SEGMENT_COUNT)
+  assert.equal(clampPolylineSegmentCount(20000), MAX_POLYLINE_SEGMENT_COUNT)
+
+  const start = { x: 200, y: 180 }
+  const end = { x: 600, y: 380 }
+  const points = createEvenlySpacedPolylinePoints(start, end, 4)
+  assert.deepEqual(points, [
+    { x: 200, y: 180 },
+    { x: 300, y: 230 },
+    { x: 400, y: 280 },
+    { x: 500, y: 330 },
+    { x: 600, y: 380 }
+  ])
+  assert.notStrictEqual(points[0], start)
+  assert.notStrictEqual(points.at(-1), end)
+})
+
+test('resamples an edited polyline by arc length without flattening it', () => {
+  const source = [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }]
+  const points = resamplePolylinePoints(source, 4)
+  assert.deepEqual(points, [
+    { x: 0, y: 0 },
+    { x: .5, y: 0 },
+    { x: 1, y: 0 },
+    { x: 1, y: .5 },
+    { x: 1, y: 1 }
+  ])
+  assert.deepEqual(resamplePolylinePoints([{ x: 2, y: 3 }, { x: 2, y: 3 }], 3), [
+    { x: 2, y: 3 }, { x: 2, y: 3 }, { x: 2, y: 3 }, { x: 2, y: 3 }
+  ])
+})
+
+test('resamples normalized points by rendered pixel length on non-square nodes', () => {
+  const points = resamplePolylineNodePoints({
+    w: 200,
+    h: 100,
+    polylinePoints: [{ x: 0, y: 0 }, { x: .5, y: 0 }, { x: .5, y: 1 }]
+  }, 4)
+  assert.deepEqual(points, [
+    { x: 0, y: 0 },
+    { x: .25, y: 0 },
+    { x: .5, y: 0 },
+    { x: .5, y: .5 },
+    { x: .5, y: 1 }
+  ])
+})
+
+test('reframes after resampling removes extrema and keeps max-size round trips stable', () => {
+  const node = {
+    x: 10,
+    y: 20,
+    w: 220,
+    h: 120,
+    rotate: 0,
+    polylinePoints: [{ x: .05, y: .9 }, { x: .5, y: .05 }, { x: .95, y: .9 }]
+  }
+  const endpoints = [node.polylinePoints[0], node.polylinePoints.at(-1)].map(point => (
+    polylineLocalPointToWorld(node, { x: point.x * node.w, y: point.y * node.h })
+  ))
+  const reframed = resamplePolylineNodeGeometry(node, 1)
+  assert.equal(reframed.polylinePoints.length, 2)
+  assert.ok(reframed.h < node.h)
+  const reframedEndpoints = reframed.polylinePoints.map(point => polylineLocalPointToWorld(reframed, {
+    x: point.x * reframed.w,
+    y: point.y * reframed.h
+  }))
+  assert.deepEqual(reframedEndpoints, endpoints)
+
+  const maximum = {
+    x: 0,
+    y: 50,
+    w: 20000,
+    h: 100,
+    rotate: 0,
+    polylinePoints: [{ x: 0, y: .5 }, { x: .5, y: .2 }, { x: 1, y: .5 }]
+  }
+  const maximumLocal = polylineNormalizedPointsToLocal(maximum)
+  maximumLocal[1].y = -80
+  const maximumFrame = reframePolylineNode(maximum, maximumLocal, { pointIndex: 1 })
+  assert.equal(maximumFrame.w, 20000)
+  const normalized = normalizeNode({
+    ...baseNodeOptions(),
+    ...maximumFrame,
+    id: 'polyline-maximum-round-trip',
+    type: 'polyline'
+  })
+  assert.equal(normalized.w, maximumFrame.w)
+  assert.deepEqual(normalized.polylinePoints, maximumFrame.polylinePoints)
+})
+
+test('reframes a dragged point without moving untouched points, including on rotated nodes', () => {
+  const node = {
+    x: 92,
+    y: 92,
+    w: 216,
+    h: 116,
+    rotate: 0,
+    polylinePoints: [
+      { x: 8 / 216, y: 8 / 116 },
+      { x: 108 / 216, y: 48 / 116 },
+      { x: 208 / 216, y: 108 / 116 }
+    ]
+  }
+  const local = polylineNormalizedPointsToLocal(node)
+  local[1] = worldPointToPolylineLocal(node, { x: 200, y: 260 })
+  const reframed = reframePolylineNode(node, local, { padding: 8 })
+  assert.deepEqual({ x: reframed.x, y: reframed.y, w: reframed.w, h: reframed.h }, { x: 92, y: 92, w: 216, h: 176 })
+  const world = reframed.polylinePoints.map(point => polylineLocalPointToWorld(reframed, {
+    x: point.x * reframed.w,
+    y: point.y * reframed.h
+  }))
+  assert.deepEqual(world, [{ x: 100, y: 100 }, { x: 200, y: 260 }, { x: 300, y: 200 }])
+
+  const rotated = { ...node, rotate: 37 }
+  const before = polylineNormalizedPointsToLocal(rotated).map(point => polylineLocalPointToWorld(rotated, point))
+  const rotatedLocal = polylineNormalizedPointsToLocal(rotated)
+  const target = { x: before[1].x + 120, y: before[1].y - 80 }
+  rotatedLocal[1] = worldPointToPolylineLocal(rotated, target)
+  const rotatedFrame = reframePolylineNode(rotated, rotatedLocal, { padding: 8 })
+  const after = rotatedFrame.polylinePoints.map(point => polylineLocalPointToWorld(rotatedFrame, {
+    x: point.x * rotatedFrame.w,
+    y: point.y * rotatedFrame.h
+  }))
+  assert.equal(rotatedFrame.rotate, 37)
+  assertClose(after[0].x, before[0].x)
+  assertClose(after[0].y, before[0].y)
+  assertClose(after[1].x, target.x)
+  assertClose(after[1].y, target.y)
+  assertClose(after[2].x, before[2].x)
+  assertClose(after[2].y, before[2].y)
+})
+
+test('keeps maximum point editing to bounded SVG paths while every point remains addressable', () => {
+  const points = Array.from({ length: 10000 }, (_, index) => ({
+    x: index / 9999,
+    y: (index % 17) / 16
+  }))
+  const node = { w: 20000, h: 1000, polylinePoints: points }
+  const paths = polylinePointHandlePaths(node)
+  assert.equal((paths.all.match(/M/g) || []).length, 10000)
+  assert.equal((paths.endpoints.match(/M/g) || []).length, 2)
+  assert.ok(paths.all.length < 400000)
+  assert.equal(nearestPolylinePointIndex(node, { x: points[8765].x * node.w, y: points[8765].y * node.h }, 1), 8765)
+  assert.equal(nearestPolylinePointIndex(node, { x: -100, y: -100 }, 12), -1)
+})
+
+test('finishes the straight draft on the second point and expands it into equal segments', () => {
   const draftPoints = sourceBetween(appSource, 'const polylineDraftRenderPoints', 'const polylineDraftPointString')
   const addPoint = sourceBetween(appSource, 'function addPolylinePoint', 'function finishPolylineDrawing')
+  const finish = sourceBetween(appSource, 'function finishPolylineDrawing', 'function cancelPolylineDrawing')
   const canvasPointerDown = sourceBetween(appSource, 'function canvasPointerDown', 'function nodePointerDown')
 
   assert.match(addPoint, /polylineDraft\.value\s*=\s*\{[\s\S]*?points:\s*\[point\]/)
-  assert.match(addPoint, /const last = draft\.points\.at\(-1\)/)
-  assert.match(addPoint, /draft\.points\.push\(point\)/)
-  assert.match(addPoint, /Math\.hypot\(point\.x - last\.x, point\.y - last\.y\)/)
-  assert.match(draftPoints, /const points = \[\.\.\.draft\.points\]/)
-  assert.match(draftPoints, /points\.push\(hover\)/)
+  assert.match(addPoint, /createEvenlySpacedPolylinePoints\(draft\.points\[0\], point, DEFAULT_POLYLINE_SEGMENT_COUNT\)/)
+  assert.match(addPoint, /return finishPolylineDrawing\(e\)/)
+  assert.doesNotMatch(addPoint, /draft\.points\.push\(point\)/)
+  assert.match(draftPoints, /return \[draft\.points\[0\], hover\]/)
   assert.match(appSource, /<polyline :points="polylineDraftPointString"[^>]*:stroke-linejoin="polylineDraft\.lineJoin"/)
   assert.ok(canvasPointerDown.indexOf('addPolylinePoint(e)') < canvasPointerDown.indexOf("e.target.closest?.('.node-shell, .drawing-hit')"))
-})
-
-test('drags only the draft start vertex and cleans up every pointer lifecycle path', () => {
-  const pointFromEvent = sourceBetween(appSource, 'function polylinePointFromEvent', 'const polylineDraftRenderPoints')
-  const move = sourceBetween(appSource, 'function movePolylineStartPoint', 'function endPolylineStartPointDrag')
-  const end = sourceBetween(appSource, 'function endPolylineStartPointDrag', 'function startPolylineStartPointDrag')
-  const start = sourceBetween(appSource, 'function startPolylineStartPointDrag', 'function addPolylinePoint')
-  const finish = sourceBetween(appSource, 'function finishPolylineDrawing', 'function cancelPolylineDrawing')
-  const cancel = sourceBetween(appSource, 'function cancelPolylineDrawing', 'function removeLastPolylinePoint')
-  const removeLast = sourceBetween(appSource, 'function removeLastPolylinePoint', 'function handleCanvasPointerMove')
-  const canvasMove = sourceBetween(appSource, 'function handleCanvasPointerMove', 'function handleCanvasPointerLeave')
-  const resetDocumentSession = sourceBetween(appSource, 'function resetDocumentSession', 'function applyProject')
-  const applyProject = sourceBetween(appSource, 'function applyProject', 'function buildProjectPayload')
-  const unmount = sourceBetween(appSource, 'onUnmounted(() => {', '</script>')
-
-  assert.match(appSource, /<circle v-for="\(point, index\) in polylineDraft\.points"[^>]*:class="\{ 'polyline-start-point': index === 0 \}"[^>]*:data-testid="index === 0 \? 'polyline-start-point' : undefined"/)
-  assert.match(appSource, /:r="\(index === 0 \? 7 : 4\) \/ zoom"/)
-  assert.match(appSource, /@pointerdown="index === 0 && startPolylineStartPointDrag\(\$event\)"/)
-
-  assert.match(enhancementCss, /\.polyline-draft-layer\s*\{[^}]*pointer-events:\s*none;/s)
-  assert.match(enhancementCss, /\.polyline-draft-layer polyline\s*\{[^}]*pointer-events:\s*none;/s)
-  assert.match(enhancementCss, /\.polyline-draft-layer circle\s*\{[^}]*pointer-events:\s*none;/s)
-  assert.match(enhancementCss, /\.polyline-draft-layer circle\.polyline-start-point\s*\{[^}]*pointer-events:\s*all;[^}]*cursor:\s*grab;[^}]*touch-action:\s*none;/s)
-  assert.match(enhancementCss, /\.polyline-draft-layer circle\.polyline-start-point:active\s*\{[^}]*cursor:\s*grabbing;/s)
-
-  assert.match(start, /e\.preventDefault\(\)[\s\S]*?e\.stopPropagation\(\)/)
-  assert.match(start, /polylineDraft\.value\.hover = polylineDraft\.value\.points\.at\(-1\)/)
-  assert.match(start, /polylineStartPointDrag = \{ pointerId: e\.pointerId, target: e\.currentTarget \}/)
-  assert.match(start, /e\.currentTarget\?\.setPointerCapture\?\.\(e\.pointerId\)/)
-  for (const eventName of ['pointermove', 'pointerup', 'pointercancel', 'blur']) {
-    assert.match(start, new RegExp(`window\\.addEventListener\\('${eventName}',`))
-    assert.match(end, new RegExp(`window\\.removeEventListener\\('${eventName}',`))
-  }
-  assert.match(end, /target\?\.hasPointerCapture\?\.\(pointerId\)[\s\S]*?target\.releasePointerCapture\(pointerId\)/)
-
-  assert.match(move, /const point = polylinePointFromEvent\(e\)[\s\S]*?polylineDraft\.value\.points\[0\] = point/)
-  assert.doesNotMatch(move, /\.push\(|\.splice\(|points\[[1-9]/)
-  assert.match(canvasMove, /activeTool\.value === 'polyline' && polylineDraft\.value && !polylineStartPointDrag && !operation\.value/)
-  assert.match(pointFromEvent, /!snap\.value \|\| e\?\.altKey/)
-  assert.match(pointFromEvent, /Math\.round\(point\.x \/ gridSize\.value\) \* gridSize\.value/)
-  assert.match(pointFromEvent, /Math\.round\(point\.y \/ gridSize\.value\) \* gridSize\.value/)
-
-  assert.match(finish, /endPolylineStartPointDrag\(\)[\s\S]*?const node = normalizeNode/)
-  assert.match(cancel, /^function cancelPolylineDrawing\(showNotice = false\) \{\s*endPolylineStartPointDrag\(\)/)
-  assert.match(removeLast, /if \(!draft\.points\.length\) \{\s*endPolylineStartPointDrag\(\)/)
-  assert.match(resetDocumentSession, /pointerUp\(\)[\s\S]*?endPolylineStartPointDrag\(\)[\s\S]*?polylineDraft\.value = null/)
-  assert.match(applyProject, /resetDocumentSession\(\)/)
-  assert.match(unmount, /cancelPendingCanvasZoom\(\{ commit: false \}\)[\s\S]*?endPolylineStartPointDrag\(\)[\s\S]*?pointerUp\(\)/)
-})
-
-test('finishes or cancels one polyline session and always returns to selection mode', () => {
-  const finish = sourceBetween(appSource, 'function finishPolylineDrawing', 'function cancelPolylineDrawing')
-  const cancel = sourceBetween(appSource, 'function cancelPolylineDrawing', 'function removeLastPolylinePoint')
-  const removeLast = sourceBetween(appSource, 'function removeLastPolylinePoint', 'function handleCanvasPointerMove')
-  const keyboard = sourceBetween(appSource, 'function keydown', 'function keyup')
-
-  assert.match(appSource, /@dblclick="handleCanvasDoubleClick"/)
-  assert.match(appSource, /function handleCanvasDoubleClick\(e\)[\s\S]*?finishPolylineDrawing\(e\)/)
-  assert.match(keyboard, /activeTool\.value === 'polyline' && polylineDraft\.value/)
-  assert.match(keyboard, /e\.key === 'Enter'[\s\S]*?finishPolylineDrawing\(e\)/)
-  assert.match(keyboard, /e\.key === 'Escape'[\s\S]*?cancelPolylineDrawing\(true\)/)
   assert.match(finish, /draft\.points\.length < 2/)
-  assert.match(finish, /recordEntityInsertion\(\{ nodes: \[node\], edges: \[\], drawings: \[\] \}\)[\s\S]*?const \[insertedNode\] = appendNodes\(node\)[\s\S]*?polylineDraft\.value = null[\s\S]*?selectSingleNode\(insertedNode\)[\s\S]*?activeTool\.value = 'select'/)
-  assert.match(cancel, /polylineDraft\.value = null[\s\S]*?activeTool\.value === 'polyline'\) activeTool\.value = 'select'/)
-  assert.match(removeLast, /draft\.points\.pop\(\)[\s\S]*?if \(!draft\.points\.length\) \{[\s\S]*?polylineDraft\.value = null[\s\S]*?activeTool\.value = 'select'/)
-  assert.match(appSource, /function setTool\(id\)[\s\S]*?if \(id !== 'polyline'\) cancelPolylineDrawing\(\)[\s\S]*?activeTool\.value = id/)
+  assert.match(finish, /recordEntityInsertion\(\{ nodes: \[node\], edges: \[\], drawings: \[\] \}\)[\s\S]*?selectSingleNode\(insertedNode\)[\s\S]*?activeTool\.value = 'select'/)
+})
+
+test('shows draggable point handles only for one selected unlocked polyline and records one field history entry', () => {
+  const start = sourceBetween(appSource, 'function startPolylinePointDrag', 'function setPolylineSegmentCount')
+  const pointerHistory = sourceBetween(appSource, 'function pointerGeometryHistory', 'function editorLodGeometryPayload')
+  const pointerMove = sourceBetween(appSource, 'function applyPointerMove', 'function pointerUp')
+  const transformBox = sourceBetween(appSource, '<div v-if="activeTool === \'select\' && selected && selectedNodeCount === 1 && !selected.locked"', '<div v-for="n in editorRenderedNodes"')
+
+  assert.match(transformBox, /v-if="selected\.type === 'polyline'"[^>]*class="polyline-point-editor"/)
+  assert.doesNotMatch(transformBox, /v-for="\(point, index\) in selected\.polylinePoints"/)
+  assert.match(transformBox, /data-testid="polyline-point-handle-layer"/)
+  assert.match(transformBox, /:data-point-count="selected\.polylinePoints\.length"/)
+  assert.match(transformBox, /@pointerdown="startPolylinePointLayerDrag\(\$event, selected\)"/)
+  assert.match(start, /e\.preventDefault\(\)[\s\S]*?e\.stopPropagation\(\)/)
+  assert.match(start, /node\.type !== 'polyline' \|\| node\.locked/)
+  assert.match(start, /captureFieldRecord\(node, \['x', 'y', 'w', 'h', 'polylinePoints'\]\)/)
+  assert.match(start, /beginPointerOperation\(e, \{[\s\S]*?type: 'polylinePoint'/)
+  assert.match(pointerMove, /polylinePointFromEvent\(e, false\)/)
+  assert.match(pointerMove, /op\.type === 'polylinePoint'[\s\S]*?worldPointToPolylineLocal[\s\S]*?reframePolylineNode[\s\S]*?commitPointerOperation\(op\)[\s\S]*?updateNodeSpatialIndex\(node, false\)/)
+  assert.match(pointerHistory, /op\.type === 'polylinePoint'[\s\S]*?kind: 'fields'[\s\S]*?op\.historyRecord/)
+  assert.match(enhancementCss, /\.polyline-point-editor\s*\{[^}]*pointer-events:\s*none;/s)
+  assert.match(enhancementCss, /\.polyline-point-handle-layer\s*\{[^}]*cursor:\s*grab;/s)
+})
+
+test('changes segment count through arc-length resampling and keeps resize and rotate controls', () => {
+  const setter = sourceBetween(appSource, 'function setPolylineSegmentCount', 'function addPolylinePoint')
+  const controls = sourceBetween(appSource, '<template v-if="selected.type === \'polyline\'">', '<template v-if="![\'lineShape\',\'pencil\',\'polyline\',\'flowPipe\'')
+  const transformBox = sourceBetween(appSource, '<div v-if="activeTool === \'select\' && selected && selectedNodeCount === 1 && !selected.locked"', '<div v-for="n in editorRenderedNodes"')
+
+  assert.doesNotMatch(setter, /recordNodeFields\(/)
+  assert.match(setter, /const geometry = resamplePolylineNodeGeometry\(node, nextCount\)/)
+  assert.match(setter, /Object\.assign\(node, geometry\)[\s\S]*?updateNodeSpatialIndex\(node\)[\s\S]*?markPreviewCanvasDocumentDirty\(\)/)
+  assert.match(controls, /分段数<input type="number" min="1" max="9999" step="1"[^>]*data-testid="polyline-segment-count"/)
+  assert.match(controls, /:value="polylineSegmentCount\(selected\)"/)
+  assert.match(controls, /@change="setPolylineSegmentCount\(selected, \$event\.target\.value\)"/)
+  assert.match(appSource, /class="properties"[^>]*@focusin\.capture="beginSelectedFieldEdit"[^>]*@focusout\.capture="finishActiveFieldEdit"/)
+  assert.match(transformBox, /class="resize-handle"/)
+  assert.match(transformBox, /class="rotate-handle"/)
 })
 
 test('starts a polyline only by dropping it on the canvas and requires another drop for the next one', () => {
@@ -328,14 +466,12 @@ test('starts a polyline only by dropping it on the canvas and requires another d
   assert.doesNotMatch(catalogButton, /@click=/)
   assert.match(catalogButton, /@dblclick="handleCatalogItemDoubleClick\(item\)"/)
   assert.match(drop, /const type = e\.dataTransfer\.getData\('shape'\)/)
-  assert.match(drop, /if \(type === 'polyline'\) \{[\s\S]*?polylineDraft\.value\?\.points\?\.length >= 2\) finishPolylineDrawing\(\)[\s\S]*?else cancelPolylineDrawing\(\)[\s\S]*?setTool\('polyline'\)[\s\S]*?addPolylinePoint\(e\)[\s\S]*?return/)
+  assert.match(drop, /if \(type === 'polyline'\) \{[\s\S]*?cancelPolylineDrawing\(\)[\s\S]*?setTool\('polyline'\)[\s\S]*?addPolylinePoint\(e\)[\s\S]*?return/)
   assert.ok(drop.indexOf("setTool('polyline')") < drop.indexOf('addPolylinePoint(e)'))
   assert.ok(drop.indexOf('addPolylinePoint(e)') < drop.indexOf('if (type) addNode(type'))
   assert.match(addPoint, /\(e\.button \?\? 0\) !== 0 \|\| activeTool\.value !== 'polyline'[\s\S]*?return false/)
   assert.doesNotMatch(addPoint, /if \(e\.button !== 0/)
   assert.equal((appSource.match(/setTool\('polyline'\)/g) || []).length, 1)
-  assert.match(appSource, /@dblclick="handleCanvasDoubleClick"/)
-  assert.match(appSource, /function handleCanvasDoubleClick\(e\)[\s\S]*?finishPolylineDrawing\(e\)/)
 })
 
 test('routes clicks over nodes, drawings, and locked badges into the active polyline draft', () => {
@@ -368,7 +504,7 @@ test('renders every start and end arrow combination independently', async () => 
     if (hasStart || hasEnd) assert.match(html, /markerUnits="userSpaceOnUse"/)
   }
 
-  const controls = sourceBetween(appSource, '<template v-if="selected.type === \'polyline\'">', '<template v-if="![\'lineShape\',\'pencil\',\'polyline\'].includes(selected.type)')
+  const controls = sourceBetween(appSource, '<template v-if="selected.type === \'polyline\'">', '<template v-if="![\'lineShape\',\'pencil\',\'polyline\',\'flowPipe\'')
   assert.match(controls, /起点样式<select v-model="selected\.polylineStartMarker"><option value="none">无<\/option><option value="arrow">箭头<\/option><\/select>/)
   assert.match(controls, /终点样式<select v-model="selected\.polylineEndMarker"><option value="none">无<\/option><option value="arrow">箭头<\/option><\/select>/)
 })
@@ -392,7 +528,7 @@ test('keeps arrow size independent from line width in every renderer', async () 
   assert.equal((html.match(/markerHeight="14"/g) || []).length, 2)
   assert.doesNotMatch(html, /markerWidth="60"|markerHeight="60"/)
 
-  const controls = sourceBetween(appSource, '<template v-if="selected.type === \'polyline\'">', '<template v-if="![\'lineShape\',\'pencil\',\'polyline\'].includes(selected.type)')
+  const controls = sourceBetween(appSource, '<template v-if="selected.type === \'polyline\'">', '<template v-if="![\'lineShape\',\'pencil\',\'polyline\',\'flowPipe\'')
   assert.match(controls, /箭头大小<input type="number" min="1" max="100" step="1" v-model\.number="selected\.polylineArrowSize" data-testid="polyline-arrow-size">/)
 })
 
@@ -408,7 +544,7 @@ test('orders shared straight-line controls before polyline-only controls', () =>
   const polylineControls = sourceBetween(
     appSource,
     '<template v-if="selected.type === \'polyline\'">',
-    '<template v-if="![\'lineShape\',\'pencil\',\'polyline\'].includes(selected.type)'
+    '<template v-if="![\'lineShape\',\'pencil\',\'polyline\',\'flowPipe\''
   )
   const lineControls = sourceBetween(
     appSource,
@@ -431,6 +567,7 @@ test('orders shared straight-line controls before polyline-only controls', () =>
   assert.deepEqual(labels(lineControls), sharedLabels)
   assert.deepEqual(labels(polylineControls).slice(0, sharedLabels.length), sharedLabels)
   assert.deepEqual(labels(polylineControls).slice(sharedLabels.length), [
+    '分段数',
     '线条宽度',
     '箭头大小',
     '起点样式',

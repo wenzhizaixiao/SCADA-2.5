@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
   POINT_SOURCE_PROTOCOLS,
+  createDefaultPointSources,
   createLocalPointCatalogGateway
 } from '../src/services/pointCatalogGateway.js'
 import {
@@ -9,7 +10,8 @@ import {
   MAX_RUNTIME_TABLE_CELL_DEPTH,
   MAX_RUNTIME_TABLE_CELL_OBJECT_KEYS,
   MAX_RUNTIME_TABLE_COLUMNS,
-  MAX_RUNTIME_TABLE_ROWS
+  MAX_RUNTIME_TABLE_ROWS,
+  resolveBindingValue
 } from '../src/models/dataBindingModel.js'
 
 test('provides every supported protocol and one globally unique point catalog', async () => {
@@ -24,6 +26,153 @@ test('provides every supported protocol and one globally unique point catalog', 
     point.id && point.name && point.group && point.type && point.status && point.updatedAt
     && point.sourceId && point.sourceName && point.protocol
   )))
+})
+
+test('provides one built-in color demo and one numeric demo for every protocol', async () => {
+  const gateway = createLocalPointCatalogGateway()
+  const sources = await gateway.listSources()
+  const demos = sources.filter(source => source.id.startsWith('demo-interface-'))
+
+  assert.equal(demos.length, POINT_SOURCE_PROTOCOLS.length * 2)
+  for (const protocol of POINT_SOURCE_PROTOCOLS) {
+    const protocolDemos = demos.filter(source => source.protocol === protocol)
+    assert.equal(protocolDemos.length, 2, `${protocol} should provide two interface demos`)
+
+    const colorDemo = protocolDemos.find(source => source.id.endsWith('-color'))
+    const numberDemo = protocolDemos.find(source => source.id.endsWith('-number'))
+    assert.ok(colorDemo, `${protocol} color demo is missing`)
+    assert.ok(numberDemo, `${protocol} numeric demo is missing`)
+
+    const colorSnapshot = await gateway.getSourceSnapshot(colorDemo.id)
+    const numberSnapshot = await gateway.getSourceSnapshot(numberDemo.id)
+    assert.match(colorSnapshot.data.value, /^#[\da-f]{6}$/i)
+    assert.equal(Number.isFinite(numberSnapshot.data.value), true)
+    assert.equal(colorSnapshot.quality, 'good')
+    assert.equal(numberSnapshot.quality, 'good')
+
+    for (const [kind, snapshot] of [['color', colorSnapshot], ['number', numberSnapshot]]) {
+      assert.equal(snapshot.data.kind, kind)
+      assert.equal(snapshot.data.protocol, protocol)
+      assert.equal(typeof snapshot.data.label, 'string')
+      assert.equal(snapshot.data.status, 'online')
+      assert.equal(snapshot.data.enabled, true)
+      assert.match(snapshot.data.updatedAt, /^2026-08-04T/)
+      assert.ok(Array.isArray(snapshot.data.table.columns))
+      assert.ok(snapshot.data.table.columns.length >= 3)
+      assert.ok(Array.isArray(snapshot.data.table.rows))
+      assert.ok(snapshot.data.table.rows.length >= 5)
+      assert.ok(Buffer.byteLength(JSON.stringify(snapshot.data), 'utf8') <= 4096)
+
+      const tableNode = { type: 'table', tableHeaders: ['静态列'], tableCells: [['静态值']] }
+      const materialized = resolveBindingValue(tableNode, 'tableData', snapshot.data.table)
+      assert.deepEqual(
+        materialized.columns.map(column => column.title),
+        snapshot.data.table.columns.map(column => column.title)
+      )
+      assert.equal(materialized.rows.length, snapshot.data.table.rows.length)
+
+      const inferred = resolveBindingValue(tableNode, 'tableData', snapshot.data.table.rows)
+      assert.deepEqual(
+        inferred.columns.map(column => column.key),
+        snapshot.data.table.columns.map(column => column.key)
+      )
+    }
+    assert.ok(Array.isArray(colorSnapshot.data.palette))
+    assert.ok(colorSnapshot.data.palette.length >= 5)
+    assert.equal(typeof colorSnapshot.data.states, 'object')
+    assert.ok(Array.isArray(numberSnapshot.data.series))
+    assert.ok(numberSnapshot.data.series.length >= 6)
+    assert.equal(numberSnapshot.data.metrics.current, numberSnapshot.data.value)
+    assert.equal(typeof numberSnapshot.data.unit, 'string')
+
+    const testedColor = await gateway.testSource(colorDemo.id, { includePoints: false })
+    const testedNumber = await gateway.testSource(numberDemo.id, { includePoints: false })
+    assert.equal(testedColor.ok, true)
+    assert.equal(testedNumber.ok, true)
+    assert.deepEqual((await gateway.getSourceSnapshot(colorDemo.id)).data, colorSnapshot.data)
+    assert.deepEqual((await gateway.getSourceSnapshot(numberDemo.id)).data, numberSnapshot.data)
+  }
+})
+
+test('adds built-in interface demos to a legacy default workspace only once', async () => {
+  const legacySources = createDefaultPointSources()
+    .filter(source => !source.id.startsWith('demo-interface-'))
+    .map(source => {
+      const { builtInDemoCatalogVersion: _version, ...legacySource } = source
+      return legacySource
+    })
+  legacySources[0].name = '用户保留的连接名称'
+  let persisted = structuredClone(legacySources)
+  let saveCount = 0
+  const store = {
+    async load() { return structuredClone(persisted) },
+    async save(_workspaceId, sources) {
+      persisted = structuredClone(sources)
+      saveCount += 1
+      return { durable: true, mode: 'durable', reason: '' }
+    },
+    getPersistenceStatus() { return { durable: true, mode: 'durable', reason: '' } }
+  }
+
+  const gateway = createLocalPointCatalogGateway({ store })
+  await gateway.activateWorkspace('legacy-default-workspace')
+  const migrated = await gateway.listSources()
+  assert.equal(migrated.filter(source => source.id.startsWith('demo-interface-')).length, 14)
+  assert.equal((await gateway.getSource(legacySources[0].id)).name, '用户保留的连接名称')
+  assert.equal(saveCount, 1)
+
+  const removedId = 'demo-interface-http-color'
+  await gateway.removeSource(removedId)
+  assert.equal(saveCount, 2)
+
+  const reloadedGateway = createLocalPointCatalogGateway({ store })
+  await reloadedGateway.activateWorkspace('legacy-default-workspace')
+  assert.equal(await reloadedGateway.getSource(removedId), null)
+  assert.equal(saveCount, 2, 'a deleted demo must not be re-added during activation')
+
+  await reloadedGateway.createSource({
+    id: removedId,
+    name: '用户自建 HTTP 连接',
+    protocol: 'HTTP'
+  })
+  const recreatedTest = await reloadedGateway.testSource(removedId, { includePoints: false })
+  const recreatedSnapshot = await reloadedGateway.getSourceSnapshot(removedId)
+  assert.equal(recreatedTest.ok, true)
+  assert.equal(recreatedSnapshot.data.kind, undefined)
+  assert.deepEqual(recreatedSnapshot.data.source, {
+    id: removedId,
+    name: '用户自建 HTTP 连接',
+    protocol: 'HTTP'
+  })
+})
+
+test('does not partially install demo migration when refresh persistence fails', async () => {
+  const legacySources = createDefaultPointSources()
+    .filter(source => !source.id.startsWith('demo-interface-'))
+    .map(source => {
+      const { builtInDemoCatalogVersion: _version, ...legacySource } = source
+      return legacySource
+    })
+  let loadCount = 0
+  const store = {
+    async load() {
+      loadCount += 1
+      return loadCount === 1 ? [] : structuredClone(legacySources)
+    },
+    async save() { throw new Error('migration write rejected') },
+    getPersistenceStatus() { return { durable: true, mode: 'durable', reason: '' } }
+  }
+  const gateway = createLocalPointCatalogGateway({ store })
+  await gateway.activateWorkspace('refresh-migration-failure')
+  const catalogEvents = []
+  const snapshotEvents = []
+  gateway.subscribe(event => catalogEvents.push(event))
+  gateway.subscribeSnapshots(snapshot => snapshotEvents.push(snapshot))
+
+  await assert.rejects(gateway.refresh(), /migration write rejected/)
+  assert.deepEqual(await gateway.listSources(), [])
+  assert.deepEqual(catalogEvents, [])
+  assert.deepEqual(snapshotEvents, [])
 })
 
 test('searches point names, ids, groups and protocols with optional source filters', async () => {
@@ -532,6 +681,8 @@ test('invalidates snapshots when protocol or connection config changes until fre
   const tested = await gateway.testSource(sourceId, { includePoints: false })
   assert.equal(tested.ok, true)
   assert.equal(events.at(-1).quality, 'good')
+  assert.ok(Array.isArray(events.at(-1).data.points))
+  assert.equal(events.at(-1).data.data, undefined)
 })
 
 test('looks up only requested legacy points by id and preserves request order', async () => {

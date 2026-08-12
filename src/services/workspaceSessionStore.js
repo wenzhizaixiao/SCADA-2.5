@@ -4,6 +4,7 @@ const DATABASE_VERSION = 1
 const CHUNK_FORMAT_VERSION = 1
 const DEFAULT_CHUNK_SIZE = 64 * 1024
 const DEFAULT_TIME_SLICE_MS = 4
+const DEFAULT_CHECKPOINT_TASK_INTERVAL = 256
 const MAX_STRING_SLICE_CHARS = 4 * 1024
 const ROOT_SEGMENT = Symbol('workspace-session-root')
 
@@ -106,6 +107,10 @@ export async function encodeWorkspaceSessionSnapshot(snapshot, options = {}) {
 
   const chunkSize = Math.max(1, Math.floor(positiveNumber(options.chunkSize, DEFAULT_CHUNK_SIZE)))
   const timeSliceMs = positiveNumber(options.timeSliceMs, DEFAULT_TIME_SLICE_MS)
+  const checkpointTaskInterval = Math.max(1, Math.floor(positiveNumber(
+    options.checkpointTaskInterval,
+    DEFAULT_CHECKPOINT_TASK_INTERVAL
+  )))
   const now = typeof options.now === 'function' ? options.now : defaultNow
   const isInputPending = typeof options.isInputPending === 'function' ? options.isInputPending : defaultIsInputPending
   const yieldControl = typeof options.yieldControl === 'function' ? options.yieldControl : yieldToMainThread
@@ -124,6 +129,7 @@ export async function encodeWorkspaceSessionSnapshot(snapshot, options = {}) {
   let buffer = ''
   let characterLength = 0
   let sliceStartedAt = now()
+  let tasksUntilCheckpoint = 0
 
   function assertActive() {
     if (isCancelled()) throw new ClosedWorkspaceSessionStoreError()
@@ -159,7 +165,6 @@ export async function encodeWorkspaceSessionSnapshot(snapshot, options = {}) {
   const tasks = [{ type: 'value', value: root.value, parentPath: null, segment: ROOT_SEGMENT }]
 
   while (tasks.length) {
-    assertActive()
     const task = tasks.pop()
     if (task.type === 'raw') {
       appendText(task.value)
@@ -250,7 +255,7 @@ export async function encodeWorkspaceSessionSnapshot(snapshot, options = {}) {
       }
     }
 
-    if (tasks.length) {
+    if (tasks.length && tasksUntilCheckpoint <= 0) {
       let pending = false
       try {
         pending = isInputPending() === true
@@ -262,7 +267,9 @@ export async function encodeWorkspaceSessionSnapshot(snapshot, options = {}) {
         assertActive()
         sliceStartedAt = now()
       }
+      tasksUntilCheckpoint = checkpointTaskInterval
     }
+    tasksUntilCheckpoint -= 1
   }
 
   assertActive()

@@ -9,6 +9,7 @@ import {
   bindingRuntimeKey,
   resolveNodeDataBindings
 } from '../models/dataBindingModel.js'
+import { MAX_SIGNAL_COLORS } from '../config/componentBindingSchema.js'
 import { formatRuntimeValue } from './runtimeValueFormat.js'
 
 export const MAX_RUNTIME_CHART_BARS = 12
@@ -34,6 +35,7 @@ const SAFE_NAMED_COLORS = new Set([
 
 const DIRECT_TARGETS = new Set([
   'opacity',
+  'signalOpacity',
   'text',
   'checked',
   'value',
@@ -41,6 +43,7 @@ const DIRECT_TARGETS = new Set([
   'chartData',
   'animationDuration'
 ])
+const SIGNAL_COLOR_TARGET_PATTERN = /^signalColors\.(\d+)$/
 
 const RUNTIME_TABLE_CELL_FORMAT_LIMITS = Object.freeze({
   maxLength: MAX_RUNTIME_TABLE_CELL_TEXT_LENGTH,
@@ -113,8 +116,9 @@ export function materializeRuntimeNode(node, getPointValue) {
   if (!targets.length) return node
 
   let effective = { ...node }
+  let signalColors = null
   for (const target of targets) {
-    if (target === 'fill' || target === 'stroke') {
+    if (target === 'fill' || target === 'stroke' || target === 'visualPrimaryColor') {
       effective[target] = runtimeColor(overrides[target], node[target])
       continue
     }
@@ -124,6 +128,18 @@ export function materializeRuntimeNode(node, getPointValue) {
     }
     if (target === 'tableData') {
       effective = materializeTableData(effective, overrides.tableData)
+      continue
+    }
+    const signalColorMatch = SIGNAL_COLOR_TARGET_PATTERN.exec(target)
+    if (signalColorMatch && Number(signalColorMatch[1]) < MAX_SIGNAL_COLORS) {
+      if (!signalColors) {
+        signalColors = Array.isArray(node.signalColors)
+          ? node.signalColors.slice(0, MAX_SIGNAL_COLORS)
+          : [node.signalColor || '#21c58e']
+        effective.signalColors = signalColors
+      }
+      const index = Number(signalColorMatch[1])
+      signalColors[index] = runtimeColor(overrides[target], signalColors[index])
       continue
     }
     if (DIRECT_TARGETS.has(target)) effective[target] = overrides[target]

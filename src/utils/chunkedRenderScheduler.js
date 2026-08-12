@@ -56,19 +56,22 @@ export function createCoalescedRenderTrigger(options = {}) {
 /**
  * Runs render work against a private task in time-bounded scheduled slices.
  * Only the latest completed generation is committed to the visible target.
+ * Schedule and dynamic-budget contexts expose task after createTask has run.
  */
 export function createChunkedRenderScheduler(options = {}) {
-  const budgetSource = typeof options.budgetMs === 'function'
+  const hasDynamicBudget = typeof options.budgetMs === 'function'
+  const budgetSource = hasDynamicBudget
     ? options.budgetMs
     : () => options.budgetMs ?? 3
 
-  function currentBudgetMs() {
-    const budgetMs = Number(budgetSource())
+  function currentBudgetMs(context) {
+    const budgetMs = Number(budgetSource(context))
     if (!Number.isFinite(budgetMs) || budgetMs <= 0) throw new RangeError('budgetMs must be greater than zero')
     return budgetMs
   }
 
-  currentBudgetMs()
+  // A dynamic budget may depend on job data, so validate it when the first slice starts.
+  if (!hasDynamicBudget) currentBudgetMs()
 
   const schedule = requiredFunction(options.schedule, 'schedule')
   const cancel = requiredFunction(options.cancel, 'cancel')
@@ -118,8 +121,16 @@ export function createChunkedRenderScheduler(options = {}) {
     onError(error, Object.freeze({ phase, generation: job.generation, payload: job.payload }))
   }
 
+  function contextFor(job) {
+    return Object.freeze({
+      generation: job.generation,
+      payload: job.payload,
+      task: job.task
+    })
+  }
+
   function deadlineFor(job, hostDeadline) {
-    const budgetMs = currentBudgetMs()
+    const budgetMs = currentBudgetMs(contextFor(job))
     const startedAt = Number(now())
     const hasHostDeadline = typeof hostDeadline?.timeRemaining === 'function'
     const didTimeout = hasHostDeadline && hostDeadline.didTimeout === true
@@ -208,7 +219,7 @@ export function createChunkedRenderScheduler(options = {}) {
       }
     }
 
-    handle = schedule(callback)
+    handle = schedule(callback, contextFor(job))
     scheduledHandle = handle
   }
 

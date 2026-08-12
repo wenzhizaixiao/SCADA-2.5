@@ -1,6 +1,20 @@
 const COMMON_GROUP = 'common'
 const ANIMATION_GROUP = 'animation'
 const DATA_GROUP = 'data'
+const SIGNAL_GROUP = 'signal'
+export const MAX_SIGNAL_COLORS = 8
+export const ANIMATION_DURATION_MIN_SECONDS = 0.2
+export const BUILT_IN_ANIMATION_DURATION_MAX_SECONDS = 5
+export const CUSTOM_ANIMATION_DURATION_MAX_SECONDS = 20
+
+const BUILT_IN_ANIMATION_TYPES = new Set([
+  'flowPipe',
+  'rotatingFan',
+  'signalLight',
+  'waterTank',
+  'heartbeat',
+  'particles'
+])
 
 function parameter(target, label, valueType, group, readStatic, options = {}) {
   return Object.freeze({
@@ -20,18 +34,32 @@ const COMMON_PARAMETERS = Object.freeze([
   parameter('opacity', '透明度', 'number', COMMON_GROUP, node => node?.opacity, { min: 0, max: 1 }),
   parameter('text', '显示文字', 'text', COMMON_GROUP, node => node?.text),
   parameter('animationPlaying', '动效播放', 'boolean', ANIMATION_GROUP, node => node?.animationPaused !== true),
-  parameter('animationDuration', '动画周期', 'number', ANIMATION_GROUP, node => node?.animationDuration, { min: 0.1, max: 3600 })
+  parameter('animationDuration', '动画周期', 'number', ANIMATION_GROUP, node => node?.animationDuration, {
+    min: ANIMATION_DURATION_MIN_SECONDS,
+    max: CUSTOM_ANIMATION_DURATION_MAX_SECONDS
+  })
 ])
+const BUILT_IN_ANIMATION_DURATION_PARAMETER = Object.freeze({
+  ...COMMON_PARAMETERS.find(item => item.target === 'animationDuration'),
+  max: BUILT_IN_ANIMATION_DURATION_MAX_SECONDS
+})
 
 // 这些组件的视觉实现不读取相应公共字段，通信页不展示无效绑定入口。
 const EXCLUDED_TARGETS_BY_TYPE = Object.freeze({
   pencil: new Set(['fill', 'stroke', 'text']),
-  polyline: new Set(['fill', 'text'])
+  polyline: new Set(['fill', 'text']),
+  flowPipe: new Set(['text']),
+  rotatingFan: new Set(['text']),
+  signalLight: new Set(['text']),
+  waterTank: new Set(['text']),
+  heartbeat: new Set(['text']),
+  particles: new Set(['text'])
 })
 
 const CHECKED_PARAMETER = parameter('checked', '选中状态', 'boolean', DATA_GROUP, node => node?.checked)
 const VALUE_PARAMETER = parameter('value', '组件值', 'text', DATA_GROUP, node => node?.value)
-const PROGRESS_PARAMETER = parameter('progressValue', '进度数值', 'number', DATA_GROUP, node => node?.progressValue)
+const PROGRESS_PARAMETER = parameter('progressValue', '进度数值', 'number', DATA_GROUP, node => node?.progressValue, { min: 0, max: 100 })
+const VISUAL_PRIMARY_COLOR_PARAMETER = parameter('visualPrimaryColor', '主体颜色', 'color', COMMON_GROUP, node => node?.visualPrimaryColor)
 const TABLE_PARAMETER = parameter('tableData', '表格数据', 'table', DATA_GROUP, node => ({
   columns: (Array.isArray(node?.tableHeaders) ? node.tableHeaders : []).map((title, index) => ({
     key: `column${index + 1}`,
@@ -40,6 +68,25 @@ const TABLE_PARAMETER = parameter('tableData', '表格数据', 'table', DATA_GRO
   rows: Array.isArray(node?.tableCells) ? node.tableCells : []
 }))
 const CHART_PARAMETER = parameter('chartData', '图表数据', 'table', DATA_GROUP, node => node?.chartData ?? [])
+const SIGNAL_COLOR_PARAMETERS = Object.freeze(Array.from(
+  { length: MAX_SIGNAL_COLORS },
+  (_, index) => parameter(
+    `signalColors.${index}`,
+    `颜色 ${index + 1}`,
+    'color',
+    SIGNAL_GROUP,
+    node => node?.signalColors?.[index] ?? (index === 0 ? node?.signalColor : undefined),
+    { signalColorIndex: index }
+  )
+))
+const SIGNAL_OPACITY_PARAMETER = parameter(
+  'signalOpacity',
+  '灯光不透明度',
+  'number',
+  SIGNAL_GROUP,
+  node => node?.signalOpacity,
+  { min: 0, max: 1 }
+)
 
 const TYPE_PARAMETERS = Object.freeze({
   table: Object.freeze([TABLE_PARAMETER]),
@@ -53,8 +100,13 @@ const TYPE_PARAMETERS = Object.freeze({
   formProgress: Object.freeze([PROGRESS_PARAMETER]),
   progress: Object.freeze([PROGRESS_PARAMETER]),
   gauge: Object.freeze([PROGRESS_PARAMETER]),
-  waterTank: Object.freeze([PROGRESS_PARAMETER]),
-  chart: Object.freeze([CHART_PARAMETER])
+  flowPipe: Object.freeze([VISUAL_PRIMARY_COLOR_PARAMETER]),
+  rotatingFan: Object.freeze([VISUAL_PRIMARY_COLOR_PARAMETER]),
+  waterTank: Object.freeze([VISUAL_PRIMARY_COLOR_PARAMETER, PROGRESS_PARAMETER]),
+  heartbeat: Object.freeze([VISUAL_PRIMARY_COLOR_PARAMETER]),
+  particles: Object.freeze([VISUAL_PRIMARY_COLOR_PARAMETER]),
+  chart: Object.freeze([CHART_PARAMETER]),
+  signalLight: Object.freeze([...SIGNAL_COLOR_PARAMETERS, SIGNAL_OPACITY_PARAMETER])
 })
 
 const PARAMETER_LIST_CACHE = new Map()
@@ -68,9 +120,14 @@ function parametersForType(type) {
   let parameters = PARAMETER_LIST_CACHE.get(normalizedType)
   if (!parameters) {
     const excluded = EXCLUDED_TARGETS_BY_TYPE[normalizedType]
-    const common = excluded
+    const availableCommon = excluded
       ? COMMON_PARAMETERS.filter(item => !excluded.has(item.target))
       : COMMON_PARAMETERS
+    const common = BUILT_IN_ANIMATION_TYPES.has(normalizedType)
+      ? availableCommon.map(item => item.target === 'animationDuration'
+          ? BUILT_IN_ANIMATION_DURATION_PARAMETER
+          : item)
+      : availableCommon
     parameters = Object.freeze([...common, ...(TYPE_PARAMETERS[normalizedType] || [])])
     PARAMETER_LIST_CACHE.set(normalizedType, parameters)
   }
@@ -91,7 +148,17 @@ function hasTargetBinding(node, target) {
 }
 
 function parameterIsVisible(nodeOrType, item) {
-  if (!nodeOrType || typeof nodeOrType === 'string' || item.target !== 'text') return true
+  if (!nodeOrType || typeof nodeOrType === 'string') return true
+  if (Number.isInteger(item.signalColorIndex)) {
+    if (hasTargetBinding(nodeOrType, item.target)) return true
+    const configuredCount = Number(nodeOrType.signalColorCount)
+    const paletteCount = Array.isArray(nodeOrType.signalColors) ? nodeOrType.signalColors.length : 0
+    const visibleCount = Number.isFinite(configuredCount)
+      ? Math.max(0, Math.min(MAX_SIGNAL_COLORS, Math.trunc(configuredCount)))
+      : Math.min(MAX_SIGNAL_COLORS, paletteCount)
+    return item.signalColorIndex < visibleCount
+  }
+  if (item.target !== 'text') return true
   if (hasTargetBinding(nodeOrType, 'text')) return true
   return String(nodeOrType.text ?? '').trim().length > 0
 }
@@ -127,9 +194,3 @@ export function bindingStaticValue(node, target) {
 // 兼容简短命名，供现有纯函数测试和非 Vue 调用方使用。
 export const bindingParametersForType = getBindableParameters
 export const bindingParameterFor = getBindableParameter
-
-export const COMPONENT_BINDING_GROUPS = Object.freeze({
-  COMMON: COMMON_GROUP,
-  ANIMATION: ANIMATION_GROUP,
-  DATA: DATA_GROUP
-})

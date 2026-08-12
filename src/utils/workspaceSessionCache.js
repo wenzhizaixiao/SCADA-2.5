@@ -1,3 +1,5 @@
+import { legacyInterfaceTestProjectNeedsMigration } from './legacyInterfaceTestMigration.js'
+
 export function createWorkspaceSessionCache(limit = 3) {
   const entries = new Map()
   const persisted = new Set()
@@ -54,6 +56,9 @@ export function createWorkspaceSessionCache(limit = 3) {
     isSaveCurrent(workspace, version) {
       return saveVersions.get(workspace) === version
     },
+    isDirty(workspace) {
+      return saveVersions.has(workspace) && !persisted.has(workspace)
+    },
     completeSave(workspace, version) {
       if (saveVersions.get(workspace) !== version) return false
       persisted.add(workspace)
@@ -107,6 +112,7 @@ function preparedWorkspaceHistory(value) {
 function preparedWorkspacePaper(session, data) {
   const history = preparedWorkspaceHistory(session.history)
   const future = preparedWorkspaceHistory(session.future)
+  const migratedLegacyInterfaceTest = legacyInterfaceTestProjectNeedsMigration(session.data)
   return {
     paper: {
       ...session,
@@ -116,7 +122,7 @@ function preparedWorkspacePaper(session, data) {
       history: history.entries,
       future: future.entries
     },
-    sanitized: history.sanitized || future.sanitized
+    sanitized: migratedLegacyInterfaceTest || history.sanitized || future.sanitized
   }
 }
 

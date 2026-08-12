@@ -208,14 +208,3 @@ export function createPointCatalogLookup(points, pointIds, options = {}) {
     get matches() { return matches }
   })
 }
-
-/**
- * 已绑定关系只需要少量指定点位。这里只遍历 ID，并且只为命中的点位创建展示对象。
- */
-export function resolvePointCatalogEntries(points, pointIds, options = {}) {
-  const lookup = createPointCatalogLookup(points, pointIds, options)
-  while (!lookup.done) {
-    lookup.runSlice({ maxOperations: Math.max(1, Array.isArray(points) ? points.length : 1) })
-  }
-  return lookup.matches
-}

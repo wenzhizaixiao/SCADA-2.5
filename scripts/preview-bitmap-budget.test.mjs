@@ -77,7 +77,7 @@ test('preview handoff requires the requested display density instead of one CSS 
   assert.equal(previewBitmapIsSharp(0, 2), false)
 })
 
-test('centers the fit preview on a physical-pixel-aligned parent offset', () => {
+test('pixel alignment helper centers a generic frame on physical pixels', () => {
   const offset = previewPixelAlignedOffset({
     available: 670,
     rendered: 361.625,
@@ -138,4 +138,28 @@ test('keeps hard-capped bitmap dimensions inside the pixel budget', () => {
   assert.ok(result.bitmapWidth * result.bitmapHeight <= maximum)
   assert.ok(result.pixelRatioX + tolerance >= target)
   assert.ok(result.pixelRatioY + tolerance >= target)
+})
+
+test('visible preview frames keep native 2x density above the legacy fallback budget', () => {
+  for (const [width, height] of [[2560, 1440], [3840, 2160]]) {
+    const budget = previewBitmapPixelBudget({
+      fitActive: true,
+      stageWidth: width,
+      stageHeight: height,
+      scale: 1,
+      devicePixelRatio: 2,
+      preservePixelRatio: true
+    })
+    const bitmap = canvasBitmapDimensions({
+      width,
+      height,
+      devicePixelRatio: previewBitmapPixelRatio(2),
+      maximum: budget
+    })
+
+    assert.equal(bitmap.capped, false, `${width}x${height} must not be spatially downsampled`)
+    assert.ok(bitmap.pixelRatioX >= 2)
+    assert.ok(bitmap.pixelRatioY >= 2)
+    assert.ok(budget > MAX_PREVIEW_BITMAP_PIXELS)
+  }
 })

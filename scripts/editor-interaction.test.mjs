@@ -12,7 +12,6 @@ import {
 } from '../src/utils/canvasViewport.js'
 import { filterPaperEntries } from '../src/utils/librarySearch.js'
 import { isImeCompositionEvent } from '../src/utils/keyboard.js'
-import { NODE_MOVE_INTERACTION_OPACITY } from '../src/utils/interactionOpacity.js'
 import { createPreviewViewportScheduler } from '../src/utils/previewViewportScheduler.js'
 
 const appSource = readFileSync(new URL('../src/App.vue', import.meta.url), 'utf8')
@@ -668,28 +667,17 @@ test('keeps pending clicks out of viewport activity until dragging begins', () =
   assert.ok(pointerMove.indexOf('NODE_DRAG_START_DISTANCE') < pointerMove.indexOf('operation.value.deferPointerCapture = false'))
 })
 
-test('uses a render-only node opacity after the move threshold and restores DOM rendering on release', () => {
-  assert.equal(NODE_MOVE_INTERACTION_OPACITY, 0.62)
-
-  const interactionOpacity = sourceBetween(
-    appSource,
-    'function nodeMoveInteractionOpacity',
-    'const visibleNodes = computed'
-  )
-  assert.match(interactionOpacity, /operation\.value\?\.nodeMoveInteractionActive === true/)
-  assert.match(interactionOpacity, /!operation\.value\?\.transientLargeSelection/)
-  assert.match(interactionOpacity, /activeOperationNodeIds\.value\.has\(nodeId\)/)
-  assert.match(interactionOpacity, /\? NODE_MOVE_INTERACTION_OPACITY[\s\S]*?: 1/)
-  assert.match(interactionOpacity, /function deactivateNodeMoveInteraction\(op\)[\s\S]*?op\.nodeMoveInteractionActive = false/)
+test('keeps moving nodes fully opaque after the move threshold and restores DOM rendering on release', () => {
+  assert.doesNotMatch(appSource, /NODE_MOVE_INTERACTION_OPACITY|nodeMoveInteractionOpacity/)
+  assert.match(appSource, /function deactivateNodeMoveInteraction\(op\)[\s\S]*?op\.nodeMoveInteractionActive = false/)
 
   const nodePointerDown = sourceBetween(appSource, 'function nodePointerDown', 'async function startTextEdit')
   assert.match(nodePointerDown, /type: 'moveNodes',[\s\S]*?deferPointerCapture: true,[\s\S]*?nodeMoveInteractionActive: false/)
 
   const renderedNode = appSource.split('\n').find(line => line.includes('<div v-for="n in editorRenderedNodes"')) || ''
-  assert.match(renderedNode, /v-memo="\[[^"]*nodeMoveInteractionOpacity\(n\.id\)[^"]*\]"/)
-  assert.match(renderedNode, /opacity: nodeMoveInteractionOpacity\(n\.id\)/)
+  assert.doesNotMatch(renderedNode, /nodeMoveInteractionOpacity|opacity:/)
   const groupTransformBox = appSource.split('\n').find(line => line.includes('data-testid="group-transform-box"')) || ''
-  assert.match(groupTransformBox, /opacity: largeSelectionPreviewBounds \? NODE_MOVE_INTERACTION_OPACITY : 1/)
+  assert.doesNotMatch(groupTransformBox, /opacity:/)
 
   const pointerMove = sourceBetween(appSource, 'function pointerMove', 'function applyPointerMove')
   assert.ok(pointerMove.indexOf('NODE_DRAG_START_DISTANCE') < pointerMove.indexOf('operation.value.deferPointerCapture = false'))
@@ -714,9 +702,10 @@ test('uses a render-only node opacity after the move threshold and restores DOM 
   assert.match(largeCommitCancel, /deactivateNodeMoveInteraction\(operation\.value\)[\s\S]*?cancelGeometryInteraction/)
 })
 
-test('sends move opacity to both LOD geometry patches and commits the final frame at full opacity', () => {
+test('keeps both LOD geometry patches fully opaque while moving and on the final frame', () => {
   const payload = sourceBetween(appSource, 'function editorLodGeometryPayload', 'function currentEditorLodGeometrySession')
-  assert.match(payload, /nodeOpacityMultiplier: nodeOpacityMultiplier \?\? \([\s\S]*?op\?\.nodeMoveInteractionActive === true[\s\S]*?NODE_MOVE_INTERACTION_OPACITY[\s\S]*?: 1/)
+  assert.match(payload, /nodeOpacityMultiplier: nodeOpacityMultiplier \?\? 1/)
+  assert.doesNotMatch(payload, /nodeMoveInteractionActive|NODE_MOVE_INTERACTION_OPACITY/)
   assert.doesNotMatch(payload, /(?:node|activeNodes\[[^\]]+\])\.opacity\s*=/)
 
   const frame = sourceBetween(appSource, 'function requestEditorLodGeometryFrame', 'function finishEditorLodGeometry')
@@ -759,7 +748,7 @@ test('keeps embedded video data out of the URL input and commits once by node id
   assert.equal((flushVideoEdit.match(/recordNodeFields\(node, \['videoUrl'\]\)/g) || []).length, 1)
   assert.doesNotMatch(flushVideoEdit, /selected\.value/)
   assert.ok(flushVideoEdit.indexOf("recordNodeFields(node, ['videoUrl'])") < flushVideoEdit.indexOf('node.videoUrl = nextUrl'))
-  assert.match(appSource, /function flushPendingDocumentEdits\(\) \{\s*finishActiveFieldEdit\(\)\s*flushPendingVideoUrlEdit\(\)/)
+  assert.match(appSource, /function flushPendingDocumentEdits\(\) \{\s*flushDocumentInputRender\(\)\s*finishActiveFieldEdit\(\)\s*flushPendingVideoUrlEdit\(\)/)
   assert.match(appSource, /function setNodeSelection\([^)]*\) \{\s*flushPendingDocumentEdits\(\)/)
   assert.match(appSource, /function clearNodeSelection\(\) \{\s*flushPendingDocumentEdits\(\)/)
   assert.match(appSource, /const selectedVideoEditorValue = computed\(\(\) => selectedVideoHasEmbeddedSource\.value \? '' : selectedVideoSource\.value\)/)
@@ -797,12 +786,15 @@ test('renders fullscreen preview at actual pixels without the ordinary preview h
   const exitFullscreen = sourceBetween(appSource, 'async function exitPreviewFullscreen', 'function togglePreviewFullscreen')
 
   assert.match(appSource, /const previewRenderScale = computed\(\(\) => previewFittedVisible\.value \? previewFitPresentationScale\.value : 1\)/)
-  assert.match(enterFullscreen, /const target = previewOverlay\.value[\s\S]*?requestFullscreen/)
+  assert.match(appSource, /function previewFullscreenTarget\(\) \{\s*return document\.documentElement\s*\}/)
+  assert.match(enterFullscreen, /const target = previewFullscreenTarget\(\)[\s\S]*?requestFullscreen/)
+  assert.doesNotMatch(enterFullscreen, /navigationUI/)
   assert.match(enterFullscreen, /fullscreenElement\(\) !== target/)
   assert.match(exitFullscreen, /document\.exitFullscreen \|\| document\.webkitExitFullscreen/)
-  assert.match(fullscreenChange, /fullscreenElement\(\) === previewOverlay\.value/)
+  assert.match(fullscreenChange, /fullscreenElement\(\) === previewFullscreenTarget\(\)/)
   assert.match(fullscreenChange, /invalidatePreviewViewportSchedule\(\)/)
-  assert.match(fullscreenChange, /if \(isFullscreen\) \{[\s\S]*?previewScale\.value = 1[\s\S]*?previewFullscreen\.value = true[\s\S]*?resetPreviewDomHandoff\(\)[\s\S]*?updatePreviewViewport\(\{ scroll: \{ left: 0, top: 0 \}, waitForContentRect: true \}\)/)
+  assert.match(fullscreenChange, /if \(isFullscreen\) \{[\s\S]*?previewScale\.value = 1[\s\S]*?previewFullscreen\.value = true[\s\S]*?ensurePreviewDomHandoff\(\)[\s\S]*?updatePreviewViewport\(\{ scroll: \{ left: 0, top: 0 \}, waitForContentRect: true \}\)/)
+  assert.doesNotMatch(fullscreenChange, /resetPreviewDomHandoff\(\)/)
   const exitFitTarget = fullscreenChange.indexOf("previewRenderTarget.value = 'fit'")
   const exitFullscreenState = fullscreenChange.indexOf('previewFullscreen.value = isFullscreen')
   assert.ok(exitFitTarget >= 0 && exitFitTarget < exitFullscreenState)
@@ -810,7 +802,7 @@ test('renders fullscreen preview at actual pixels without the ordinary preview h
   assert.doesNotMatch(fullscreenChange, /ensurePreviewFitCanvas/)
   assert.equal((fullscreenChange.match(/waitForContentRect: true/g) || []).length, 4)
   assert.doesNotMatch(fullscreenChange, /commitPreviewViewport|\.scrollTo\(|clientWidth|clientHeight|getComputedStyle|fittedPreviewScale/)
-  assert.match(fullscreenReconcile, /previewFullscreenPending\.value[\s\S]*?fullscreenElement\(\) === previewOverlay\.value[\s\S]*?handleFullscreenChange\(\)/)
+  assert.match(fullscreenReconcile, /previewFullscreenPending\.value[\s\S]*?fullscreenElement\(\) === previewFullscreenTarget\(\)[\s\S]*?handleFullscreenChange\(\)/)
   assert.match(fullscreenReconcile, /function handlePreviewWindowResize\(event\)[\s\S]*?reconcilePreviewFullscreenState\(\)[\s\S]*?updatePreviewViewport\(event\)/)
   assert.match(appSource, /window\.addEventListener\('resize', handlePreviewWindowResize\)[\s\S]*?window\.addEventListener\('focus', reconcilePreviewFullscreenState\)/)
   assert.match(appSource, /document\.addEventListener\('visibilitychange', reconcilePreviewFullscreenState\)/)
@@ -832,8 +824,9 @@ test('renders fullscreen preview at actual pixels without the ordinary preview h
   assert.ok(commitViewport.indexOf('contentRect?.width') < commitViewport.indexOf('target.clientWidth'))
   assert.ok(commitViewport.indexOf('contentRect?.height') < commitViewport.indexOf('target.clientHeight'))
 
-  assert.match(appSource, /class="preview-overlay" :class="\{ 'is-fullscreen': previewFullscreen \}"/)
-  assert.match(appSource, /<header v-if="!previewFullscreen">/)
+  assert.match(appSource, /class="preview-overlay"[^>]*:class="\{[^}]*'is-fullscreen': previewFullscreen[^}]*'is-preparing': !previewPresentationReady[^}]*\}"/)
+  assert.match(appSource, /:aria-busy="!previewPresentationReady"/)
+  assert.match(appSource, /<\/div>\s*<header v-if="showPreview && !previewFullscreen" class="preview-header"/)
   assert.match(appSource, /stageWidth \* previewRenderScale[\s\S]*?stageHeight \* previewRenderScale/)
   assert.match(appSource, /transform: `scale\(\$\{previewRenderScale\}\)`/)
   assert.match(appSource, /marginLeft: previewFittedVisible \? previewFitPresentationOffset\.left/)
@@ -841,10 +834,13 @@ test('renders fullscreen preview at actual pixels without the ordinary preview h
   assert.match(enhancementCss, /\.preview-canvas\.preview-fit \{[^}]*align-items:\s*flex-start;[^}]*justify-content:\s*flex-start;/)
   assert.doesNotMatch(appSource, /fullscreen-preview-exit/)
 
-  assert.match(enhancementCss, /\.preview-overlay\.is-fullscreen > header,[\s\S]*?display:\s*none;/)
-  assert.match(enhancementCss, /\.preview-overlay\.is-fullscreen > \.preview-canvas,[\s\S]*?width:\s*100%;[\s\S]*?height:\s*100%;[\s\S]*?overflow:\s*auto;/)
-  assert.match(enhancementCss, /\.preview-overlay:fullscreen/)
-  assert.doesNotMatch(enhancementCss, /\.preview-canvas:fullscreen/)
+  assert.match(enhancementCss, /\.preview-header\s*\{[^}]*position:\s*fixed[^}]*z-index:\s*51/)
+  assert.doesNotMatch(enhancementCss, /\.preview-overlay\.is-fullscreen > header/)
+  assert.match(enhancementCss, /\.preview-overlay\.is-fullscreen > \.preview-viewport-clip,[\s\S]*?:fullscreen \.preview-overlay > \.preview-viewport-clip,[\s\S]*?inset:\s*auto;/)
+  assert.match(enhancementCss, /\.preview-overlay\.is-fullscreen > \.preview-viewport-clip > \.preview-canvas,[\s\S]*?width:\s*100%;[\s\S]*?height:\s*100%;[\s\S]*?overflow:\s*auto;/)
+  assert.match(enhancementCss, /:fullscreen \.preview-overlay/)
+  assert.match(enhancementCss, /:fullscreen \.preview-header[\s\S]*?display:\s*none/)
+  assert.doesNotMatch(enhancementCss, /\.preview-overlay:fullscreen|\.preview-canvas:fullscreen/)
   assert.doesNotMatch(enhancementCss, /\.fullscreen-preview-exit/)
 })
 

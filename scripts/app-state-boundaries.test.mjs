@@ -258,7 +258,7 @@ test('keeps the latest failed workspace snapshot in memory', () => {
   assert.match(persist, /current\.sessions\.some\(session => session\.customHandle\)/)
   assert.match(persist, /workspaceSessionSnapshot\(workspace, current, false\)/)
   assert.match(persist, /workspaceSessionSaveQueue\.save\(workspace, snapshot, fallbackSnapshot, \{/)
-  assert.match(persist, /isFresh: \(\) => workspacePaperSessions\.isSaveCurrent\(workspace, saveVersion\)/)
+  assert.match(persist, /isFresh: \(\) => \([\s\S]*?workspacePaperSessions\.isSaveCurrent\(workspace, saveVersion\)[\s\S]*?!workspaceSessionPersistenceIsDeferred\(workspace\)/)
   assert.match(persist, /if \(result\.stale\) return false/)
   assert.match(persist, /return workspacePaperSessions\.completeSave\(workspace, saveVersion\)/)
   assert.ok(persist.indexOf('if (result.stale)') < persist.indexOf('if (!result.ok)'))
@@ -286,7 +286,7 @@ test('runs automatic workspace persistence only through a cancellable idle gate'
   assert.match(schedule, /workspacePaperSessions\.markDirty\(scheduledWorkspace\)/)
   assert.match(schedule, /workspaceSessionIdleTask\.schedule\(deadline =>/)
   assert.match(schedule, /navigator\?\.scheduling\?\.isInputPending/)
-  assert.match(schedule, /operation\.value \|\| interactionCommitBarrier\.state\.active/)
+  assert.match(schedule, /operation\.value[\s\S]*?\|\| interactionCommitBarrier\.state\.active/)
   assert.match(schedule, /workspaceSessionPersistenceBlocked\(\) \|\| !workspaceSessionHasIdleBudget\(deadline\)/)
   assert.ok(schedule.indexOf('workspaceSessionIdleTask.schedule') < schedule.indexOf('void persistWorkspacePaperSessions(scheduledWorkspace)'))
 
@@ -300,6 +300,23 @@ test('runs automatic workspace persistence only through a cancellable idle gate'
     assert.match(explicitSave, /await storeWorkspacePaperSessions\(\)/)
     assert.doesNotMatch(explicitSave, /void persistWorkspacePaperSessions\(\)/)
   }
+})
+
+test('defers dirty workspace persistence until the first prepared preview frame or close', () => {
+  const persistence = section('function cancelScheduledWorkspaceSessionPersistence()', 'async function storeWorkspacePaperSessions()')
+  const deferPersistence = section('function deferWorkspaceSessionPersistenceForPreview()', 'function resumeWorkspaceSessionPersistenceAfterPreview')
+  const resumePersistence = section('function resumeWorkspaceSessionPersistenceAfterPreview', 'function workspaceSessionPersistenceBlocked')
+  const presenter = section('function presentPreparedPreview()', 'function finishPreviewDomHandoff')
+  const closePreview = section('async function closePreview()', 'async function openPreview()')
+  const openPreview = section('async function openPreview()', 'watch([stageWidth, stageHeight, previewAutoFit]')
+
+  assert.match(deferPersistence, /workspaceSessionPersistenceDeferredWorkspace = workspaceId\.value[\s\S]*?cancelScheduledWorkspaceSessionPersistence\(\)/)
+  assert.match(openPreview, /flushPendingDocumentEdits\(\)[\s\S]*?deferWorkspaceSessionPersistenceForPreview\(\)/)
+  assert.match(openPreview, /deferWorkspaceSessionPersistenceForPreview\(\)[\s\S]*?showPreview\.value = true/)
+  assert.match(presenter, /previewPresentationReady\.value = true[\s\S]*?resumeWorkspaceSessionPersistenceAfterPreview\(\)/)
+  assert.match(closePreview, /showPreview\.value = false[\s\S]*?resumeWorkspaceSessionPersistenceAfterPreview\(\)/)
+  assert.match(resumePersistence, /workspacePaperSessions\.isDirty\(deferredWorkspace\)[\s\S]*?scheduleWorkspaceSessionPersistence\(delay, false\)/)
+  assert.match(persistence, /if \(markDirty\) workspacePaperSessions\.markDirty\(scheduledWorkspace\)[\s\S]*?workspaceSessionPersistenceIsDeferred\(scheduledWorkspace\)/)
 })
 
 test('blocks editor and paper interactions while a workspace restore is pending', () => {

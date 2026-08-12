@@ -76,6 +76,22 @@ test('reports save freshness before persistence reaches storage', () => {
   assert.equal(cache.isSaveCurrent('w1', version), false)
 })
 
+test('reports dirty state without creating another save version', () => {
+  const cache = createWorkspaceSessionCache(2)
+  cache.set('w1', {})
+  assert.equal(cache.isDirty('w1'), false)
+
+  cache.markDirty('w1')
+  assert.equal(cache.isDirty('w1'), true)
+  const version = cache.beginSave('w1')
+  assert.equal(cache.isDirty('w1'), true)
+  assert.equal(cache.completeSave('w1', version), true)
+  assert.equal(cache.isDirty('w1'), false)
+
+  cache.markDirty('w1')
+  assert.equal(cache.isDirty('w1'), true)
+})
+
 test('supports updating every cached workspace from a stable iteration snapshot', () => {
   const cache = createWorkspaceSessionCache(3)
   for (const workspace of ['w1', 'w2', 'w3']) cache.set(workspace, { detached: false })

@@ -30,6 +30,8 @@ export const POINT_SOURCE_PROTOCOLS = Object.freeze([
   'WebSocket'
 ])
 
+const BUILT_IN_DEMO_CATALOG_VERSION = 1
+
 export const POINT_SOURCE_QUERY_PAGE_SIZE = 50
 export const POINT_SOURCE_QUERY_MAX_PAGE_SIZE = 100
 export const POINT_SOURCE_QUERY_SCAN_SIZE = 512
@@ -487,6 +489,11 @@ function normalizeSource(source, now) {
     lastResponse: normalizeLastResponse(source.lastResponse, now),
     points: []
   }
+  const demoCatalogVersion = Number(source.builtInDemoCatalogVersion)
+  if (Number.isSafeInteger(demoCatalogVersion) && demoCatalogVersion > 0) {
+    normalized.builtInDemoCatalogVersion = demoCatalogVersion
+  }
+  if (source.codeDefinedSampleDetached === true) normalized.codeDefinedSampleDetached = true
   normalized.points = (Array.isArray(source.points) ? source.points : []).map(point => normalizePoint(point, normalized, now))
   return normalized
 }
@@ -520,7 +527,7 @@ function point(type, id, name, group, value, updatedAt, status = 'good') {
   return { type, id, name, group, value, updatedAt, status }
 }
 
-export function createDefaultPointSources() {
+function createLegacyDefaultPointSources() {
   const updatedAt = '2026-07-31T07:30:00.000Z'
   return [
     {
@@ -600,6 +607,239 @@ export function createDefaultPointSources() {
       ]
     }
   ]
+}
+
+const DEMO_PROTOCOL_SLUGS = Object.freeze({
+  MQTT: 'mqtt',
+  HTTP: 'http',
+  MySQL: 'mysql',
+  'SQL Server': 'sql-server',
+  Redis: 'redis',
+  Socket: 'socket',
+  WebSocket: 'websocket'
+})
+
+const DEMO_NUMBER_VALUES = Object.freeze({
+  MQTT: 1480,
+  HTTP: 386.2,
+  MySQL: 12640,
+  'SQL Server': 98.72,
+  Redis: 3,
+  Socket: 2048,
+  WebSocket: 28193
+})
+
+const DEMO_COLOR_VALUES = Object.freeze({
+  MQTT: '#16a085',
+  HTTP: '#2980b9',
+  MySQL: '#8e44ad',
+  'SQL Server': '#d35400',
+  Redis: '#c0392b',
+  Socket: '#2c3e50',
+  WebSocket: '#27ae60'
+})
+
+const DEMO_NUMBER_DETAILS = Object.freeze({
+  MQTT: Object.freeze({ metric: 'motorSpeed', unit: 'rpm' }),
+  HTTP: Object.freeze({ metric: 'activePower', unit: 'kW' }),
+  MySQL: Object.freeze({ metric: 'currentOutput', unit: '件' }),
+  'SQL Server': Object.freeze({ metric: 'passRate', unit: '%' }),
+  Redis: Object.freeze({ metric: 'activeAlarmCount', unit: '条' }),
+  Socket: Object.freeze({ metric: 'plcCounter', unit: '次' }),
+  WebSocket: Object.freeze({ metric: 'eventSequence', unit: '序号' })
+})
+
+const DEMO_COLOR_METRICS = Object.freeze({
+  MQTT: 'motorStateColor',
+  HTTP: 'energyStateColor',
+  MySQL: 'productionStateColor',
+  'SQL Server': 'qualityStateColor',
+  Redis: 'alarmLevelColor',
+  Socket: 'plcStateColor',
+  WebSocket: 'lineStateColor'
+})
+
+function roundedDemoNumber(value) {
+  return Number(Number(value).toFixed(2))
+}
+
+function createColorDemoSample(protocol, demo, updatedAt) {
+  const states = {
+    primary: demo.value,
+    normal: '#27ae60',
+    info: '#3498db',
+    warning: '#f39c12',
+    alarm: '#c0392b',
+    offline: '#7f8c8d'
+  }
+  const rows = [
+    { name: '主色', color: states.primary, active: true },
+    { name: '正常', color: states.normal, active: true },
+    { name: '提示', color: states.info, active: true },
+    { name: '告警', color: states.warning, active: false },
+    { name: '故障', color: states.alarm, active: false },
+    { name: '离线', color: states.offline, active: false }
+  ]
+  return {
+    value: demo.value,
+    kind: demo.kind,
+    protocol,
+    metric: DEMO_COLOR_METRICS[protocol],
+    label: `${protocol} 颜色测试数据`,
+    status: 'online',
+    enabled: true,
+    palette: rows.map(row => row.color),
+    states,
+    table: {
+      columns: [
+        { key: 'name', title: '状态' },
+        { key: 'color', title: '颜色' },
+        { key: 'active', title: '启用' }
+      ],
+      rows
+    },
+    updatedAt
+  }
+}
+
+function createNumberDemoSample(protocol, demo, updatedAt) {
+  const details = DEMO_NUMBER_DETAILS[protocol]
+  const ratios = [0.72, 0.81, 0.93, 1, 0.96, 1.08]
+  const series = ratios.map((ratio, index) => ({
+    time: `${String(8 + index).padStart(2, '0')}:00`,
+    value: roundedDemoNumber(demo.value * ratio),
+    quality: index === ratios.length - 1 ? 'estimated' : 'good'
+  }))
+  const values = series.map(item => item.value)
+  return {
+    value: demo.value,
+    kind: demo.kind,
+    protocol,
+    metric: details.metric,
+    label: `${protocol} 数值测试数据`,
+    status: 'online',
+    enabled: true,
+    unit: details.unit,
+    metrics: {
+      current: demo.value,
+      minimum: Math.min(...values),
+      maximum: Math.max(...values),
+      average: roundedDemoNumber(values.reduce((total, value) => total + value, 0) / values.length)
+    },
+    series,
+    table: {
+      columns: [
+        { key: 'time', title: '时间' },
+        { key: 'value', title: `数值 (${details.unit})` },
+        { key: 'quality', title: '质量' }
+      ],
+      rows: series
+    },
+    updatedAt
+  }
+}
+
+function createBuiltInDemoSample(protocol, demo, updatedAt) {
+  return demo.kind === 'color'
+    ? createColorDemoSample(protocol, demo, updatedAt)
+    : createNumberDemoSample(protocol, demo, updatedAt)
+}
+
+function builtInDemoConfig(protocol, demo) {
+  const config = defaultConfig(protocol)
+  const slug = DEMO_PROTOCOL_SLUGS[protocol]
+  const { kind, value } = demo
+  if (protocol === 'MQTT') {
+    config.clientId = `tc2d-demo-${kind}`
+    config.topic = `tc2d/demo/${slug}/${kind}`
+  } else if (protocol === 'HTTP') {
+    config.url = `https://demo-gateway.example/api/${kind}`
+    config.dataPath = '$.value'
+  } else if (protocol === 'MySQL' || protocol === 'SQL Server') {
+    const expression = kind === 'color' ? `'${value}'` : String(value)
+    config.query = `SELECT ${expression} AS value`
+  } else if (protocol === 'Redis') {
+    config.keyPattern = `tc2d:demo:${kind}`
+  } else if (protocol === 'Socket') {
+    config.port = kind === 'color' ? 9101 : 9102
+  } else if (protocol === 'WebSocket') {
+    config.url = `wss://demo-gateway.example/${kind}`
+    config.subscribeMessage = JSON.stringify({ action: 'subscribe', channel: kind })
+  }
+  return config
+}
+
+function createBuiltInInterfaceDemoSources() {
+  const updatedAt = '2026-08-04T00:00:00.000Z'
+  return POINT_SOURCE_PROTOCOLS.flatMap(protocol => {
+    const slug = DEMO_PROTOCOL_SLUGS[protocol]
+    return [
+      { kind: 'color', label: '颜色', type: 'string', value: DEMO_COLOR_VALUES[protocol] },
+      { kind: 'number', label: '数值', type: 'number', value: DEMO_NUMBER_VALUES[protocol] }
+    ].map(demo => {
+      const sample = createBuiltInDemoSample(protocol, demo, updatedAt)
+      return {
+        id: `demo-interface-${slug}-${demo.kind}`,
+        name: `${protocol} ${demo.label}接口 Demo`,
+        protocol,
+        enabled: true,
+        status: 'online',
+        builtInDemoCatalogVersion: BUILT_IN_DEMO_CATALOG_VERSION,
+        config: builtInDemoConfig(protocol, demo),
+        lastResponse: {
+          ok: true,
+          at: updatedAt,
+          durationMs: 8,
+          message: `内置${demo.label}接口 Demo 已就绪`,
+          preview: JSON.stringify(sample)
+        },
+        points: [point(
+          demo.type,
+          `demo.${slug}.${demo.kind}`,
+          `${protocol} ${demo.label}测试数据`,
+          `内置接口 Demo / ${protocol}`,
+          demo.value,
+          updatedAt
+        )]
+      }
+    })
+  })
+}
+
+export function createDefaultPointSources() {
+  const existing = createLegacyDefaultPointSources().map(source => ({
+    ...source,
+    builtInDemoCatalogVersion: BUILT_IN_DEMO_CATALOG_VERSION
+  }))
+  return [...existing, ...createBuiltInInterfaceDemoSources()]
+}
+
+function migrateBuiltInInterfaceDemos(sourceInput, enabled) {
+  const sourceList = Array.isArray(sourceInput) ? sourceInput : []
+  if (!enabled || sourceList.some(source => (
+    Number(source?.builtInDemoCatalogVersion) >= BUILT_IN_DEMO_CATALOG_VERSION
+  ))) {
+    return { sources: sourceList, changed: false }
+  }
+
+  const legacyDefaults = createLegacyDefaultPointSources()
+  const legacyProtocolById = new Map(legacyDefaults.map(source => [source.id, source.protocol]))
+  const sourceById = new Map(sourceList.map(source => [String(source?.id ?? ''), source]))
+  const isLegacyDefaultWorkspace = legacyDefaults.every(source => (
+    sourceById.get(source.id)?.protocol === source.protocol
+  ))
+  if (!isLegacyDefaultWorkspace) return { sources: sourceList, changed: false }
+
+  const migrated = sourceList.map(source => (
+    legacyProtocolById.has(String(source?.id ?? ''))
+      ? { ...source, builtInDemoCatalogVersion: BUILT_IN_DEMO_CATALOG_VERSION }
+      : source
+  ))
+  const existingIds = new Set(migrated.map(source => String(source?.id ?? '')))
+  for (const demo of createBuiltInInterfaceDemoSources()) {
+    if (!existingIds.has(demo.id)) migrated.push(demo)
+  }
+  return { sources: migrated, changed: true }
 }
 
 function sourceEndpoint(source) {
@@ -844,6 +1084,7 @@ export function createLocalPointCatalogGateway(options = {}) {
   const store = options.store || null
   const cryptoProvider = options.crypto || globalThis.crypto
   const initialSourceInput = options.sources
+  const usesBuiltInSourceCatalog = initialSourceInput == null
   const createInitialSources = () => cloneValue(
     initialSourceInput == null
       ? createDefaultPointSources()
@@ -856,8 +1097,13 @@ export function createLocalPointCatalogGateway(options = {}) {
   for (const source of Array.isArray(initialSources) ? initialSources : []) {
     const sample = parsedResponsePreview(source)
     if (sample === undefined) continue
+    const protocol = normalizedProtocol(source?.protocol)
+    const catalogVersion = Number(source?.builtInDemoCatalogVersion)
     codeDefinedSamples.set(String(source?.id ?? ''), {
-      protocol: String(source?.protocol ?? ''),
+      protocol,
+      catalogVersion: Number.isSafeInteger(catalogVersion) && catalogVersion > 0
+        ? catalogVersion
+        : 0,
       data: sample
     })
   }
@@ -892,9 +1138,16 @@ export function createLocalPointCatalogGateway(options = {}) {
 
   function sampleDataForSource(source) {
     const fallback = codeDefinedSamples.get(String(source?.id ?? ''))
+    const catalogVersion = Number(source?.builtInDemoCatalogVersion)
+    const normalizedCatalogVersion = Number.isSafeInteger(catalogVersion) && catalogVersion > 0
+      ? catalogVersion
+      : 0
+    const matchesCodeDefinedSource = fallback?.protocol === source?.protocol
+      && source?.codeDefinedSampleDetached !== true
+      && (!usesBuiltInSourceCatalog || fallback.catalogVersion === normalizedCatalogVersion)
     return sourceSampleData(
       source,
-      fallback?.protocol === source?.protocol ? fallback.data : undefined
+      matchesCodeDefinedSource ? fallback.data : undefined
     )
   }
 
@@ -1291,6 +1544,12 @@ export function createLocalPointCatalogGateway(options = {}) {
       const configChanged = protocolChanged || !sourceConfigEquals(protocol, current.config, next.config)
       const enabledChanged = next.enabled !== current.enabled
       const requiresVerification = configChanged || (!current.enabled && next.enabled)
+      if (configChanged) {
+        next.codeDefinedSampleDetached = true
+        if (patch.lastResponse === undefined && next.lastResponse) {
+          next.lastResponse = { ...next.lastResponse, preview: '' }
+        }
+      }
       if (!next.enabled || requiresVerification) next.status = 'offline'
       const publicationChanged = pointsChanged
         || configChanged
@@ -1489,7 +1748,8 @@ export function createLocalPointCatalogGateway(options = {}) {
         if (isStorageCorruption(error)) quarantineCorruptWorkspace(nextWorkspaceId, error)
         throw error
       }
-      const sourceInput = persisted == null ? createInitialSources() : persisted
+      const migration = migrateBuiltInInterfaceDemos(persisted, usesBuiltInSourceCatalog)
+      const sourceInput = persisted == null ? createInitialSources() : migration.sources
       const prepared = await catalogPreparer.prepare(Array.isArray(sourceInput) ? sourceInput : [])
       const nextSources = prepared.sources
       const changedSourceIds = [...new Set([
@@ -1497,6 +1757,8 @@ export function createLocalPointCatalogGateway(options = {}) {
         ...nextSources.map(source => source.id)
       ])]
       if (persisted == null && store?.save) {
+        lastPersistence = normalizePersistenceResult(await store.save(nextWorkspaceId, nextSources), 'storage-write-failed')
+      } else if (migration.changed && store?.save) {
         lastPersistence = normalizePersistenceResult(await store.save(nextWorkspaceId, nextSources), 'storage-write-failed')
       } else {
         lastPersistence = normalizePersistenceResult(
@@ -1531,20 +1793,24 @@ export function createLocalPointCatalogGateway(options = {}) {
         throw error
       }
       if (persisted == null) return { workspaceId: activeWorkspaceId, sources: await listSources(), persistence: lastPersistence }
-      const prepared = await catalogPreparer.prepare(persisted)
+      const migration = migrateBuiltInInterfaceDemos(persisted, usesBuiltInSourceCatalog)
+      const prepared = await catalogPreparer.prepare(migration.sources)
       const changedSourceIds = [...new Set([
         ...sources.map(source => source.id),
         ...prepared.sources.map(source => source.id)
       ])]
+      const persistence = migration.changed && store?.save
+        ? normalizePersistenceResult(await store.save(activeWorkspaceId, prepared.sources), 'storage-write-failed')
+        : normalizePersistenceResult(
+            store?.getPersistenceStatus?.(activeWorkspaceId),
+            store ? 'persistence-status-unknown' : 'storage-unavailable'
+          )
       recoveredOfflinePointSourceIds.clear()
       installPreparedCatalog(prepared)
       seedSourceSnapshots(sources, { publish: true, reset: true })
       workspaceCorruption = null
       advanceCatalogRevision()
-      lastPersistence = normalizePersistenceResult(
-        store?.getPersistenceStatus?.(activeWorkspaceId),
-        store ? 'persistence-status-unknown' : 'storage-unavailable'
-      )
+      lastPersistence = persistence
       emit('catalog-refreshed', null, null, {
         catalogChanged: true,
         includePointIds: false,

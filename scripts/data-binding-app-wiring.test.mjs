@@ -6,6 +6,7 @@ import { normalizeNode } from '../src/models/editorModel.js'
 import { resolveNodeDataBindings } from '../src/models/dataBindingModel.js'
 import { sourceBindingRuntimeKey } from '../src/utils/jsonPathBinding.js'
 import { materializeRuntimeNode } from '../src/utils/runtimeNodeMaterializer.js'
+import { sourceEffectiveStatus } from '../src/utils/sourceConnectionList.js'
 
 const appSource = readFileSync(new URL('../src/App.vue', import.meta.url), 'utf8')
 const bindingPanelSource = readFileSync(new URL('../src/components/CommunicationBindingPanel.vue', import.meta.url), 'utf8')
@@ -47,10 +48,11 @@ test('keeps page navigation and connection management in their expected location
 
   assert.doesNotMatch(managerHeaderSource, /ArrowLeft|openCreateDialog|新建连接/)
   assert.match(managerHeaderSource, /class="icon-button manager-close"[\s\S]*?<X \/>/)
-  assert.match(managerHeaderSource, /aria-label="关闭数据源管理，返回图纸"[\s\S]*?emit\('close'\)/)
+  assert.match(managerHeaderSource, /aria-label="关闭数据源管理，返回图纸"[\s\S]*?@click="requestCloseManager"/)
+  assert.match(sourceManagerSource, /function requestCloseManager\(\)[\s\S]*?emit\('close'\)/)
   assert.match(managerSidebarSource, /class="sidebar-create-button"[\s\S]*?openCreateDialog[\s\S]*?新建连接/)
   assert.match(managerSidebarSource, /class="source-item-manage"[\s\S]*?编辑连接：[\s\S]*?<Pencil \/>/)
-  assert.match(managerSidebarSource, /@click="selectSource\(source\.id\)"/)
+  assert.match(managerSidebarSource, /@click="requestSelectSource\(source\.id\)"/)
 })
 
 test('wires selected component parameters and the source snapshot runtime into Communication', () => {
@@ -124,7 +126,8 @@ test('source snapshot replay isolates unrelated sources and invalidates stale do
 
 test('disabled sources are presented as stopped even if their stored status is online', () => {
   assert.match(bindingPanelSource, /function sourceStatus\(source\)[\s\S]*?source\?\.enabled === false[\s\S]*?return '已停用'/)
-  assert.match(sourceManagerSource, /function effectiveSourceStatus\(source\)[\s\S]*?source\?\.enabled === false[\s\S]*?return 'disabled'/)
+  assert.equal(sourceEffectiveStatus({ enabled: false, status: 'online' }), 'disabled')
+  assert.match(sourceManagerSource, /sourceEffectiveStatus as effectiveSourceStatus/)
   assert.match(sourceManagerSource, /statusLabel\(effectiveSourceStatus\(source\)\)/)
   assert.match(sourceManagerSource, /statusLabel\(effectiveSourceStatus\(selectedSource\)\)/)
 })

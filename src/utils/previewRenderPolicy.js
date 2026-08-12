@@ -6,18 +6,42 @@ export const PREVIEW_HYBRID_MAX_DOM_COST = 128
 export const PREVIEW_HYBRID_MAX_DOM_ENTRIES = 24
 export const PREVIEW_HYBRID_DRAWING_COST = 4
 
+export const PREVIEW_RENDER_CAPABILITIES = Object.freeze({
+  STATIC_CANVAS: 'static-canvas',
+  ANIMATED_CANVAS: 'animated-canvas',
+  LIVE_DOM: 'live-dom'
+})
+
+const ANIMATED_CANVAS_ANIMATION_BY_TYPE = Object.freeze({
+  flowPipe: 'flow',
+  rotatingFan: 'flow',
+  signalLight: 'blink',
+  waterTank: 'flow',
+  heartbeat: 'pulse',
+  particles: 'flow'
+})
+
 export function animatedPreviewImageSource(value) {
   const source = String(value || '').trim().toLowerCase()
   return /(?:^data:image\/(?:gif|apng|webp)|\.(?:gif|apng|webp)(?:$|[?#]))/.test(source)
 }
 
+export function previewNodeRenderCapability(node) {
+  const { STATIC_CANVAS, ANIMATED_CANVAS, LIVE_DOM } = PREVIEW_RENDER_CAPABILITIES
+  if (!node) return STATIC_CANVAS
+
+  const type = String(node.type || '')
+  if (type === 'video' || FORM_TYPE_IDS.has(type) || type.startsWith('custom')) return LIVE_DOM
+  if (node.progressFluctuationEnabled) return LIVE_DOM
+  if (type === 'image' && animatedPreviewImageSource(node.imageUrl)) return LIVE_DOM
+
+  const animation = node.animation
+  if (!animation || animation === 'none') return STATIC_CANVAS
+  return ANIMATED_CANVAS_ANIMATION_BY_TYPE[type] === animation ? ANIMATED_CANVAS : LIVE_DOM
+}
+
 export function previewNodeNeedsLiveDom(node) {
-  if (!node) return false
-  if (node.type === 'video' || FORM_TYPE_IDS.has(node.type)) return true
-  if (String(node.type || '').startsWith('custom')) return true
-  if (node.animation && node.animation !== 'none') return true
-  if (node.progressFluctuationEnabled) return true
-  return ['image', 'customImageMotion'].includes(node.type) && animatedPreviewImageSource(node.imageUrl)
+  return previewNodeRenderCapability(node) === PREVIEW_RENDER_CAPABILITIES.LIVE_DOM
 }
 
 export function previewHybridLayerTail(entries = [], liveNodeIds = [], options = {}) {

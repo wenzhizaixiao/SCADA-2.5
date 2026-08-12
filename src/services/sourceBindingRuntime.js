@@ -60,22 +60,46 @@ function staleNumericRevision(previous, next) {
   return false
 }
 
-function normalizedBinding(binding) {
+function normalizedBinding(binding, pathsIndex) {
   if (!binding || typeof binding !== 'object' || binding.enabled === false) return null
-  return sourceBindingDescriptor(binding)
+  let sourceId
+  let rawPath
+  try {
+    sourceId = String(binding.sourceId ?? '').trim()
+    rawPath = String(binding.jsonPath ?? binding.path ?? '').trim()
+  } catch {
+    return null
+  }
+  if (!sourceId || sourceId.length > 256 || !rawPath) return null
+
+  const indexedPaths = pathsIndex?.get(sourceId)
+  const indexed = indexedPaths?.get(rawPath)
+  if (indexed) return indexed
+
+  // Compile only the first occurrence of a shared path. A stable plain record
+  // also prevents hostile getters from being evaluated a second time.
+  const descriptor = sourceBindingDescriptor({ sourceId, jsonPath: rawPath })
+  if (!descriptor) return null
+  return indexedPaths?.get(descriptor.jsonPath) || descriptor
 }
 
-function normalizedNodeBindings(node) {
+function normalizedNodeBindings(node, pathsIndex) {
   if (!node || typeof node !== 'object') return null
   const nodeId = safeText(safeProperty(node, 'id').value)
   if (!nodeId) return null
   const source = safeProperty(node, 'dataBindings')
   const bindings = []
-  const runtimeKeys = new Set()
+  let runtimeKeys = null
   if (source.ok && Array.isArray(source.value)) {
     for (const candidate of source.value) {
-      const binding = normalizedBinding(candidate)
-      if (!binding || runtimeKeys.has(binding.runtimeKey)) continue
+      const binding = normalizedBinding(candidate, pathsIndex)
+      if (!binding) continue
+      if (bindings.length === 0) {
+        bindings.push(binding)
+        continue
+      }
+      if (!runtimeKeys) runtimeKeys = new Set([bindings[0].runtimeKey])
+      if (runtimeKeys.has(binding.runtimeKey)) continue
       runtimeKeys.add(binding.runtimeKey)
       bindings.push(binding)
     }
@@ -241,9 +265,21 @@ export function createSourceBindingRuntime({
     return affectedSources
   }
 
+  function installNewNode(normalized, bindingsIndex = nodeBindings, pathsIndex = sourcePaths) {
+    if (!normalized?.bindings.length) return false
+    // Valid projects have unique node ids. Keep the generic path for malformed or
+    // concurrently overridden input so reference counts remain authoritative.
+    if (bindingsIndex.has(normalized.nodeId)) {
+      return updateNodeIndexes(normalized, bindingsIndex, pathsIndex)
+    }
+    bindingsIndex.set(normalized.nodeId, normalized.bindings)
+    for (const binding of normalized.bindings) addReference(binding, pathsIndex)
+    return true
+  }
+
   function updateNode(node) {
     if (disposed) return false
-    const normalized = normalizedNodeBindings(node)
+    const normalized = normalizedNodeBindings(node, sourcePaths)
     if (pendingRebuild && normalized) {
       pendingRebuild.overriddenNodeIds.add(normalized.nodeId)
       updateNodeIndexes(normalized, pendingRebuild.nodeBindings, pendingRebuild.sourcePaths)
@@ -288,10 +324,8 @@ export function createSourceBindingRuntime({
 
     if (nodes && typeof nodes[Symbol.iterator] === 'function') {
       for (const node of nodes) {
-        const normalized = normalizedNodeBindings(node)
-        if (!normalized?.bindings.length) continue
-        nodeBindings.set(normalized.nodeId, normalized.bindings)
-        for (const binding of normalized.bindings) addReference(binding)
+        const normalized = normalizedNodeBindings(node, sourcePaths)
+        installNewNode(normalized)
       }
     }
     for (const sourceId of sourcePaths.keys()) enqueueSource(sourceId)
@@ -330,9 +364,8 @@ export function createSourceBindingRuntime({
       operations += 1
       const nodeId = safeText(safeProperty(node, 'id').value)
       if (nodeId && rebuildState.overriddenNodeIds.has(nodeId)) continue
-      const normalized = normalizedNodeBindings(node)
-      if (!normalized?.bindings.length) continue
-      updateNodeIndexes(normalized, rebuildState.nodeBindings, rebuildState.sourcePaths)
+      const normalized = normalizedNodeBindings(node, rebuildState.sourcePaths)
+      installNewNode(normalized, rebuildState.nodeBindings, rebuildState.sourcePaths)
     }
     if (rebuildState.index < rebuildState.nodes.length || pendingRebuild !== rebuildState) return operations
 

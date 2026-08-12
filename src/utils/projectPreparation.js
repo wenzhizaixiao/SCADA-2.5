@@ -10,6 +10,7 @@ import {
 import { clampNumber, rotatedFrameBounds } from './editorGeometry.js'
 import { compactEntityLayers } from './documentIndexes.js'
 import { allocateLegacyDrawingNodeIds } from './legacyDrawingIds.js'
+import { migrateLegacyInterfaceTestProject } from './legacyInterfaceTestMigration.js'
 import { migrateLegacyLineShapeNode, PROJECT_VERSION } from './projectMigration.js'
 import { PROJECT_CAPACITY_LIMITS, validateProjectForFrontend } from './projectValidation.js'
 
@@ -165,6 +166,7 @@ function normalizeCustomComponents(source, lineDefaults = {}, projectVersion = P
 
 export function prepareProject(data, fallbackName = '未命名图纸') {
   validateProjectForFrontend(data)
+  data = migrateLegacyInterfaceTestProject(data)
   const now = new Date().toISOString()
   const preparedStageWidth = clampCanvasDimension(data.stageWidth, DEFAULT_PROJECT_STAGE_WIDTH)
   const preparedStageHeight = clampCanvasDimension(data.stageHeight, DEFAULT_PROJECT_STAGE_HEIGHT)

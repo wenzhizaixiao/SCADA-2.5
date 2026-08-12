@@ -1,6 +1,13 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
+import {
+  canvasVisualDetailSize,
+  flowPipeDashOffset,
+  isCanvasVisualAnimationCandidate,
+  rotatingFanAngle,
+  signalLightColor
+} from '../src/utils/canvasVisualAnimation.js'
 import { drawEdgeRasterCommand } from '../src/utils/edgeRasterDrawing.js'
 
 const miniMapSource = readFileSync(new URL('../src/components/MiniMapPreview.vue', import.meta.url), 'utf8')
@@ -70,6 +77,7 @@ function createFaultCanvasContext(failure = {}) {
   }
   for (const method of [
     'arc',
+    'bezierCurveTo',
     'beginPath',
     'clearRect',
     'clip',
@@ -106,6 +114,7 @@ function compileDrawNode(overrides = {}) {
     LINE_SHAPE_MIN_INNER_SIZE: .1,
     alpha: value => finiteNumber(value, 1),
     cachedImage: () => null,
+    cachedImageReady: image => image?.complete === true && Number(image.naturalWidth) > 0,
     canvasNodeLayout: () => ({
       width: 40,
       height: 20,
@@ -118,6 +127,7 @@ function compileDrawNode(overrides = {}) {
       effectiveScaleY: 1
     }),
     drawImageFit: () => {},
+    isCanvasVisualAnimationCandidate,
     lineShapeBodyDashSegments: () => [],
     lineShapeBodyInset: () => 0,
     lineShapeBorderWidth: () => 1,
@@ -131,6 +141,7 @@ function compileDrawNode(overrides = {}) {
     runtimeValue: () => undefined,
     shapePoints: {},
     visibleStroke: () => 1,
+    visualAnimationTimeline: { resolve: (_node, timestamp) => timestamp },
     ...overrides
   })
 }
@@ -168,13 +179,15 @@ test('drawNode balances its lineShape state when an inner fill throws', () => {
     }),
     lineShapeBorderWidth: () => 1,
     lineShapeDashSegments: () => [],
+    isCanvasVisualAnimationCandidate,
     materializeRuntimeNode: node => node,
     multiplyOpacity: () => 1,
     number: finiteNumber,
     readableStroke: value => value,
     runtimePointValue: () => undefined,
     runtimeValue: () => undefined,
-    visibleStroke: () => 1
+    visibleStroke: () => 1,
+    visualAnimationTimeline: { resolve: (_node, timestamp) => timestamp }
   })
   const { context, state } = createFaultCanvasContext({ method: 'fillRect' })
   const node = {
@@ -250,13 +263,36 @@ test('polyline arrow failures restore arrow opacity, marker, and polyline states
   assert.equal(state.depth, 0, 'polyline arrow failure must restore every saved state')
 })
 
+test('flow-pipe stripe failures restore the clipping state', () => {
+  const packet = sourceBetween('function drawFlowPipe', '\nfunction drawFan')
+  const drawFlowPipe = compileSource(packet, 'drawFlowPipe', {
+    VISUAL_ACCENT_COLOR: '#16b89a',
+    canvasVisualDetailSize,
+    fillAndStroke: () => {},
+    flowPipeDashOffset
+  })
+  const { context, state } = createFaultCanvasContext({ method: 'stroke' })
+
+  assert.throws(
+    () => drawFlowPipe(context, { type: 'flowPipe', animation: 'flow' }, 100, 20, 1, 200),
+    /injected stroke failure/
+  )
+  assert.equal(state.maximumDepth, 1)
+  assert.equal(state.depth, 0, 'flow-pipe stripe failure must restore its clipping state')
+})
+
 test('rotating fan blade failures restore the blade transform state', () => {
   const packet = sourceBetween('function drawFan', '\nfunction drawImageFit')
-  const drawFan = compileSource(packet, 'drawFan')
-  const { context, state } = createFaultCanvasContext({ method: 'ellipse' })
+  const drawFan = compileSource(packet, 'drawFan', {
+    VISUAL_ACCENT_COLOR: '#16b89a',
+    canvasVisualDetailSize,
+    fillAndStroke: () => {},
+    rotatingFanAngle
+  })
+  const { context, state } = createFaultCanvasContext({ method: 'stroke', occurrence: 3 })
 
-  assert.throws(() => drawFan(context, {}, 40, 20, 1), /injected ellipse failure/)
-  assert.equal(state.maximumDepth, 1)
+  assert.throws(() => drawFan(context, {}, 40, 20, 1), /injected stroke failure/)
+  assert.equal(state.maximumDepth, 2)
   assert.equal(state.depth, 0, 'rotating fan blade must restore its transform state')
 })
 
@@ -274,8 +310,12 @@ test('drawImageFit restores its clipping state when drawImage throws', () => {
 test('signal light failures restore the nested opacity state', () => {
   const packet = sourceBetween('function drawSpecialNode', '\nfunction canvasNodeLayout')
   const drawSpecialNode = compileSource(packet, 'drawSpecialNode', {
+    VISUAL_ACCENT_COLOR: '#16b89a',
+    VISUAL_HEARTBEAT_COLOR: '#ef5350',
     alpha: value => finiteNumber(value, 1),
-    roundedRect: () => {}
+    canvasVisualDetailSize,
+    fillAndStroke: context => context.fill(),
+    signalLightColor
   })
   const { context, state } = createFaultCanvasContext({ method: 'fill', occurrence: 2 })
 
@@ -285,6 +325,78 @@ test('signal light failures restore the nested opacity state', () => {
   )
   assert.equal(state.maximumDepth, 1)
   assert.equal(state.depth, 0, 'signal light opacity state must be restored')
+})
+
+test('faithful dynamic visuals keep the shared frame without reusing dark text as their accent', () => {
+  const fanPacket = sourceBetween('function drawFan', '\nfunction drawImageFit')
+  const fanFillStyles = []
+  const fanContext = createFaultCanvasContext().context
+  Object.defineProperty(fanContext, 'fillStyle', {
+    get: () => fanFillStyles.at(-1),
+    set: value => fanFillStyles.push(value),
+    configurable: true
+  })
+  const drawFan = compileSource(fanPacket, 'drawFan', {
+    VISUAL_ACCENT_COLOR: '#16b89a',
+    canvasVisualDetailSize,
+    fillAndStroke: () => {},
+    rotatingFanAngle
+  })
+  const fanStrokeStyles = []
+  Object.defineProperty(fanContext, 'strokeStyle', {
+    get: () => fanStrokeStyles.at(-1),
+    set: value => fanStrokeStyles.push(value),
+    configurable: true
+  })
+  drawFan(fanContext, { color: '#28323c' }, 110, 110, 1)
+  assert.ok(fanStrokeStyles.includes('#16b89a'))
+  assert.equal(fanFillStyles.includes('#28323c'), false)
+  assert.equal(fanStrokeStyles.includes('#28323c'), false)
+
+  const specialPacket = sourceBetween('function drawSpecialNode', '\nfunction canvasNodeLayout')
+  const frameCalls = []
+  const signalFillStyles = []
+  const signalContext = createFaultCanvasContext().context
+  Object.defineProperty(signalContext, 'fillStyle', {
+    get: () => signalFillStyles.at(-1),
+    set: value => signalFillStyles.push(value),
+    configurable: true
+  })
+  const drawSpecialNode = compileSource(specialPacket, 'drawSpecialNode', {
+    VISUAL_ACCENT_COLOR: '#16b89a',
+    VISUAL_HEARTBEAT_COLOR: '#ef5350',
+    alpha: value => finiteNumber(value, 1),
+    canvasVisualDetailSize,
+    fillAndStroke: (...args) => frameCalls.push(args.slice(1)),
+    signalLightColor
+  })
+  const signal = { type: 'signalLight', color: '#28323c', fill: '#fff', signalColors: ['#21c58e'], signalOpacity: 1 }
+  drawSpecialNode(signalContext, signal, 90, 130, 2, undefined, 'full', 1)
+  assert.equal(frameCalls.length, 1, 'signal lights must draw the same configurable component frame as other visuals')
+  assert.deepEqual(frameCalls[0], [signal, 90, 130, 1, '#fff'])
+  assert.equal(signalFillStyles.includes('#26323d'), false)
+  assert.ok(signalFillStyles.includes('#21c58e'))
+
+  const customFillStyles = []
+  const customContext = createFaultCanvasContext().context
+  Object.defineProperty(customContext, 'fillStyle', {
+    get: () => customFillStyles.at(-1),
+    set: value => customFillStyles.push(value),
+    configurable: true
+  })
+  drawSpecialNode(customContext, {
+    type: 'customMotion',
+    color: '#28323c',
+    motionColor: '#f05a7e'
+  }, 90, 90, 2, undefined, 'full', 1)
+  assert.ok(customFillStyles.includes('#f05a7e'))
+  assert.equal(customFillStyles.includes('#28323c'), false)
+
+  assert.match(sourceBetween('function drawChart', '\nfunction drawGauge'), /ctx\.fillStyle = VISUAL_ACCENT_COLOR/)
+  assert.match(sourceBetween('function drawGauge', '\nfunction drawFlowPipe'), /ctx\.strokeStyle = VISUAL_ACCENT_COLOR/)
+  assert.match(sourceBetween('function drawFlowPipe', '\nfunction drawFan'), /ctx\.strokeStyle = node\.visualPrimaryColor \|\| VISUAL_ACCENT_COLOR/)
+  assert.match(specialPacket, /node\.motionColor \|\| VISUAL_ACCENT_COLOR/)
+  assert.match(specialPacket, /ctx\.strokeStyle = node\.visualPrimaryColor \|\| VISUAL_HEARTBEAT_COLOR/)
 })
 
 test('drawNode restores dashed lineShape body state when stroke throws', () => {
@@ -437,6 +549,7 @@ test('createRenderTask releases its surface when creation throws after save', ()
       pixelRatioY: 1
     }),
     fillRenderBackground: ctx => ctx.fillRect(0, 0, 200, 120),
+    currentAnimationTimestamp: () => 0,
     miniMapTransform: () => ({
       offsetX: 0,
       offsetY: 0,
@@ -515,7 +628,9 @@ test('runtime cancellation quarantines surfaces when context cleanup fails', () 
   const packet = sourceBetween('function releaseRuntimeRenderTask', '\nfunction runtimeRenderCompletion')
   const releases = []
   const releaseRuntimeRenderTask = compileSource(packet, 'releaseRuntimeRenderTask', {
-    releaseRenderSurface: (surface, reusable) => releases.push({ surface, reusable })
+    releaseRenderSurface: (surface, reusable) => releases.push({ surface, reusable }),
+    releaseCanvasVisualSprites: () => {},
+    clearCanvasVisualAtlasAttempt: () => {}
   })
   const makeTask = context => ({
     candidateWork: {},

@@ -74,3 +74,48 @@ export function partitionRetainedPreviewNodes(sourceNodes, visibleNodes) {
     pendingNodes: source.filter(node => !retainedIds.has(node.id))
   }
 }
+
+/**
+ * 按原批次保留仍在新视口中的节点，避免视频、表单和动效在滚动时被重新挂载。
+ * 批次对象只在成员或引用变化时替换，未变化批次可直接跳过 Vue 子树 diff。
+ */
+export function partitionRetainedPreviewNodeBatches(sourceNodes, visibleBatches) {
+  const source = Array.isArray(sourceNodes) ? sourceNodes : []
+  const batches = Array.isArray(visibleBatches) ? visibleBatches : []
+  if (!batches.length) {
+    return {
+      retainedIds: new Set(),
+      retainedBatches: [],
+      pendingNodes: source
+    }
+  }
+
+  const sourceById = new Map(source.map(node => [node?.id, node]))
+  const retainedIds = new Set()
+  const retainedBatches = []
+  for (const batch of batches) {
+    const previousItems = Array.isArray(batch?.items) ? batch.items : []
+    const items = []
+    let unchanged = true
+    for (const previous of previousItems) {
+      const current = sourceById.get(previous?.id)
+      if (!current || retainedIds.has(current.id)) {
+        unchanged = false
+        continue
+      }
+      retainedIds.add(current.id)
+      items.push(current)
+      if (current !== previous) unchanged = false
+    }
+    if (!items.length) continue
+    retainedBatches.push(unchanged && items.length === previousItems.length
+      ? batch
+      : { id: batch.id, items })
+  }
+
+  return {
+    retainedIds,
+    retainedBatches,
+    pendingNodes: source.filter(node => !retainedIds.has(node?.id))
+  }
+}

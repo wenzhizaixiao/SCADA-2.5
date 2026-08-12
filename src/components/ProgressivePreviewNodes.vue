@@ -1,7 +1,10 @@
 <script setup>
-import { nextTick, onUnmounted, shallowRef, triggerRef, watch } from 'vue'
+import { nextTick, onUnmounted, shallowRef, watch } from 'vue'
 import PreviewNodeBatch from './PreviewNodeBatch.vue'
-import { nextPreviewMountBatchScale, partitionRetainedPreviewNodes, previewMountBatchEnd } from '../utils/previewMountBudget'
+import { nextPreviewMountBatchScale, partitionRetainedPreviewNodeBatches, previewMountBatchEnd } from '../utils/previewMountBudget'
+
+// 限制单帧最多挂载两倍基础批量，防止便宜的前一批把下一批放大成百节点长任务。
+const MAX_NODE_BATCH_SCALE = 2
 
 const props = defineProps({
   nodes: { type: Array, default: () => [] },
@@ -15,9 +18,10 @@ const props = defineProps({
 
 const emit = defineEmits(['form-change', 'table-cell-view', 'render-start', 'render-complete'])
 const visibleCount = shallowRef(0)
-const visibleNodes = shallowRef([])
+const visibleBatches = shallowRef([])
 let renderFrame = 0
 let renderGeneration = 0
+let nextBatchId = 1
 
 function cancelRenderFrame() {
   if (!renderFrame) return
@@ -42,9 +46,9 @@ function rebuildVisibleNodes() {
   const source = Array.isArray(props.nodes) ? props.nodes : []
   const sourceGeneration = props.generation
   emit('render-start', { generation: sourceGeneration, count: source.length })
-  const { retainedIds, retainedNodes, pendingNodes } = partitionRetainedPreviewNodes(source, visibleNodes.value)
-  // A shrinking viewport must release stale DOM before any new mount batch starts.
-  visibleNodes.value = retainedNodes
+  const { retainedIds, retainedBatches, pendingNodes } = partitionRetainedPreviewNodeBatches(source, visibleBatches.value)
+  // 新世代开始时先释放已离开缓冲区的批次，交集批次保持原父组件和媒体实例。
+  visibleBatches.value = retainedBatches
   const batchSize = Math.max(1, Math.floor(Number(props.batchSize) || 128))
   const nextBatchEnd = (start, scale) => previewMountBatchEnd(pendingNodes, start, {
     maxNodes: batchSize * scale,
@@ -54,9 +58,13 @@ function rebuildVisibleNodes() {
   let batchScale = 1
   visibleCount.value = retainedIds.size
 
-  const settleVisibleNodes = () => {
+  const settleVisibleBatches = () => {
     if (generation !== renderGeneration) return
-    if (!props.progressive || retainedIds.size) visibleNodes.value = source.slice()
+    if (!props.progressive) {
+      visibleBatches.value = source.length
+        ? [{ id: nextBatchId++, items: source.slice() }]
+        : []
+    }
     visibleCount.value = source.length
     reportRenderComplete(generation, source, sourceGeneration)
   }
@@ -64,21 +72,23 @@ function rebuildVisibleNodes() {
   const appendPendingBatch = () => {
     const nextCount = nextBatchEnd(pendingCount, batchScale)
     if (nextCount > pendingCount) {
-      visibleNodes.value.push(...pendingNodes.slice(pendingCount, nextCount))
-      triggerRef(visibleNodes)
+      visibleBatches.value = [
+        ...visibleBatches.value,
+        { id: nextBatchId++, items: pendingNodes.slice(pendingCount, nextCount) }
+      ]
       pendingCount = nextCount
       visibleCount.value = retainedIds.size + pendingCount
     }
   }
 
   if (!props.progressive) {
-    settleVisibleNodes()
+    settleVisibleBatches()
     return
   }
 
   appendPendingBatch()
   if (source.length === 0 || visibleCount.value >= source.length) {
-    settleVisibleNodes()
+    settleVisibleBatches()
     return
   }
   const revealNextBatch = async () => {
@@ -89,9 +99,9 @@ function rebuildVisibleNodes() {
     await nextTick()
     if (generation !== renderGeneration) return
     const mountElapsedMs = currentTime() - mountStartedAt
-    batchScale = nextPreviewMountBatchScale(batchScale, mountElapsedMs)
+    batchScale = Math.min(MAX_NODE_BATCH_SCALE, nextPreviewMountBatchScale(batchScale, mountElapsedMs))
     if (visibleCount.value < source.length) renderFrame = scheduleRenderFrame(revealNextBatch)
-    else settleVisibleNodes()
+    else settleVisibleBatches()
   }
   renderFrame = scheduleRenderFrame(revealNextBatch)
 }
@@ -122,7 +132,9 @@ onUnmounted(() => {
 
 <template>
   <PreviewNodeBatch
-    :nodes="visibleNodes"
+    v-for="batch in visibleBatches"
+    :key="batch.id"
+    :nodes="batch.items"
     :runtime-store="runtimeStore"
     :time-context="timeContext"
     @form-change="forwardFormChange"

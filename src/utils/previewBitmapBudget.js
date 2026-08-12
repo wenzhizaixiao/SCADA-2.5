@@ -39,5 +39,9 @@ export function previewBitmapPixelBudget(options = {}) {
   const devicePixelRatio = previewBitmapPixelRatio(options.devicePixelRatio)
   const required = (Math.ceil(stageWidth * scale * devicePixelRatio) + 1)
     * (Math.ceil(stageHeight * scale * devicePixelRatio) + 1)
-  return Number.isFinite(required) ? Math.max(1, Math.min(maximum, required)) : maximum
+  if (!Number.isFinite(required)) return maximum
+  // A visible preview frame must keep its requested spatial density. The
+  // legacy ceiling remains available for offscreen/bootstrap fallback frames.
+  if (options.preservePixelRatio === true) return Math.max(1, Math.ceil(required))
+  return Math.max(1, Math.min(maximum, required))
 }

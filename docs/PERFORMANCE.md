@@ -32,7 +32,7 @@ fallback Canvas 只负责整图连续反馈，位图限制为 `1,048,576` 像素
 
 删除脏区不会把相距很远的实体立即合并为一个巨大包围盒。`editorLodRemovalCoverRegions()` 最多保留 `32` 个分离区域；接触区域仍直接合并，超过上限时用缓存的成对增量覆盖面积选择代价最小的压缩，并让新区域与既有区域共同参加比较。该压缩始终保持完整覆盖，不会留下删除残影。6,000 个远距离区域的旧实现约耗时 `112～137ms`，当前实现为 `11.89～15.44ms`，网格分布场景约 `6.95～7.74ms`；性能用例要求同规模处理低于 `50ms`，防止后续退化。
 
-自适应预览使用完整画布 Canvas，并把首帧拆为有预算的分片任务；当前激活预览使用 `render-mode="task"`，单片最多 `4ms`。task 模式优先用 `MessageChannel` 快速推进，但每连续两片主动让出一次可取消的 `requestAnimationFrame`，避免一个大任务仅在任务队列中连续排队而挤压浏览器绘制；不支持 `requestAnimationFrame` 时继续使用 task，不支持 `MessageChannel` 时回退 `setTimeout(0)`。非活动 bootstrap、低清编辑 fallback 和鹰眼保持 `2ms`，其中 bootstrap/辅助缩略图继续使用空闲调度，编辑 detail 使用 `task` 模式且单片最多 `6ms`。纯静态图纸在 Canvas ready 后卸载预览 DOM。存在视频、表单、表格、时间控件、`custom*` 动效、非 `none` CSS 动画或其他持续视觉的 live 节点时，系统从最高图层开始反向读取最多 `24` 个 `layerEntries`，找到能够覆盖全部 live 节点的最短有界尾段。这个尾段整体交给独立且持久的 `preview-live-plane`，其中允许包含为保持层级顺序而一并提升的静态 node 和 drawing；Canvas 通过 `excludedNodeIds` 与 `excludedDrawingIds` 排除尾段实体，只绘制其下方静态前缀，同时继续保留节点索引以计算连线端点。连线始终由 Canvas 绘制一次，尾段 drawing 始终由 DOM/SVG 绘制一次，两层不得重复挂载同一实体。
+自适应预览和普通大图首次交接所需的完整兜底 Canvas 都拆为有预算的分片任务。自适应状态或 `previewFitInitialRenderUrgent` 为真时使用 `render-mode="task"` 和 `4ms` 预算；task 优先用 `MessageChannel` 快速推进，但每连续两片主动让出一次可取消的 `requestAnimationFrame`，避免挤压浏览器绘制。不支持 rAF 时继续 task，不支持 `MessageChannel` 时回退 `setTimeout(0)`。普通大图原子呈现完成后恢复 `idle + 2ms`，辅助缩略图继续使用空闲调度；低清编辑 fallback 为逐帧 `2ms`，编辑 detail 为 `task + 6ms`。预览专用 surface 使用 `wait-for-images`：本次实际绘制遇到的未结算图片记录到 `pendingImageUrls`，私有面含占位像素时拒绝提交，多图 load/error 合并后只重绘一次。纯静态图纸在 Canvas ready 后卸载预览 DOM。存在视频、表单、表格、时间控件、`custom*` 动效、非 `none` CSS 动画或其他持续视觉的 live 节点时，系统从最高图层开始反向读取最多 `24` 个 `layerEntries`，找到能够覆盖全部 live 节点的最短有界尾段。这个尾段整体交给独立且持久的 `preview-live-plane`，其中允许包含为保持层级顺序而一并提升的静态 node 和 drawing；Canvas 通过 `excludedNodeIds` 与 `excludedDrawingIds` 排除尾段实体，只绘制其下方静态前缀，同时继续保留节点索引以计算连线端点。连线始终由 Canvas 绘制一次，尾段 drawing 始终由 DOM/SVG 绘制一次，两层不得重复挂载同一实体。
 
 完整帧满足 `incrementalRuntime && max(edgeCount, edgeSpatialIndex.state.entries) >= 2,048` 时，静态边的像素栅格化由专用 OffscreenCanvas Worker 承担；因此全图边数组和原始尺寸/全屏 edge-only 的空间查询 cursor 都使用同一 Worker 热路径，不需要先同步物化完整查询结果。主线程仍在原 `2–6ms` scheduler 预算内解析端点和维护几何索引：cursor 的一次 `runSlice` 最多检查 `256` 个索引条目，只要当前时间片尚未让步就继续查询，尽量把最多 `512` 条命令组成一批；坐标、线宽和 marker 尺寸写入 `Float64Array`，dash/marker 枚举写入 `Uint8Array`，颜色索引写入 `Uint16Array`，三个 buffer 以 transferable 发送，不克隆 Vue 边对象。Worker 与主线程共用 `drawEdgeRasterCommand()`，严格保持输入顺序、每边独立 `beginPath/stroke`、dash reset 以及起止 marker；函数完成一条边后恢复调用方原 `lineCap`，防止共享 context 的后续绘制被圆头状态污染。完成后通过 `transferToImageBitmap()` 返回静态边层，主线程一次合成后继续节点和 drawing。
 
@@ -44,13 +44,13 @@ cursor 每命中一条边，必须先把引用追加到 `task.edges`，再生成
 
 原始尺寸、全屏预览和自适应降级路径继续使用视口虚拟化完整 DOM 承载节点、线稿和所有原生交互。DOM 世代的节点与几何均 ready 后卸载并释放用于装载交接的 fit Canvas；若当前带 `96px` 节点查询缓冲的视口超过 `1,024` 条连线，原始尺寸和全屏会另行保留 `preview-edge-canvas`，只绘制连线。该窗口把视口外扩 `192px`，接近窗口边缘 `64px` 时才更新，使用 `4ms` task 分片和活动预览位图预算。`previewEdgeCanvasPlanKey` 明确包含当前请求 DPR；完整帧写入可见 backing 前，`frameCommitGuard` 校验 edge-only 仍活动、事件 plan 与 bounds 仍等于当前请求，并校验 X/Y 实际像素比中的较小值达到请求倍率。显示阶段再要求 `previewEdgeCanvasReady`、committed bounds 覆盖当前视口、committed plan key 等于当前计划且 committed DPR 仍清晰。迟到的旧范围/旧计划帧只会被忽略，不得清除当前 ready；当前匹配请求若实际 DPR 不足则进入 fatal 完整 SVG fallback。新窗口或更高 DPR 的清晰帧提交前，完整 SVG 连线继续渐进显示，旧范围、旧计划或低密度 Canvas 都不能接管。节点、表单、媒体、动画、铅笔和线段始终留在 DOM，连线不会同时由 Canvas 与 SVG 重复绘制。`previewVisibleNodes/previewVisibleEdges/previewVisibleDrawings` 返回完整视口查询结果，不按节点 `512`、连线 `1,024` 或旧线稿 `512` 截断；`PREVIEW_DOM_*` 常量用于选择装载/edge-only 策略，不是实体数量上限。
 
-`ProgressivePreviewNodes` 在每个新世代开始时立即用 `partitionRetainedPreviewNodes()` 剔除目标集合外的陈旧 DOM，保留新旧集合交集，并把同 ID 节点替换为当前源引用；因此 10,000 节点目标缩到小视口时不会等剩余挂载完成才释放旧实例。缺失节点通过 `push + triggerRef` 在同一个浅数组上原地增长，不在每批复制或过滤全部已挂载项；`nextTick` 后的实际 DOM 提交耗时低于 `3ms` 时把节点批量倍率加倍，高于 `8ms` 时减半，倍率始终限制在 `1–16`，同时继续服从节点数与类型成本预算。`PreviewNodeBatch` 的 `v-memo` 把 `node` 引用放入依赖；即使 ID 不变，只要节点对象被新世代替换也会刷新。`ProgressivePreviewGeometry` 对当前世代的 edges 和 drawings 保留稳定不可变的同 ID 批次并换成最新引用，缺失项首帧最多分别挂载 `64` 条连线和 `8` 个线稿，后续根据 `nextTick` 后的提交耗时逐帧增长，几何倍率最多为 `4`，避免在 Canvas 降级时一次计算全部端点、路径并提交整棵 SVG。`previewDomReady` 由节点 ready 与几何 ready 共同计算；两类完成事件都必须匹配当前世代和各自当前源数量。`finishPreviewDomHandoff()` 还要求预览仍打开、DOM stage 仍挂载且当前交接目标仍为 `dom`；`closePreview()` 在拆卸交接前推进 `previewDomGeneration`，迟到完成事件不能重新切换显示模式。正常等待可用且清晰的 fit Canvas 时只请求当前带缓冲视口 DOM，只有 Canvas 计划不适用或已失败才请求完整图纸 DOM；Canvas 失败后先维持原尺寸 DOM，节点、连线和线稿全部渐进挂载且共同 ready 后才切换为 `dom-fit`，不会在等待期间集中挂载或暴露半张图。
+`ProgressivePreviewNodes` 在每个新世代开始时用 `partitionRetainedPreviewNodeBatches()` 立即剔除目标集合外的陈旧 DOM，保留交集批次并把同 ID 节点替换为当前源引用；因此 10,000 节点目标缩到小视口时不会等待后续挂载才释放旧实例。缺失节点以新的不可变批次追加，既不修改已经传给子组件的数组，也不在每批复制全部已挂载节点；`nextTick` 后按真实 DOM 提交耗时调整下一批，节点倍率最多为 `2`，并继续同时服从节点数与类型成本预算。`PreviewNodeBatch` 的 `v-memo` 把 `node` 引用放入依赖；即使 ID 不变，只要节点对象被新世代替换也会刷新。`ProgressivePreviewGeometry` 对当前世代的 edges 和 drawings 保留稳定不可变的同 ID 批次并换成最新引用，缺失项首帧最多分别挂载 `64` 条连线和 `8` 个线稿，后续根据 `nextTick` 后的提交耗时逐帧增长，几何倍率最多为 `4`，避免在 Canvas 降级时一次计算全部端点、路径并提交整棵 SVG。`previewDomReady` 由节点 ready 与几何 ready 共同计算；完成事件还要在 `nextTick` 后核对当前世代、目标数量和真实 `.preview-node` 数量。图片节点继续等待 DOM 图片 `load/error` 结算，live plane 也必须 ready，`finishPreviewDomHandoff()` 才能原子呈现。首次预览完成前继续显示编辑器的完整旧画面；大图还必须先得到覆盖整张图纸的完整 Canvas 兜底帧。原始尺寸或全屏滚动触发 DOM 换代时继续显示该完整旧帧，新的节点和几何全部 ready 后才切回 DOM。正常等待可用且清晰的 fit Canvas 时只请求当前带缓冲视口 DOM，只有 Canvas 计划不适用或已失败才请求完整图纸 DOM；Canvas 失败后先维持原尺寸 DOM，节点、连线、线稿和图片全部 ready 后才切换为 `dom-fit`，不会暴露局部空白或渐进显现。
 
 编辑态也有独立的临时渐进接管。加载/恢复图纸、关闭预览或从持久完整 LOD 回到普通倍率时，如果目标首屏超过 `128` 个节点，先让 Canvas 保持连续画面，再用 `previewMountBatchEnd()` 按每帧最多 `8` 个节点、`64` 挂载成本递增创建 `NodeVisual`；节点全部 ready 后才退出临时 LOD。新世代会保留仍在目标集合中的已挂载节点并取消旧帧，打开预览则立即取消编辑渐进任务，避免隐藏编辑器继续争用主线程。这一阶段只是挂载交接，完成后节点、线稿和交互仍回到普通 DOM，不把 Canvas 当作功能裁剪。
 
 Canvas 是否可交接不再由任意一次渲染完成事件直接决定。Canvas 完整帧的 `render-complete` 必须携带该任务实际使用的 `renderPlanKey`、`excludedNodeIds` 和 `excludedDrawingIds`；`App.vue` 只有在计划 key 与两组有序排除 ID 都和当前计算计划完全匹配，并且 `previewFrameFreshness` 门禁通过后，才把该计划的 overlay 节点与 drawing 快照提交为 committed plan 并切换显示。计划在渲染途中改变时，旧事件只能触发新计划重绘，不能短暂提交旧排除集合造成节点或线稿重复、缺失。fit surface 不再接收其他 surface 的低密度启动帧；`previewFitBootstrapCanRenderSharp` 先验证当前像素预算能否达到请求像素比，完整帧到达后再以 X/Y 中较小的实际像素比调用 `previewBitmapIsSharp()` 复核。只有匹配当前文档 token、目标尺寸、请求像素比和渲染计划的完整提交才能建立 available/fresh；预算注定不足或实际密度不达标时直接使用清晰 DOM/SVG，不允许把低密度 Canvas 拉伸后交接。`previewFrameFreshness.js` 分别记录当前文档世代、已请求世代和已提交世代；表单等文档修改会立即推进世代并使旧帧失效，延迟合并后的完整渲染请求只归属当前世代。当前文档的完整帧原子提交且没有待处理完整帧后即可恢复 fresh；运行值局部提交只能更新已经提交的同世代文档帧，不能越过尚未提交的新文档完整帧。新运行值可能在一次局部帧提交时已经继续排队，这种连续 `pendingRuntime` 不会让合法 Canvas 永久无法交接，后续值仍由 latest-wins 分片继续收敛。若本批运行数据没有可绘制视觉，`MiniMapPreview` 仍发送 settled no-op 完成事件。Canvas context 丢失、context 不可用、像素比不足或提交 token 已失效时，组件发送/进入 `render-error`，页面先显示原尺寸完整 DOM；完整渐进挂载 ready 后才切换 `dom-fit`，不能把空白、半提交或模糊 Canvas 暴露给用户。context 恢复后只能按新世代重新渲染。关闭预览、切换原始尺寸或进入全屏都必须释放 committed plan；关闭或重新打开预览同样使旧世代失效。
 
-Canvas surface 复用还要经过两次 2D context 检查：首次创建任务时拿不到 context 的 surface 立即销毁，任务结束准备回池时再次获取失败、外层 `restore()` 失败或已标记 context 故障的 surface 同样不得复用。节点、图片、线稿、线段、设备和边 marker 的每一层 `save()` 都以 `try/finally` 配对 `restore()`；`createStaticRenderSurface()`、`createRenderTask()`、运行 seed 和几何合成在取得 surface 后发生异常时，先恢复 Canvas 状态，再以不可复用方式释放坏 surface 并进入既有 fallback/权威完整帧恢复，不能污染下一实体或下一任务。图片只在成功加载后请求更新，同一帧内多个成功事件由 `createCoalescedRenderTrigger()` 合并成一次完整重绘；加载失败不触发整图重绘。fit Canvas 通过 `active` 明确区分当前显示目标：隐藏时取消 full/runtime 调度、时间与图片刷新并只记录 dirty，重新激活后只按最新文档和运行值追赶一次，避免不可见 surface 与画图、接数争抢主线程。
+Canvas surface 复用还要经过两次 2D context 检查：首次创建任务时拿不到 context 的 surface 立即销毁，任务结束准备回池时再次获取失败、外层 `restore()` 失败或已标记 context 故障的 surface 同样不得复用。节点、图片、线稿、线段、设备和边 marker 的每一层 `save()` 都以 `try/finally` 配对 `restore()`；`createStaticRenderSurface()`、`createRenderTask()`、运行 seed 和几何合成在取得 surface 后发生异常时，先恢复 Canvas 状态，再以不可复用方式释放坏 surface 并进入既有 fallback/权威完整帧恢复，不能污染下一实体或下一任务。完整预览记录图片在“实际绘制时”是否就绪；即使资源在长任务结束前加载成功，含旧占位像素的私有帧也会被拒绝。多个图片的 `load/error` 只在全部结算后合并重绘一次；失败资源以占位图作为最终状态，避免预览永久停在准备阶段。fit Canvas 通过 `active` 明确区分当前显示目标：隐藏时取消 full/runtime 调度、时间与图片刷新并只记录 dirty，重新激活后只按最新文档和运行值追赶一次，避免不可见 surface 与画图、接数争抢主线程。
 
 全屏尺寸变化由 `previewViewportScheduler.js` 合并 `fullscreenchange`、`ResizeObserver` 和滚动事件。进入或退出原生全屏后的第一帧若尚未收到有效 `contentRect`，只额外等待一帧；第二帧仍没有尺寸才读取 DOM 作为兜底。`fullscreenchange` 可能被浏览器或嵌入环境漏发，因此页面还在 `resize`、窗口 `focus` 和文档 `visibilitychange` 时用 `document.fullscreenElement` 校准 `previewFullscreen`；校准必须幂等，不能制造重复交接。普通滚动和窗口尺寸更新不增加首帧等待，旧世代回调也不能覆盖新的全屏视口。
 
@@ -65,6 +65,14 @@ Canvas surface 复用还要经过两次 2D context 检查：首次创建任务�
 `scripts/runtime-canvas-dirty-queue.test.mjs` 覆盖单帧批次、重复 ID、整数批边界和空终批；`scripts/minimap-rendering.test.mjs` 覆盖视口外过滤与 settled no-op、sparse front/back 轮换、dense 私有工作面、条带 seed、dense 重放、union clip 单次 copy、尺寸变化失败回滚及提交异常不预清空；`scripts/preview-handoff.test.mjs` 覆盖中间批合并和最终 freshness；`scripts/chunked-render-scheduler.test.mjs` 覆盖动态预算与异常回调；`scripts/performance-acceptance.test.mjs` 覆盖 6,016 节点扇出与运行数据排空预算。文字与异常专项还包括 `scripts/text-layout.test.mjs`、`scripts/incremental-text-layout.test.mjs` 的同步/增量语义等价和 `32/8,192` 护栏，`scripts/incremental-text-render-wiring.test.mjs` 的 full/dense/sparse、游标、取消、异常与 geometry 降级接线，以及 `scripts/minimap-canvas-state-exceptions.test.mjs` 的 18 项 Canvas 状态、运行 seed、创建期和几何 context 故障注入。
 
 完整首帧尚未结束时到达的数据先缓存，首帧提交后再局部补画，不把持续数据流升级为连续全图重绘。仪表和进度条的轨道属于静态层，填充与文字属于运行层；少量时间组件复用完整渲染时收集的时间实体做局部文字刷新。时间实体达到 dense 门槛时，`requestTimeRender()` 直接发送 `{ nodes: [], dense: true, pending: false }`，避免每秒同步遍历数千时间节点，再由上述 dense 私有工作面按实体分片重放。
+
+### 大图预览完整帧交接
+
+原始尺寸、全屏和自适应预览都以“完整帧”为可见切换单位。首次打开预览时继续保留编辑画面，已有预览在视口或世代变化时继续保留上一张完整帧；新的 DOM 节点、连线、线稿和媒体全部就绪后才一次切换。原始尺寸或全屏快速滚动时，先立即显示覆盖完整图纸的已提交 Canvas，新的视口 DOM 在不可见状态下分批挂载，完成后再从 Canvas 原子交接到 DOM，不会把逐批出现、局部缺块或空白画面暴露给用户。
+
+媒体就绪属于交接门禁的一部分。图片在 `load` 后还必须完成 `decode()`；视频预览使用 `preload="auto"`，并等待 `readyState >= 2` 的首个可绘制帧。等待任务同时校验预览 generation 和媒体 URL，旧任务或资源换代不能误放行当前画面。加载或解码失败时先显示对应的图片/视频组件占位，再将该资源记为已结算；没有固定超时强制展示半成品。Canvas 图片缓存区分 `loading`、`decoding`、`ready` 和 `error`，私有帧只要实际绘制过未完成图片占位就拒绝提交，待资源全部结算后统一完整重绘。
+
+这些优化只改变调度、挂载和交接方式，不通过裁剪组件、LOD 丢内容或降低最终画面清晰度换取速度；低密度 Canvas 只承担原始尺寸换代期间的完整画面兜底，不能成为自适应预览的最终画面，清晰 DOM 就绪后必须原子接管。正式 `图纸库/sacada测试.json` 为 `36,037,698 bytes`、`6,016` 个节点、`247` 个图片组件，画布 `9,355 × 2,643`：首次交接实测 DOM 从 `16` 个节点分批挂载到 `687` 个，当前区域 `30` 张图片的待加载数为 `0` 后才整体显示；`322ms` 内连续跨 `5` 个区域快速跳转时没有任何采样帧失去完整载体，最终 DOM 以 `923` 个节点、`39` 张图片和 `0` 个待加载媒体原子接管；全屏最终 DOM 和滚动区域均为 `9,355 × 2,643`。预览定向测试 `99/99`、完整稳定性测试 `774/774`、性能验收 `14/14` 和生产构建均通过。
 
 ### 鹰眼单画布渲染
 
@@ -136,6 +144,12 @@ Canvas surface 复用还要经过两次 2D context 检查：首次创建任务�
 
 铅笔绘制只在新点与上一点距离达到阈值时追加点，避免慢速移动产生大量几乎重合的 SVG 坐标。落笔结束后路径点归一化保存到普通节点中，缩放和组合只更新节点边界，不逐点重写路径，降低复杂线稿参与整体变换时的开销。
 
+### 数据源连接清单单次建模
+
+数据源管理页的统计和筛选由 `sourceConnectionList.js` 集中完成。每次来源数组、搜索词、状态或协议发生变化时，只遍历连接数组一次，同时累计在线/异常/停用/总数、各协议数量，判断名称、地址、协议全称/简称、状态和类别是否匹配，并把原连接引用放入“连接配置”或“接口 Demo”结果。结果保持来源顺序且不深复制连接、点位或响应正文，避免旧实现分别为搜索、在线数和异常数执行多次全表扫描。
+
+Demo 默认折叠可以减少日常管理时的可见行，搜索时才自动展开匹配组；这属于信息分组，不是虚拟列表、窗口化或分页。当前展开组仍正常渲染全部匹配连接，因此本轮只承诺消除重复模型扫描和无关数据复制，不把大量 DOM 渲染描述为常数级。筛选不会重新读取连接详情，也不会替换 `selectedSource/sourceDraft`；当前编辑项被隐藏时只提供清除筛选并展开所属组的定位操作，避免为了找回连接丢失输入中的配置。
+
 ### 实时数据逐帧批处理
 
 `runtimeGateway` 先把数组、`{ values: [] }` 或键值对象统一转换为 `{ key, value }[]`，小批通过 `runtimeUpdatePipeline.publishSynchronously()` 保持 `send()` 的同步返回语义，大批则由同一管线公平分片后再交给 `useRuntimeData`。`useRuntimeData` 只接受当前图纸已注册的活跃键；未注册键不进入叶子队列、不创建发布任务，`enqueue()` 返回真实接受数。大批 ingress 使用 `pendingIngressByKey` 与令牌队列，同键在消费前到达的新批值直接覆盖旧值，因此 latest-wins 在入口管线和叶子发布两层都成立。解绑再重新绑定会进入新的激活世代，旧的延迟值不能穿越世代。
@@ -144,13 +158,15 @@ Canvas surface 复用还要经过两次 2D context 检查：首次创建任务�
 
 新参数绑定保存 `target + sourceId + jsonPath`。`sourceBindingRuntime` 维护 `sourceId -> 唯一 JSONPath` 引用索引：节点新增、删除、换图或修改 `dataBindings` 时只增量增减引用，同一源同一路径无论被多少组件使用，每个快照版本都只求值一次。结果使用稳定派生键进入原有 `dataBindingIndex` 和运行数据管线，更新时不扫描整张图纸。旧图纸的 `pointId` 绑定继续走原有多对多索引。
 
-`runtimeNodeMaterializer` 按当前点位值生成浅层只读视觉节点。文字、颜色、透明度、表单状态、进度、动画、图表和表格只覆盖渲染输入，不修改响应式图纸对象，因此高频值不会触发保存、撤销历史或整树文档失效。表格运行数据有列数和行数视觉上限；历史序列、超大数组及复杂对象应在服务端或 Worker 聚合、裁剪和降采样，不能按采集频率全量推入组件。
+信号灯的 `signalColors.0..7` 和 `signalOpacity` 复用同一增量索引与快照流。多个灯位绑定同一来源的不同 JSONPath 时只增加对应的有界路径引用，不会为每个灯位建立协议连接，也不会扫描其他节点。`signalColorCount` 只控制通信页和视觉使用的灯位数量；减少灯数后保留已绑定高位项只增加至多 8 个常量级 schema 检查，解除后即可隐藏。
 
-动态表格适配在列推断、行映射和单元格克隆之前先把输入限制为 `50` 行、`12` 列；纯数组和 `{ columns, rows }` 数据集走同一预算。图表最多读取前 `12` 行，每行最多检查 `12` 个候选值，即使数据源快照包含 10 万行或超宽数组，也不会按原始数据总量物化组件。需要翻页、滚动历史或更大数据集时，应由 SQL/HTTP 数据服务提供分页、筛选或聚合结果，不能直接提高单个组件的渲染预算。
+`runtimeNodeMaterializer` 按当前点位值生成浅层只读视觉节点。文字、颜色、透明度、表单状态、进度、动画、图表和表格只覆盖渲染输入，不修改响应式图纸对象，因此高频值不会触发保存、撤销历史或整树文档失效。信号灯只有在颜色绑定需要覆盖时才复制调色板，并先截取最多 8 项；同一轮物化中的多个灯位共用这一次小数组复制，非法或不可用值直接回退静态项。信号灯轮换使用稳定配置签名，不透明度等无关值的高频更新不会反复重置颜色周期。表格运行数据接受行数组或 `{ columns, rows }`，推荐把 JSONPath 指向完整数据集；历史序列、超大数组及复杂对象应在服务端或 Worker 聚合、裁剪和降采样，不能按采集频率全量推入组件。
+
+动态表格适配在列推断、行映射和单元格克隆之前先把输入限制为 `50` 行、`12` 列；纯数组和 `{ columns, rows }` 数据集走同一预算。绑定完整数据集可保留自定义表头，只绑定 `rows` 时对象行按键、数组行按宽度、标量行按单列推断。复杂单元格最多读取 4 层、12 个对象键、12 个数组项和 48 个总条目，最终显示不超过 256 个字符。图表最多读取前 `12` 行，每行最多检查 `12` 个候选值，即使数据源快照包含 10 万行或超宽数组，也不会按原始数据总量物化组件。需要翻页、滚动历史或更大数据集时，应由 SQL/HTTP 数据服务提供分页、筛选或聚合结果，不能直接提高单个组件的渲染预算。
 
 DOM 叶子和 Canvas 共用 `runtimeValueFormat.js`，不再对未知对象直接 `JSON.stringify`。默认输出最多 256 个字符、嵌套最多 4 层、对象最多 12 个键、数组最多 12 项、整个值最多读取 48 个条目；循环引用、抛错 getter、撤销代理、超大 BigInt 和代理枚举异常都有有界占位结果。限制同时约束输出长度和实际读取工作量，后续接入复杂对象时不会因一个异常运行值遍历整棵对象树或生成超长临时字符串。生产网关仍应优先发送显示所需的标量或小型结构，格式化边界不是把任意大对象高频送到浏览器的许可。
 
-当前网关使用本地连接和结构化样例快照完成纯前端闭环。一张图纸只订阅一次源快照流；MQTT、HTTP、MySQL、SQL Server、Redis、Socket 和 WebSocket 后续由工作空间级适配器各自采集一次，并以 `{ sourceId, revision, quality, data }` 发布。组件不会直接创建协议连接或重复请求同一数据源。
+当前网关使用本地连接和结构化样例快照完成纯前端闭环。七种协议额外提供的 14 条颜色/数值接口 Demo 只是小型、有界的内存样例，每条正文受 `4 KiB` 测试门禁约束：颜色数据最多包含 6 个调色板项、6 个状态和 `6 × 3` 表格，数值数据最多包含 6 个序列点、4 个聚合指标和 `6 × 3` 表格。丰富字段不会创建真实协议连接，也没有新增组件请求路径。通信页的五类格式说明是模块级冻结常量，只随当前参数类型切换，不读取快照、不遍历节点，也不挂载真实表格预览。一张图纸只订阅一次源快照流；MQTT、HTTP、MySQL、SQL Server、Redis、Socket 和 WebSocket 后续由工作空间级适配器各自采集一次，并以 `{ sourceId, revision, quality, data }` 发布。组件不会直接创建协议连接或重复请求同一数据源。专项回归固定检查 14 条根 `$.value`、丰富字段、标准 `$.table`、表头/行物化以及测试连接和刷新后的样例稳定性；最终测试计数以顺序完整复跑后的统一基线为准。
 
 大快照保存在普通内存而不是 Vue 深响应式对象、图纸 JSON 或本地连接配置中。默认网关读取返回隔离副本；编辑器内部使用显式只读共享读取，真实采集适配器还可移交刚解析出的 JSON 所有权，避免同一大响应重复深拷贝。停用、检测中、滞后、离线、异常或删除连接时发布不可用质量，所有派生键变为 `undefined` 并回退静态属性；恢复 `good` 后按最新快照重新求值。
 
@@ -262,7 +278,7 @@ runtimeDecodeWorker.onmessage = event => gateway.send(event.data.values)
 - 高频节点、时间、层级与连线读取：持久索引按批次增删，双游标常数级预留新层级，画布直接读取实体层级，不因普通新增或缩放重建索引并排序全图。
 - 高频批量数据：由逐帧合并控制刷新频率，最大约为屏幕刷新率。
 - 大量自由路径：由点位降采样控制 SVG 数据量。
-- 多个内置及自定义动效组件：优先使用 CSS transform/opacity 动画；进度波动和信号灯仍有组件级 JavaScript 调度，需要按目标设备单独压测。
+- 多个内置及自定义动效组件：优先使用 CSS transform/opacity 动画；进度波动和信号灯仍有组件级 JavaScript 调度，需要按目标设备单独压测。信号灯通信最多物化 8 个灯位，灯光不透明度更新不得重启颜色轮换时钟。
 - 连续移动、缩放和旋转：撤销历史使用几何差异，避免操作开始时序列化整张图纸。
 - 超过 128 个节点的大选区变换：指针阶段只更新临时边界，最终几何优先由 Worker 计算；Worker 不可用时按 `2ms` 主线程切片降级，实体和索引提交同样分片且受命令屏障保护。
 - 新增、复制、粘贴或删除对象：撤销历史只保存受影响实体及关联连线，不序列化整图。
@@ -296,7 +312,7 @@ runtimeDecodeWorker.onmessage = event => gateway.send(event.data.values)
 
 为覆盖更接近真实接入的前端边界，自动化门禁还使用 6,016 个唯一键、406 个可见绑定、与应用相同的数据键反向索引和生产默认 `2ms` 数据时间片，连续执行 20 轮“WebSocket 文本 `JSON.parse` → 批内去重 → 入队”，并在数据尚未消费时交错执行节点新增、双游标层级分配、空间索引插入、节点移动和视口查询。去除前 3 次预热并独立重复 5 轮后，协议解析、规范化和入队 P95 为 `5.75～8.15ms`，增量编辑 P95 为 `0.29～0.38ms`，运行数据消费切片 P95 为 `2.01～2.04ms`，全部低于 60Hz 的 `16.7ms` 单帧预算。该用例位于 `scripts/performance-acceptance.test.mjs`，用于阻止算法和调度退化；它不包含 DOM 布局、图片解码和 Canvas 像素提交，不能替代浏览器验收。
 
-2026-08-03 最终统一复跑结果如下：100,000 点位 metadata 读取 P95 为 `0.0309ms`、查询切片 P95 为 `4.3352ms`；100,000 点位激活共使用 39 个切片，切片 P95 为 `4.0770ms`；6,016 个组件的绑定索引重建共 26 个切片，切片 P95 为 `1.3689ms`，运行数据排空切片 P95 为 `2.0424ms`，Canvas fanout 切片 P95 为 `0.7879ms`，单一运行键扇出到 6,016 节点的切片 P95 为 `0.1728ms`。全部低于 `16.7ms` 单帧预算；这些 Node 样本用于同机回归，会随机器负载波动。完整稳定性 `729/729`、性能验收 `14/14` 和生产构建通过；`npm audit --offline` 为 0 个漏洞，`npm ls --depth=0` 无 missing、invalid 或 extraneous。最终构建转换 1,829 个模块，用时 `790ms`；主 JavaScript chunk 为 `801.12kB`、gzip `248.06kB`，CSS 为 `113.44kB`、gzip `20.55kB`，`edgeRaster.worker.js`、`largeSelectionTransform.worker.js`、`projectJson.worker.js` 分别为 `2.91kB`、`6.39kB`、`41.75kB`，仅保留既有的主 chunk 超过 500kB 提示。主 chunk 体积仍是初始加载优化空间，但不属于拖入、画图、接数或预览运行热路径。
+2026-08-04 当前统一复跑结果如下：100,000 点位 metadata 读取 P95 为 `0.0291ms`、查询切片 P95 为 `4.5806ms`；100,000 点位激活共使用 46 个切片，切片 P95 为 `4.0253ms`；6,016 个组件的绑定索引重建共 26 个切片，切片 P95 为 `0.8274ms`，运行数据排空切片 P95 为 `2.0656ms`，Canvas fanout 切片 P95 为 `0.9679ms`，单一运行键扇出到 6,016 节点的切片 P95 为 `0.1903ms`。全部低于 `16.7ms` 单帧预算；这些 Node 样本用于同机回归，会随机器负载波动。完整稳定性 `737/737`、性能验收复跑 `14/14` 和生产构建通过；`npm audit --offline` 为 0 个漏洞，`npm ls --depth=0` 无 missing、invalid 或 extraneous。最终构建转换 1,829 个模块，用时 `913ms`；主 JavaScript chunk 为 `812.20kB`、gzip `251.79kB`，CSS 为 `115.01kB`、gzip `20.81kB`，`edgeRaster.worker.js`、`largeSelectionTransform.worker.js`、`projectJson.worker.js` 分别为 `2.91kB`、`6.39kB`、`41.75kB`，仅保留既有的主 chunk 超过 500kB 提示。主 chunk 体积仍是初始加载优化空间，但不属于拖入、画图、接数或预览运行热路径。
 
 正式 `sacada测试.json` 为 `36,037,698 bytes`，包含 6,016 个节点和 0 个非空 `dataKey`，SHA256 为 `9080A9FC893858AA36C580FD1C53C57AEA3EB5394E0501038C7059DC3BDC4114`；每个节点本身已经序列化该空字段。性能验收只在内存副本中为全部节点逐个填入唯一键，正式文件未被修改。该副本紧凑 JSON 仅增加约 `71KB`（`0.27%`）；运行时保存 6,016 个标量值并挂载 406 个可见绑定，堆内存约增加 `0.30MB`。因此后续“挂数据”的容量不是主要风险，风险来自全量消息频率、单值复杂度和单屏同时变化的组件数。浏览器压力场景每 `500ms` 推送一批 6,016 键全量值；生产接入应优先发送变化键并在网关边界合并同一刷新窗口，不能把 6,016 键全量快照按 60Hz 连续送入主线程。复杂对象应在服务端转成显示所需的标量或小型结构，历史序列进入独立有界缓冲区。本轮低倍率编辑和 `100%` 预览文字布局截图为 `D:\苔岑公司\2dDP\lod-text-formal-editor-75.png` 与 `D:\苔岑公司\2dDP\lod-text-formal-preview-100.png`。
 

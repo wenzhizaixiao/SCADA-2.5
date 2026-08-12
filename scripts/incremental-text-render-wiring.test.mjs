@@ -168,8 +168,8 @@ test('MiniMapPreview wires incremental long-text preparation into every render p
   const incrementalDraw = sourceBetween(source, 'function drawEntityIncrementally', 'function edgeRasterCommand')
   assertSourceMatch(
     incrementalDraw,
-    /drawNode\([\s\S]{0,600}?\{[\s\S]{0,200}?\btextLayout(?:\s*:|\s*\})/,
-    'drawNode must receive the prepared text layout'
+    /drawNode\(\s*task\.ctx,[\s\S]*?\{\s*node:\s*textLayout\?\.node\s*\|\|\s*preparedNode,\s*textLayout,\s*animationTimestamp:\s*task\.animationTimestamp\s*\}\s*\)/,
+    'drawNode must receive the prepared text layout and current task animation timestamp'
   )
   assertSourceMatch(
     source,
