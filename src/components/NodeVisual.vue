@@ -1065,7 +1065,13 @@ function colorWithOpacity(color, opacity = 1) {
       <div class="animated-pipe"><i></i></div>
     </template>
     <template v-else-if="node.type === 'rotatingFan'">
-      <div class="fan-visual"><div class="fan-rotor"><i v-for="index in 4" :key="index"></i><b></b></div></div>
+      <div class="fan-visual">
+        <svg class="fan-rotor" viewBox="0 0 48 48" aria-hidden="true">
+          <path v-for="index in 4" :key="index" class="fan-blade" d="M24 24 C30 18 32 8 24 4" :transform="`rotate(${(index - 1) * 90} 24 24)`" />
+          <circle class="fan-hub-ring" cx="24" cy="24" r="8" />
+          <circle class="fan-hub" cx="24" cy="24" r="4" />
+        </svg>
+      </div>
     </template>
     <template v-else-if="node.type === 'signalLight'">
       <div class="signal-visual"><i :style="{ backgroundColor: currentSignalColor(), opacity: node.signalOpacity ?? 1 }"></i></div>

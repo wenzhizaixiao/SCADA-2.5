@@ -5,7 +5,10 @@ export const CANVAS_VISUAL_FAST_ANIMATION_FPS = 60
 
 const DEFAULT_ANIMATION_DURATION_SECONDS = 1.5
 const MINIMUM_ANIMATION_SAMPLES_PER_CYCLE = 12
-const FULL_ROTATION_RADIANS = Math.PI * 2
+// The four identical fan blades repeat visually every quarter turn. Treat that
+// visible repeat as one configured cycle so the period control matches what
+// users actually see instead of making the apparent cycle four times faster.
+const FAN_VISUAL_CYCLE_RADIANS = Math.PI / 2
 const FLOW_PIPE_DASH_UNITS = 7
 const PARTICLE_COUNT = 8
 const PARTICLE_TRANSLATE_START = -22
@@ -141,7 +144,7 @@ export function flowPipeDashOffset(node, lineWidth, timestamp) {
 
 export function rotatingFanAngle(node, timestamp) {
   if (node?.type !== 'rotatingFan' || !isCanvasVisualAnimationCandidate(node)) return 0
-  return canvasVisualAnimationPhase(node, timestamp) * FULL_ROTATION_RADIANS
+  return canvasVisualAnimationPhase(node, timestamp) * FAN_VISUAL_CYCLE_RADIANS
 }
 
 export function waterTankAnimationState(node, timestamp) {

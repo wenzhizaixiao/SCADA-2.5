@@ -322,6 +322,10 @@ test('built-in animation controls feed both DOM and Canvas preview paths', () =>
   assert.match(controls, /@change="normalizeBuiltInAnimationDuration\(selected\)"/)
   assert.match(controls, /v-model="selected\.animationDirection"/)
   assert.match(controls, /v-model="selected\.animationPaused"/)
+  assert.match(controls, /v-model="selected\.animation" @change="refreshBuiltInAnimation\(selected\)"/)
+  assert.match(controls, /v-model\.number="selected\.animationDuration"[^>]*@input="refreshBuiltInAnimation\(selected\)"/)
+  assert.match(controls, /v-model="selected\.animationDirection" @change="refreshBuiltInAnimation\(selected\)"/)
+  assert.match(controls, /v-model="selected\.animationPaused" @change="refreshBuiltInAnimation\(selected\)"/)
 
   assert.match(nodeVisualSource, /'--motion-speed':\s*`\$\{node\.animationDuration \|\| 1\.5\}s`/)
   assert.match(nodeVisualSource, /'--motion-direction':\s*node\.animationDirection \|\| 'normal'/)
@@ -349,6 +353,17 @@ test('built-in animation controls feed both DOM and Canvas preview paths', () =>
   )
   assert.ok(durationCommit.length > 0)
   assert.match(durationCommit, /node\.animationDuration = Math\.max\([\s\S]*?markMiniMapDirty\(\)/)
+
+  const incrementalRefresh = appSource.slice(
+    appSource.indexOf('function refreshBuiltInAnimation'),
+    appSource.indexOf('\nfunction normalizeWaterTankProgress')
+  )
+  assert.ok(incrementalRefresh.length > 0)
+  assert.match(incrementalRefresh, /const request = \{ nodes: \[node\], dense: false, pending: false \}/)
+  assert.match(incrementalRefresh, /editorLodCanvas\.value\?\.requestRuntimeRender\?\.\(request\)/)
+  assert.match(incrementalRefresh, /editorLodDetailCanvas\.value\?\.requestRuntimeRender\?\.\(request\)/)
+  assert.match(incrementalRefresh, /miniMapPreview\.value\?\.requestRuntimeRender\?\.\(request\)/)
+  assert.doesNotMatch(incrementalRefresh, /markMiniMapDirty|requestRender|scheduleRender/)
 })
 
 test('signal light color cycling does not also blink its DOM border', () => {
@@ -493,15 +508,18 @@ test('flow pipe dash offset follows the resolved phase and rejects non-pipe cand
   assertClose(flowPipeDashOffset(animatedNode('rotatingFan'), 2, 500), 0, 'non-pipe dash offset')
 })
 
-test('rotating fan angle follows the resolved phase and rejects non-fan candidates', () => {
+test('rotating fan period follows one visible quarter-turn cycle in DOM and Canvas', () => {
   const node = animatedNode('rotatingFan')
 
-  assertClose(rotatingFanAngle(node, 250), Math.PI / 2, 'quarter-turn fan angle')
+  assertClose(rotatingFanAngle(node, 250), Math.PI / 8, 'quarter-cycle fan angle')
   assertClose(
     rotatingFanAngle({ ...node, animationDirection: 'reverse' }, 250),
-    Math.PI * 1.5,
+    Math.PI * 3 / 8,
     'reverse fan angle'
   )
+  assertClose(rotatingFanAngle(node, 1000), 0, 'full configured cycle returns to the same visual state')
+  assert.match(enhancementSource, /@keyframes preview-fan-spin\s*\{\s*to\s*\{\s*transform:\s*rotate\(90deg\)/)
+  assert.match(enhancementSource, /animation:\s*preview-fan-spin var\(--motion-speed, 1\.5s\) linear infinite/)
   const paused = { ...node, id: 'paused-fan', animationPaused: true }
   const pausedTimestamp = createCanvasVisualAnimationTimeline().resolve(paused, 250)
   assertClose(rotatingFanAngle(paused, pausedTimestamp), 0, 'cold paused fan angle')
@@ -859,16 +877,18 @@ test('MiniMap timestamps reach all six animated Canvas component commands', () =
   drawFan(firstFan.context, animatedNode('rotatingFan'), 80, 80, 1, 0)
   drawFan(secondFan.context, animatedNode('rotatingFan'), 80, 80, 1, 125)
   assertClose(firstFan.calls.rotations[0], 0, 'initial fan command')
-  assertClose(secondFan.calls.rotations[0], Math.PI / 4, 'advanced fan command')
+  assertClose(secondFan.calls.rotations[0], Math.PI / 16, 'advanced fan command')
   const fullSizeBlades = firstFan.calls.strokes.filter(call => call.strokeStyle === '#16b89a')
   assert.equal(fullSizeBlades.length, 4)
   assert.ok(fullSizeBlades.every(call => call.lineWidth === 8), 'Canvas blade width must match the DOM 8px blade')
   assert.ok(fullSizeBlades.every(call => JSON.stringify(call.path) === JSON.stringify([
     ['M', 0, 0],
-    ['L', 0, -20]
-  ])), 'Canvas blade length and direction must match the DOM 64px fan geometry')
+    ['C', 6, -6, 8, -16, 0, -20]
+  ])), 'Canvas curved blades must match the DOM 64px fan geometry')
   assert.equal(firstFan.calls.rotations.length, 4, 'fan must not add an extra rotating marker')
   assert.equal(secondFan.calls.rotations.length, 4, 'advanced fan must keep only four blade transforms')
+  assert.match(nodeVisualSource, /class="fan-blade"[^>]*d="M24 24 C30 18 32 8 24 4"/)
+  assert.doesNotMatch(nodeVisualSource, /fan-direction-marker/)
 
   const lowZoomPipe = visualCanvasRecorder()
   drawFlowPipe(lowZoomPipe.context, pipeNode, 190, 48, 5, 250)
@@ -881,12 +901,12 @@ test('MiniMap timestamps reach all six animated Canvas component commands', () =
   const lowZoomBlades = lowZoomFan.calls.strokes.filter(call => call.strokeStyle === '#16b89a')
   assert.equal(lowZoomBlades.length, 4, 'low-zoom fan uses four same-color rotating blades')
   assert.ok(lowZoomBlades.every(call => call.lineWidth / 5 >= .99), 'low-zoom fan blades remain at least one screen pixel')
-  assertClose(lowZoomFan.calls.rotations[0], Math.PI / 4, 'low-zoom fan phase')
+  assertClose(lowZoomFan.calls.rotations[0], Math.PI / 16, 'low-zoom fan phase')
 
   const halfTurnFan = visualCanvasRecorder()
   drawFan(halfTurnFan.context, animatedNode('rotatingFan'), 110, 110, 5, 500)
   assert.equal(halfTurnFan.calls.strokes.filter(call => call.strokeStyle === '#16b89a').length, 4)
-  assertClose(halfTurnFan.calls.rotations[0], Math.PI, 'half-turn fan angle')
+  assertClose(halfTurnFan.calls.rotations[0], Math.PI / 4, 'half-cycle fan angle')
 
   const drawSpecialNode = compileSource(
     sourceBetween('function drawSpecialNode', '\nfunction canvasNodeLayout'),
@@ -1050,6 +1070,7 @@ test('MiniMap full renders retain paused candidates without scheduling them whil
       isCanvasVisualAnimationCandidate,
       isCanvasVisualAnimationNode,
       materializeRuntimeNode: node => node,
+      visualAnimationRuntimeNode: node => node,
       number: (value, fallback = 0) => Number.isFinite(Number(value)) ? Number(value) : fallback,
       runtimePointValue: () => undefined
     }
@@ -1225,6 +1246,7 @@ test('MiniMap returns the complete visible continuous-animation set without curs
         committedVisualAnimationNodes: nodes.slice().reverse(),
         isCanvasVisualAnimationNode,
         materializeRuntimeNode: node => node,
+        visualAnimationRuntimeNode: node => node,
         currentAnimationTimestamp: () => 0,
         number: (value, fallback = 0) => Number.isFinite(Number(value)) ? Number(value) : fallback,
         props: {
@@ -1304,6 +1326,7 @@ test('MiniMap queues every visible signal light in one atomic color-transition t
       currentAnimationTimestamp: () => 250,
       isCanvasVisualAnimationNode,
       materializeRuntimeNode: node => node,
+      visualAnimationRuntimeNode: node => node,
       number: (value, fallback = 0) => Number.isFinite(Number(value)) ? Number(value) : fallback,
       previousCommittedSignalLightColor: (_node, key) => committedSignalLightColors.get(key),
       props: {
@@ -1368,6 +1391,7 @@ test('direct-to-general signal transitions compare the committed color before ad
     isCanvasVisualAnimationCandidate,
     isCanvasVisualAnimationNode,
     materializeRuntimeNode: node => node,
+    visualAnimationRuntimeNode: node => node,
     number: (value, fallback = 0) => Number.isFinite(Number(value)) ? Number(value) : fallback,
     props: {
       nodeIndex: nodeMap,
@@ -1520,6 +1544,7 @@ test('MiniMap visual refreshes schedule one complete frame, apply backpressure, 
       hasEnabledRuntimeBinding: () => false,
       isCanvasVisualAnimationNode,
       materializeRuntimeNode: node => node,
+      visualAnimationRuntimeNode: node => node,
       nextVisualAnimationNodeBatch: () => trackedNodes,
       number: (value, fallback = 0) => Number.isFinite(Number(value)) ? Number(value) : fallback,
       pendingRuntimeNodes,
@@ -1747,6 +1772,45 @@ test('visual descriptor cache keys invalidate every configurable built-in effect
   )
 })
 
+test('visual atlas quantizes only imperceptible sprite-local subpixels', () => {
+  const canvasVisualSpriteStaticSignature = compileSource(
+    sourceBetween('function canvasVisualSpriteStaticSignature', '\nfunction internCanvasVisualSpriteStaticSignature'),
+    'canvasVisualSpriteStaticSignature',
+    {
+      RUNTIME_VISUAL_SPRITE_DENSE_THRESHOLD: 512,
+      RUNTIME_VISUAL_SPRITE_SUBPIXEL_STEPS: 4,
+      number: (value, fallback = 0) => Number.isFinite(Number(value)) ? Number(value) : fallback
+    }
+  )
+  const task = {
+    frame: { offsetX: 0, offsetY: 0, pixelRatioX: 1, pixelRatioY: 1, scaleX: 1, scaleY: 1 }
+  }
+  const bitmapRect = { x: 0, y: 0, w: 24, h: 24 }
+  const layout = { width: 20, height: 20, visualScaleX: 1, visualScaleY: 1 }
+  const baseline = animatedNode('rotatingFan', { x: 1, y: 1, w: 20, h: 20 })
+  const signature = node => canvasVisualSpriteStaticSignature(task, node, bitmapRect, layout, 1, '')
+
+  assert.equal(signature(baseline), signature({ ...baseline, x: 1.1, y: 1.1 }))
+  assert.notEqual(signature(baseline), signature({ ...baseline, x: 1.3 }))
+
+  task.visualAnimationVisibleCount = 512
+  assert.equal(signature(baseline), signature({ ...baseline, x: 1.3, y: 1.8 }))
+})
+
+test('animation frame planning materializes only runtime bindings it consumes', () => {
+  const helper = sourceBetween('function hasSignalRuntimeBinding', '\nfunction commitSignalLightColors')
+  assert.match(helper, /hasEnabledRuntimeBinding\(node, 'animationDuration'\)/)
+  assert.match(helper, /hasEnabledRuntimeBinding\(node, 'animationPlaying'\)/)
+  assert.match(helper, /signal && \([\s\S]*?hasEnabledRuntimeBinding\(node, 'signalOpacity'\)/)
+  assert.match(helper, /composite && \([\s\S]*?hasEnabledRuntimeBinding\(node, 'fill'\)/)
+  assert.doesNotMatch(helper, /hasEnabledRuntimeBinding\(node, 'visualPrimaryColor'\)/)
+  assert.match(helper, /needsRuntime \? materializeRuntimeNode\(node, runtimePointValue\) : node/)
+  assert.doesNotMatch(
+    sourceBetween('function visualAnimationQueryBounds', '\nfunction refreshVisibleVisualAnimationNodes'),
+    /materializeRuntimeNode/
+  )
+})
+
 test('visual atlas profiles isolate components with different animation periods', () => {
   const canvasVisualAnimationProfile = compileSource(
     sourceBetween('function canvasVisualAnimationProfile', '\nfunction internCanvasVisualAnimationProfile'),
@@ -1812,8 +1876,8 @@ test('visual-atlas falls back to per-frame signatures when stable streams exceed
     'prepareCanvasVisualAtlas',
     {
       RUNTIME_VISUAL_ATLAS_MAX_DIMENSION: 4096,
+      RUNTIME_VISUAL_ATLAS_MAX_ENTRIES: 512,
       RUNTIME_VISUAL_ATLAS_MAX_PIXELS: 8_388_608,
-      RUNTIME_VISUAL_SPRITE_MAX_SIGNATURES: 512,
       acquireCanvasVisualAtlasFrame: (_layoutKey, plan) => ({
         context: {},
         plan,
@@ -1865,6 +1929,8 @@ test('visual-atlas falls back to per-frame signatures when stable streams exceed
   assert.equal(task.visualAtlasEntries.length, 1)
   assert.equal(task.visualAtlasEntries[0].slotSignature, 'shared-dynamic-frame')
   assert.equal(task.phase, 'visualAtlasRaster')
+  assert.match(miniMapSource, /const RUNTIME_VISUAL_SPRITE_MAX_SIGNATURES = 512/)
+  assert.match(miniMapSource, /const RUNTIME_VISUAL_ATLAS_MAX_ENTRIES = 4096/)
 })
 
 test('direct visual-atlas eligibility keeps canonical order and rejects unsafe document states', () => {
@@ -1901,6 +1967,7 @@ test('direct visual-atlas eligibility keeps canonical order and rejects unsafe d
       committedVisualAnimationNodeMap: committedMap,
       isCanvasVisualAnimationNode,
       materializeRuntimeNode: node => node,
+      visualAnimationRuntimeNode: node => node,
       number: (value, fallback = 0) => Number.isFinite(Number(value)) ? Number(value) : fallback,
       props,
       refreshVisibleVisualAnimationNodes: () => nodes,

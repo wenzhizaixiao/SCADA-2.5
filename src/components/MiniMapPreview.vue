@@ -226,7 +226,10 @@ const RUNTIME_VISUAL_SPRITE_MAX_ITEM_PIXELS = 262144
 const RUNTIME_VISUAL_SPRITE_MAX_TOTAL_PIXELS = 4194304
 const RUNTIME_VISUAL_SPRITE_POOL_MAX_SURFACES = 256
 const RUNTIME_VISUAL_SPRITE_POOL_MAX_TOTAL_PIXELS = 4194304
+const RUNTIME_VISUAL_SPRITE_SUBPIXEL_STEPS = 4
+const RUNTIME_VISUAL_SPRITE_DENSE_THRESHOLD = 512
 const RUNTIME_VISUAL_ATLAS_MIN_INSTANCES = 32
+const RUNTIME_VISUAL_ATLAS_MAX_ENTRIES = 4096
 const RUNTIME_VISUAL_ATLAS_MAX_DIMENSION = 4096
 const RUNTIME_VISUAL_ATLAS_MAX_PIXELS = 8388608
 const RUNTIME_VISUAL_ATLAS_FRAME_CACHE_MAX_ENTRIES = 2
@@ -1303,7 +1306,14 @@ function drawFan(ctx, node, width, height, worldPixel, animationTimestamp) {
         ctx.rotate(rotorAngle + index * Math.PI / 2)
         ctx.beginPath()
         ctx.moveTo(0, 0)
-        ctx.lineTo(0, -bladeLength)
+        ctx.bezierCurveTo(
+          bladeLength * .3,
+          -bladeLength * .3,
+          bladeLength * .4,
+          -bladeLength * .8,
+          0,
+          -bladeLength
+        )
         ctx.stroke()
       } finally {
         ctx.restore()
@@ -2041,12 +2051,25 @@ function canvasVisualSpriteAnimationState(node, layout, timestamp) {
 
 function canvasVisualSpriteStaticSignature(task, node, bitmapRect, layout, opacityMultiplier, badgeText) {
   const frame = task.frame
-  const centerBitmapX = (
+  const rawCenterBitmapX = (
     frame.offsetX + (number(node.x) + layout.width / 2) * frame.scaleX
   ) * frame.pixelRatioX - bitmapRect.x
-  const centerBitmapY = (
+  const rawCenterBitmapY = (
     frame.offsetY + (number(node.y) + layout.height / 2) * frame.scaleY
   ) * frame.pixelRatioY - bitmapRect.y
+  // Dense previews may share imperceptibly different subpixel origins, but a
+  // clipped edge sprite must keep its asymmetric local center.
+  const dense = number(task.visualAnimationVisibleCount) >= RUNTIME_VISUAL_SPRITE_DENSE_THRESHOLD
+    && Math.abs(rawCenterBitmapX - bitmapRect.w / 2) <= 1
+    && Math.abs(rawCenterBitmapY - bitmapRect.h / 2) <= 1
+  const centerBitmapX = dense
+    ? bitmapRect.w / 2
+    : Math.round(rawCenterBitmapX * RUNTIME_VISUAL_SPRITE_SUBPIXEL_STEPS)
+      / RUNTIME_VISUAL_SPRITE_SUBPIXEL_STEPS
+  const centerBitmapY = dense
+    ? bitmapRect.h / 2
+    : Math.round(rawCenterBitmapY * RUNTIME_VISUAL_SPRITE_SUBPIXEL_STEPS)
+      / RUNTIME_VISUAL_SPRITE_SUBPIXEL_STEPS
   return JSON.stringify([
     bitmapRect.w,
     bitmapRect.h,
@@ -2827,12 +2850,12 @@ function prepareCanvasVisualAtlas(task, deadline) {
     return true
   }
 
-  if (task.visualAtlasUniqueCommands.size > RUNTIME_VISUAL_SPRITE_MAX_SIGNATURES) {
+  if (task.visualAtlasUniqueCommands.size > RUNTIME_VISUAL_ATLAS_MAX_ENTRIES) {
     const dynamicCommands = new Map()
     for (const command of task.visualAtlasCommands) {
       command.slotSignature = command.signature
       if (!dynamicCommands.has(command.signature)) dynamicCommands.set(command.signature, command)
-      if (dynamicCommands.size > RUNTIME_VISUAL_SPRITE_MAX_SIGNATURES) {
+      if (dynamicCommands.size > RUNTIME_VISUAL_ATLAS_MAX_ENTRIES) {
         task.visualAtlasPrepareMs += currentAnimationTimestamp() - startedAt
         fallbackCanvasVisualAtlas(task, 'signature-capacity')
         return true
@@ -2865,7 +2888,7 @@ function prepareCanvasVisualAtlas(task, deadline) {
   }
   let atlasFrame = cachedCanvasVisualAtlasFrame(layoutKey)
   const plan = atlasFrame?.plan || packCanvasVisualAtlas(entries, {
-    maxEntries: RUNTIME_VISUAL_SPRITE_MAX_SIGNATURES,
+    maxEntries: RUNTIME_VISUAL_ATLAS_MAX_ENTRIES,
     maxWidth: RUNTIME_VISUAL_ATLAS_MAX_DIMENSION,
     maxHeight: RUNTIME_VISUAL_ATLAS_MAX_DIMENSION,
     maxPixels: RUNTIME_VISUAL_ATLAS_MAX_PIXELS,
@@ -5531,6 +5554,27 @@ function visualAnimationNodeKey(node) {
   return node?.id ?? node
 }
 
+function hasSignalRuntimeBinding(node) {
+  return Array.isArray(node?.dataBindings) && node.dataBindings.some(binding => (
+    binding?.enabled !== false
+    && /^signalColors\.\d+$/.test(String(binding?.target ?? '').trim())
+  ))
+}
+
+function visualAnimationRuntimeNode(node, { signal = false, composite = false } = {}) {
+  const needsRuntime = hasEnabledRuntimeBinding(node, 'animationDuration')
+    || hasEnabledRuntimeBinding(node, 'animationPlaying')
+    || (signal && (
+      hasEnabledRuntimeBinding(node, 'signalOpacity')
+      || hasSignalRuntimeBinding(node)
+    ))
+    || (composite && (
+      hasEnabledRuntimeBinding(node, 'fill')
+      || hasEnabledRuntimeBinding(node, 'opacity')
+    ))
+  return needsRuntime ? materializeRuntimeNode(node, runtimePointValue) : node
+}
+
 function commitSignalLightColors(nodesOrColors, timestamp, replace = false) {
   const colors = replace ? new Map() : committedSignalLightColors
   if (nodesOrColors instanceof Map) {
@@ -5685,8 +5729,7 @@ function visualAnimationBoundsKey(bounds) {
 function visualAnimationQueryBounds(bounds) {
   if (!bounds) return bounds
   let padding = 0
-  for (const sourceNode of committedVisualAnimationNodes) {
-    const node = materializeRuntimeNode(sourceNode, runtimePointValue)
+  for (const node of committedVisualAnimationNodes) {
     const visualScalePadding = Math.max(
       1,
       Math.abs(number(node.visualScaleX, 1)),
@@ -5742,7 +5785,7 @@ function appendVisibleVisualAnimationNodes(source, timestamp, batch, stale) {
     const node = props.nodeIndex?.get?.(tracked?.id) || tracked
     const key = visualAnimationNodeKey(node)
     if (!node || key == null || seen.has(key) || committedExcludedNodeIds.has(key)) continue
-    const effective = materializeRuntimeNode(node, runtimePointValue)
+    const effective = visualAnimationRuntimeNode(node, { signal: node.type === 'signalLight' })
     if (!isCanvasVisualAnimationNode(effective)) {
       stale.push(node)
       continue
@@ -5799,7 +5842,7 @@ function visualAnimationDirectAtlasFrame(visibleNodes = refreshVisibleVisualAnim
   if (pureVisualDocument) {
     for (const sourceNode of documentNodes) {
       const key = visualAnimationNodeKey(sourceNode)
-      const node = materializeRuntimeNode(sourceNode, runtimePointValue)
+      const node = visualAnimationRuntimeNode(sourceNode, { composite: true })
       if (
         key == null
         || committedVisualAnimationNodeMap.get(key) !== sourceNode
@@ -5820,7 +5863,7 @@ function visualAnimationDirectAtlasFrame(visibleNodes = refreshVisibleVisualAnim
     if (typeof props.spatialIndex?.query !== 'function') return null
     for (const sourceNode of visibleNodes) {
       const key = visualAnimationNodeKey(sourceNode)
-      const node = materializeRuntimeNode(sourceNode, runtimePointValue)
+      const node = visualAnimationRuntimeNode(sourceNode, { composite: true })
       if (
         key == null
         || committedVisualAnimationNodeMap.get(key) !== sourceNode
