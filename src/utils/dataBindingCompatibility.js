@@ -45,6 +45,11 @@ export const PARAMETER_VALUE_TYPE_LABELS = Object.freeze({
   table: '表格数据'
 })
 
+const STRUCTURED_PARAMETER_VALUE_TYPE_LABELS = Object.freeze({
+  'text-list': '表头数据',
+  'table-rows': '行表格数据'
+})
+
 export const POINT_VALUE_TYPE_LABELS = Object.freeze({
   string: '文本',
   number: '数值',
@@ -54,9 +59,12 @@ export const POINT_VALUE_TYPE_LABELS = Object.freeze({
   unknown: '未知'
 })
 
-function formatGuideExample(label, jsonPath, payload) {
+function formatGuideExample(label, jsonPath, payload, options = {}) {
   return Object.freeze({
+    id: String(options.id || 'recommended'),
     label,
+    description: String(options.description || ''),
+    recommended: options.recommended === true,
     jsonPath,
     json: JSON.stringify(payload, null, 2)
   })
@@ -91,29 +99,106 @@ const PARAMETER_DATA_FORMAT_GUIDES = Object.freeze({
       formatGuideExample('推荐格式', '$.value', { value: '设备运行中' })
     ])
   }),
+  tableTitle: Object.freeze({
+    valueType: 'text',
+    title: '标题数据格式',
+    description: '绑定表格标题对应的文本值。',
+    examples: Object.freeze([
+      formatGuideExample('推荐格式', '$.table.title', {
+        table: { title: '设备运行状态' }
+      })
+    ])
+  }),
+  'text-list': Object.freeze({
+    valueType: 'text-list',
+    title: '表头数据格式',
+    description: '返回按显示顺序排列的表头数组；也支持使用 key 和 title 明确列字段。',
+    examples: Object.freeze([
+      formatGuideExample('推荐格式', '$.table.headers', {
+        table: { headers: ['设备', '数值', '状态'] }
+      })
+    ])
+  }),
+  'table-rows': Object.freeze({
+    valueType: 'table-rows',
+    title: '行数据格式',
+    description: '选择一种行结构并保持一致；最多读取 50 行、12 列。',
+    examples: Object.freeze([
+      formatGuideExample(
+        '二维数组',
+        '$.table.rows',
+        {
+          table: {
+            rows: [
+              ['设备 A', 42, '运行'],
+              ['设备 B', 37, '待机']
+            ]
+          }
+        },
+        {
+          id: 'row-arrays',
+          description: '每一项是一行，单元格按表头从左到右排列。',
+          recommended: true
+        }
+      ),
+      formatGuideExample(
+        '对象行数组（兼容）',
+        '$.table.rows',
+        {
+          table: {
+            rows: [
+              { device: '设备 A', value: 42, status: '运行' },
+              { device: '设备 B', value: 37, status: '待机' }
+            ]
+          }
+        },
+        {
+          id: 'object-rows',
+          description: '每一项是一行对象；使用带 key 的表头时，key 与对象字段对应。'
+        }
+      )
+    ])
+  }),
   table: Object.freeze({
     valueType: 'table',
-    description: '支持行对象数组，或同时声明 columns 与 rows 的表格对象。',
+    description: '根据数据结构选择一种格式即可，两种格式都绑定完整的 $.table。',
     examples: Object.freeze([
-      formatGuideExample('行数组', '$.table', {
-        table: [
-          { device: '设备 A', value: 42, status: '运行' },
-          { device: '设备 B', value: 37, status: '待机' }
-        ]
-      }),
-      formatGuideExample('自定义列与行', '$.table', {
-        table: {
-          columns: [
-            { key: 'device', title: '设备' },
-            { key: 'value', title: '数值' },
-            { key: 'status', title: '状态' }
-          ],
-          rows: [
+      formatGuideExample(
+        '自动识别列',
+        '$.table',
+        {
+          table: [
             { device: '设备 A', value: 42, status: '运行' },
             { device: '设备 B', value: 37, status: '待机' }
           ]
+        },
+        {
+          id: 'auto-columns',
+          description: '直接选择对象数组；每个对象表示一行，对象字段自动生成列，字段名作为表头。',
+          recommended: true
         }
-      })
+      ),
+      formatGuideExample(
+        '指定表头',
+        '$.table',
+        {
+          table: {
+            columns: [
+              { key: 'device', title: '设备' },
+              { key: 'value', title: '数值' },
+              { key: 'status', title: '状态' }
+            ],
+            rows: [
+              { device: '设备 A', value: 42, status: '运行' },
+              { device: '设备 B', value: 37, status: '待机' }
+            ]
+          }
+        },
+        {
+          id: 'custom-columns',
+          description: '需要自定义表头时使用；columns.key 对应 rows 每行对象中的字段，columns.title 是显示名称。'
+        }
+      )
     ])
   })
 })
@@ -189,12 +274,18 @@ export function normalizeParameterValueType(parameter) {
 export function parameterDataFormatGuide(parameter) {
   const valueType = normalizeParameterValueType(parameter)
   if (valueType === 'number') return boundedNumberFormatGuide(parameter)
+  const guideKey = normalizedText(parameter?.formatGuideKey)
+  if (guideKey && PARAMETER_DATA_FORMAT_GUIDES[guideKey]) return PARAMETER_DATA_FORMAT_GUIDES[guideKey]
   return PARAMETER_DATA_FORMAT_GUIDES[valueType] || null
 }
 
 export function parameterValueTypeLabel(parameter) {
   const type = normalizeParameterValueType(parameter)
-  return PARAMETER_VALUE_TYPE_LABELS[type] || type || '未知'
+  return normalizedText(parameter?.valueTypeLabel)
+    || STRUCTURED_PARAMETER_VALUE_TYPE_LABELS[type]
+    || PARAMETER_VALUE_TYPE_LABELS[type]
+    || type
+    || '未知'
 }
 
 export function pointValueTypeLabel(point) {
@@ -231,7 +322,10 @@ function compatibilityResult(parameterType, pointType, compatible, reason = '') 
   return {
     compatible,
     parameterType,
-    parameterTypeLabel: PARAMETER_VALUE_TYPE_LABELS[parameterType] || parameterType || '未知',
+    parameterTypeLabel: STRUCTURED_PARAMETER_VALUE_TYPE_LABELS[parameterType]
+      || PARAMETER_VALUE_TYPE_LABELS[parameterType]
+      || parameterType
+      || '未知',
     pointType,
     pointTypeLabel: POINT_VALUE_TYPE_LABELS[pointType] || pointType || '未知',
     reason
@@ -247,8 +341,60 @@ export function directBindingCompatibility(parameter, point) {
   const value = pointCurrentValue(point)
   const result = (compatible, reason) => compatibilityResult(parameterType, pointType, compatible, reason)
 
-  if (!PARAMETER_VALUE_TYPE_LABELS[parameterType]) return result(false, '参数类型不支持直接绑定')
+  if (!PARAMETER_VALUE_TYPE_LABELS[parameterType] && !STRUCTURED_PARAMETER_VALUE_TYPE_LABELS[parameterType]) {
+    return result(false, '参数类型不支持直接绑定')
+  }
   if (pointType === 'unknown') return result(false, '点位类型未知')
+
+  if (parameterType === 'text-list') {
+    let compatible = pointType === 'array' && Array.isArray(value)
+    if (compatible) {
+      try {
+        const headers = Array.prototype.slice.call(value, 0, 12)
+        compatible = headers.every(header => {
+          if (['string', 'number', 'boolean'].includes(typeof header)) return true
+          if (!header || typeof header !== 'object' || Array.isArray(header)) return false
+          const prototype = Object.getPrototypeOf(header)
+          if (prototype !== Object.prototype && prototype !== null) return false
+          const title = header.title ?? header.label ?? header.name ?? header.key
+          return ['string', 'number', 'boolean'].includes(typeof title)
+        })
+      } catch {
+        compatible = false
+      }
+    }
+    return compatible
+      ? result(true)
+      : result(false, '表头数据需要文本数组，或包含 key 和 title 的列对象数组')
+  }
+
+  if (parameterType === 'table-rows') {
+    let compatible = pointType === 'array' && Array.isArray(value)
+    if (compatible) {
+      try {
+        const rows = Array.prototype.slice.call(value, 0, 50)
+        let rowShape = ''
+        for (const row of rows) {
+          let nextShape = ''
+          if (Array.isArray(row)) nextShape = 'array'
+          else if (row && typeof row === 'object') {
+            const prototype = Object.getPrototypeOf(row)
+            if (prototype === Object.prototype || prototype === null) nextShape = 'object'
+          }
+          if (!nextShape || (rowShape && nextShape !== rowShape)) {
+            compatible = false
+            break
+          }
+          rowShape = nextShape
+        }
+      } catch {
+        compatible = false
+      }
+    }
+    return compatible
+      ? result(true)
+      : result(false, '行表格数据需要统一使用二维数组或对象行数组，不能混用')
+  }
 
   if (parameterType === 'table') {
     // 与 dataBindingModel.tableFromValue 保持同一数据形状，避免界面允许后运行时仍回退静态表格。

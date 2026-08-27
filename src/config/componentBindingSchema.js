@@ -8,6 +8,7 @@ export const BUILT_IN_ANIMATION_DURATION_MAX_SECONDS = 5
 export const CUSTOM_ANIMATION_DURATION_MAX_SECONDS = 20
 
 const BUILT_IN_ANIMATION_TYPES = new Set([
+  'flowDirection',
   'flowPipe',
   'rotatingFan',
   'signalLight',
@@ -39,6 +40,12 @@ const COMMON_PARAMETERS = Object.freeze([
     max: CUSTOM_ANIMATION_DURATION_MAX_SECONDS
   })
 ])
+const LEGACY_TABLE_TEXT_PARAMETER = Object.freeze({
+  ...COMMON_PARAMETERS.find(item => item.target === 'text'),
+  label: '旧版标题数据',
+  legacy: true,
+  visibleWhenBound: true
+})
 const BUILT_IN_ANIMATION_DURATION_PARAMETER = Object.freeze({
   ...COMMON_PARAMETERS.find(item => item.target === 'animationDuration'),
   max: BUILT_IN_ANIMATION_DURATION_MAX_SECONDS
@@ -48,6 +55,7 @@ const BUILT_IN_ANIMATION_DURATION_PARAMETER = Object.freeze({
 const EXCLUDED_TARGETS_BY_TYPE = Object.freeze({
   pencil: new Set(['fill', 'stroke', 'text']),
   polyline: new Set(['fill', 'text']),
+  flowDirection: new Set(['fill', 'text']),
   flowPipe: new Set(['text']),
   rotatingFan: new Set(['text']),
   signalLight: new Set(['text']),
@@ -60,13 +68,24 @@ const CHECKED_PARAMETER = parameter('checked', '选中状态', 'boolean', DATA_G
 const VALUE_PARAMETER = parameter('value', '组件值', 'text', DATA_GROUP, node => node?.value)
 const PROGRESS_PARAMETER = parameter('progressValue', '进度数值', 'number', DATA_GROUP, node => node?.progressValue, { min: 0, max: 100 })
 const VISUAL_PRIMARY_COLOR_PARAMETER = parameter('visualPrimaryColor', '主体颜色', 'color', COMMON_GROUP, node => node?.visualPrimaryColor)
-const TABLE_PARAMETER = parameter('tableData', '表格数据', 'table', DATA_GROUP, node => ({
+const POLYLINE_COLOR_PARAMETER = parameter('polylineColor', '线条颜色', 'color', COMMON_GROUP, node => node?.polylineColor)
+const TABLE_TITLE_PARAMETER = parameter('tableTitle', '标题数据', 'text', DATA_GROUP, node => node?.tableTitle ?? node?.text, {
+  formatGuideKey: 'tableTitle',
+  valueTypeLabel: '标题文本'
+})
+const TABLE_HEADERS_PARAMETER = parameter('tableHeaders', '表头数据', 'text-list', DATA_GROUP, node => (
+  Array.isArray(node?.tableHeaders) ? node.tableHeaders : []
+))
+const TABLE_CELLS_PARAMETER = parameter('tableCells', '行表格数据', 'table-rows', DATA_GROUP, node => (
+  Array.isArray(node?.tableCells) ? node.tableCells : []
+))
+const TABLE_PARAMETER = parameter('tableData', '旧版整表数据', 'table', DATA_GROUP, node => ({
   columns: (Array.isArray(node?.tableHeaders) ? node.tableHeaders : []).map((title, index) => ({
     key: `column${index + 1}`,
     title
   })),
   rows: Array.isArray(node?.tableCells) ? node.tableCells : []
-}))
+}), { legacy: true, visibleWhenBound: true })
 const CHART_PARAMETER = parameter('chartData', '图表数据', 'table', DATA_GROUP, node => node?.chartData ?? [])
 const SIGNAL_COLOR_PARAMETERS = Object.freeze(Array.from(
   { length: MAX_SIGNAL_COLORS },
@@ -89,7 +108,12 @@ const SIGNAL_OPACITY_PARAMETER = parameter(
 )
 
 const TYPE_PARAMETERS = Object.freeze({
-  table: Object.freeze([TABLE_PARAMETER]),
+  table: Object.freeze([
+    TABLE_TITLE_PARAMETER,
+    TABLE_HEADERS_PARAMETER,
+    TABLE_CELLS_PARAMETER,
+    TABLE_PARAMETER
+  ]),
   checkbox: Object.freeze([CHECKED_PARAMETER]),
   radio: Object.freeze([CHECKED_PARAMETER]),
   switch: Object.freeze([CHECKED_PARAMETER]),
@@ -100,6 +124,7 @@ const TYPE_PARAMETERS = Object.freeze({
   formProgress: Object.freeze([PROGRESS_PARAMETER]),
   progress: Object.freeze([PROGRESS_PARAMETER]),
   gauge: Object.freeze([PROGRESS_PARAMETER]),
+  flowDirection: Object.freeze([POLYLINE_COLOR_PARAMETER]),
   flowPipe: Object.freeze([VISUAL_PRIMARY_COLOR_PARAMETER]),
   rotatingFan: Object.freeze([VISUAL_PRIMARY_COLOR_PARAMETER]),
   waterTank: Object.freeze([VISUAL_PRIMARY_COLOR_PARAMETER, PROGRESS_PARAMETER]),
@@ -128,7 +153,10 @@ function parametersForType(type) {
           ? BUILT_IN_ANIMATION_DURATION_PARAMETER
           : item)
       : availableCommon
-    parameters = Object.freeze([...common, ...(TYPE_PARAMETERS[normalizedType] || [])])
+    const componentCommon = normalizedType === 'table'
+      ? common.map(item => item.target === 'text' ? LEGACY_TABLE_TEXT_PARAMETER : item)
+      : common
+    parameters = Object.freeze([...componentCommon, ...(TYPE_PARAMETERS[normalizedType] || [])])
     PARAMETER_LIST_CACHE.set(normalizedType, parameters)
   }
   return parameters
@@ -149,6 +177,7 @@ function hasTargetBinding(node, target) {
 
 function parameterIsVisible(nodeOrType, item) {
   if (!nodeOrType || typeof nodeOrType === 'string') return true
+  if (item.visibleWhenBound) return hasTargetBinding(nodeOrType, item.target)
   if (Number.isInteger(item.signalColorIndex)) {
     if (hasTargetBinding(nodeOrType, item.target)) return true
     const configuredCount = Number(nodeOrType.signalColorCount)
@@ -159,6 +188,7 @@ function parameterIsVisible(nodeOrType, item) {
     return item.signalColorIndex < visibleCount
   }
   if (item.target !== 'text') return true
+  if (componentType(nodeOrType) === 'table') return hasTargetBinding(nodeOrType, 'text')
   if (hasTargetBinding(nodeOrType, 'text')) return true
   return String(nodeOrType.text ?? '').trim().length > 0
 }

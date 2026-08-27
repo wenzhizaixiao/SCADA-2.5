@@ -65,6 +65,8 @@ function visualCanvasRecorder() {
     clips: 0,
     dashOffsets: [],
     ellipses: [],
+    filledPaths: [],
+    filledRects: [],
     fillRects: [],
     fillStyles: [],
     lineDashes: [],
@@ -84,9 +86,18 @@ function visualCanvasRecorder() {
     bezierCurveTo(...args) { currentPath.push(['C', ...args]) },
     beginPath() { currentPath = [] },
     clip() { calls.clips += 1 },
+    closePath() { currentPath.push(['Z']) },
     ellipse(...args) { calls.ellipses.push(args) },
-    fill() {},
-    fillRect(...args) { calls.fillRects.push(args) },
+    fill() {
+      calls.filledPaths.push({
+        fillStyle: context.fillStyle,
+        path: currentPath.map(command => [...command])
+      })
+    },
+    fillRect(...args) {
+      calls.fillRects.push(args)
+      calls.filledRects.push({ args, fillStyle: context.fillStyle })
+    },
     fillText() {},
     lineTo(x, y) { currentPath.push(['L', x, y]) },
     moveTo(x, y) { currentPath.push(['M', x, y]) },
@@ -389,7 +400,7 @@ test('DOM and Canvas built-in effects share none, duration, direction, and pause
   assert.match(enhancementSource, /\.animation-flow \.animated-pipe i/)
   assert.match(enhancementSource, /\.animation-flow \.fan-rotor/)
   assert.match(enhancementSource, /\.animation-flow \.tank-visual i::before/)
-  assert.match(enhancementSource, /\.animation-pulse \.heartbeat-visual/)
+  assert.match(enhancementSource, /\.animation-pulse \.alarm-visual/)
   assert.match(enhancementSource, /\.animation-flow \.particles-visual i/)
   assert.match(enhancementSource, /animation-duration:\s*var\(--motion-speed, 1\.5s\) !important/)
   assert.match(enhancementSource, /animation-direction:\s*var\(--motion-direction, normal\) !important/)
@@ -755,8 +766,8 @@ test('signal lights use the shared component frame while keeping one configurabl
   const signalCanvasSource = sourceBetween("if (node.type === 'signalLight')", "if (node.type === 'waterTank')")
   assert.match(signalCanvasSource, /fillAndStroke\(ctx, node, width, height, worldPixel, '#fff'\)/)
   assert.match(signalCanvasSource, /signalLightColor\(node, animationTimestamp\)[\s\S]*?ctx\.arc\(width \/ 2, height \/ 2, signalRadius/)
-  assert.match(nodeVisualSource, /background: node\.type === 'polyline' \? 'transparent'/)
-  assert.match(nodeVisualSource, /!\['lineShape','pencil','polyline'\]\.includes\(node\.type\)/)
+  assert.match(nodeVisualSource, /background: isPolylineNodeType\(node\.type\) \? 'transparent'/)
+  assert.match(nodeVisualSource, /!\['lineShape','pencil','polyline','flowDirection'\]\.includes\(node\.type\)/)
   assert.doesNotMatch(appSource, /type === 'signalLight' \? \{ backgroundOpacity: 0, borderVisible: false \} : null/)
 })
 
@@ -843,7 +854,11 @@ test('MiniMap timestamps reach all six animated Canvas component commands', () =
       VISUAL_ACCENT_COLOR: '#16b89a',
       canvasVisualDetailSize,
       fillAndStroke: () => {},
-      flowPipeDashOffset
+      flowPipeDashOffset,
+      roundedRect: (ctx, x, y, width, height) => {
+        ctx.beginPath()
+        ctx.rect(x, y, width, height)
+      }
     }
   )
   const pipeNode = animatedNode('flowPipe')
@@ -851,15 +866,15 @@ test('MiniMap timestamps reach all six animated Canvas component commands', () =
   const secondPipe = visualCanvasRecorder()
   drawFlowPipe(firstPipe.context, pipeNode, 100, 20, 1, 0)
   drawFlowPipe(secondPipe.context, pipeNode, 100, 20, 1, 500)
-  const firstPipeFlow = firstPipe.calls.strokes.find(call => call.strokeStyle === '#16b89a')
-  const secondPipeFlow = secondPipe.calls.strokes.find(call => call.strokeStyle === '#16b89a')
-  assert.equal(firstPipe.calls.strokeRects[0].strokeStyle, '#3c8fa0')
-  assert.ok(firstPipeFlow.path.length >= 8, 'pipe flow must remain recognizable as repeated diagonal stripes')
-  assert.notEqual(firstPipeFlow.path[0][1], secondPipeFlow.path[0][1], 'pipe stripes must move between frames')
+  const firstPipeFlow = firstPipe.calls.filledRects.filter(call => call.fillStyle === '#16b89a')
+  const secondPipeFlow = secondPipe.calls.filledRects.filter(call => call.fillStyle === '#16b89a')
+  assert.equal(firstPipe.calls.strokeRects.length, 0, 'pipe must not draw a fixed internal outline')
+  assert.ok(firstPipeFlow.length >= 4, 'pipe flow must remain recognizable as repeated medium segments')
+  assert.notEqual(firstPipeFlow[0].args[0], secondPipeFlow[0].args[0], 'pipe segments must move between frames')
   assertClose(
-    secondPipeFlow.path[0][1] - firstPipeFlow.path[0][1],
-    -10,
-    'Canvas pipe must move half of the DOM 20px pattern during half a cycle'
+    secondPipeFlow[0].args[0] - firstPipeFlow[0].args[0],
+    -20,
+    'Canvas pipe must move half of the DOM 40px pattern during half a cycle'
   )
 
   const drawFan = compileSource(
@@ -869,6 +884,10 @@ test('MiniMap timestamps reach all six animated Canvas component commands', () =
       VISUAL_ACCENT_COLOR: '#16b89a',
       canvasVisualDetailSize,
       fillAndStroke: () => {},
+      roundedRect: (ctx, x, y, width, height) => {
+        ctx.beginPath()
+        ctx.rect(x, y, width, height)
+      },
       rotatingFanAngle
     }
   )
@@ -878,34 +897,32 @@ test('MiniMap timestamps reach all six animated Canvas component commands', () =
   drawFan(secondFan.context, animatedNode('rotatingFan'), 80, 80, 1, 125)
   assertClose(firstFan.calls.rotations[0], 0, 'initial fan command')
   assertClose(secondFan.calls.rotations[0], Math.PI / 16, 'advanced fan command')
-  const fullSizeBlades = firstFan.calls.strokes.filter(call => call.strokeStyle === '#16b89a')
+  const fullSizeBlades = firstFan.calls.filledPaths.filter(call => call.fillStyle === '#16b89a')
   assert.equal(fullSizeBlades.length, 4)
-  assert.ok(fullSizeBlades.every(call => call.lineWidth === 8), 'Canvas blade width must match the DOM 8px blade')
   assert.ok(fullSizeBlades.every(call => JSON.stringify(call.path) === JSON.stringify([
-    ['M', 0, 0],
-    ['C', 6, -6, 8, -16, 0, -20]
-  ])), 'Canvas curved blades must match the DOM 64px fan geometry')
+    ['R', -4, -30, 8, 32]
+  ])), 'Canvas filled blades must match the DOM 64px fan geometry')
   assert.equal(firstFan.calls.rotations.length, 4, 'fan must not add an extra rotating marker')
   assert.equal(secondFan.calls.rotations.length, 4, 'advanced fan must keep only four blade transforms')
-  assert.match(nodeVisualSource, /class="fan-blade"[^>]*d="M24 24 C30 18 32 8 24 4"/)
+  assert.match(nodeVisualSource, /class="fan-blade"[^>]*x="28" y="2" width="8" height="32" rx="4"/)
+  assert.match(nodeVisualSource, /class="fan-hub"[^>]*r="4\.5"/)
   assert.doesNotMatch(nodeVisualSource, /fan-direction-marker/)
 
   const lowZoomPipe = visualCanvasRecorder()
   drawFlowPipe(lowZoomPipe.context, pipeNode, 190, 48, 5, 250)
-  const lowZoomPipeFlow = lowZoomPipe.calls.strokes.find(call => call.strokeStyle === '#16b89a')
-  assert.ok(lowZoomPipe.calls.strokeRects.length >= 1, 'low-zoom pipe keeps its square-ended track')
-  assert.ok(lowZoomPipeFlow.lineWidth / 5 >= .89, 'low-zoom pipe flow remains close to one screen pixel')
+  const lowZoomPipeFlow = lowZoomPipe.calls.filledRects.filter(call => call.fillStyle === '#16b89a')
+  assert.equal(lowZoomPipe.calls.strokeRects.length, 0, 'low-zoom pipe must not restore a fixed internal outline')
+  assert.ok(lowZoomPipeFlow.length >= 5, 'low-zoom pipe keeps several visible flow segments')
 
   const lowZoomFan = visualCanvasRecorder()
   drawFan(lowZoomFan.context, animatedNode('rotatingFan'), 110, 110, 5, 125)
-  const lowZoomBlades = lowZoomFan.calls.strokes.filter(call => call.strokeStyle === '#16b89a')
+  const lowZoomBlades = lowZoomFan.calls.filledPaths.filter(call => call.fillStyle === '#16b89a')
   assert.equal(lowZoomBlades.length, 4, 'low-zoom fan uses four same-color rotating blades')
-  assert.ok(lowZoomBlades.every(call => call.lineWidth / 5 >= .99), 'low-zoom fan blades remain at least one screen pixel')
   assertClose(lowZoomFan.calls.rotations[0], Math.PI / 16, 'low-zoom fan phase')
 
   const halfTurnFan = visualCanvasRecorder()
   drawFan(halfTurnFan.context, animatedNode('rotatingFan'), 110, 110, 5, 500)
-  assert.equal(halfTurnFan.calls.strokes.filter(call => call.strokeStyle === '#16b89a').length, 4)
+  assert.equal(halfTurnFan.calls.filledPaths.filter(call => call.fillStyle === '#16b89a').length, 4)
   assertClose(halfTurnFan.calls.rotations[0], Math.PI / 4, 'half-cycle fan angle')
 
   const drawSpecialNode = compileSource(
@@ -992,9 +1009,8 @@ test('MiniMap timestamps reach all six animated Canvas component commands', () =
 
   const lowZoomSignal = visualCanvasRecorder()
   drawSpecialNode(lowZoomSignal.context, signalNode, 90, 130, 1, undefined, 'full', 5, 0)
-  const signalOutline = lowZoomSignal.calls.strokes.at(-1)
   assert.ok(lowZoomSignal.calls.arcs.length >= 1, 'low-zoom signal light keeps its circular core')
-  assert.ok(signalOutline.lineWidth / 5 >= .59, 'low-zoom signal outline remains visible')
+  assert.equal(lowZoomSignal.calls.strokes.length, 0, 'signal light must not draw a fixed internal outline')
 
   assert.match(miniMapSource, /animationTimestamp: task\.animationTimestamp/)
   assert.match(miniMapSource, /drawSpecialNode\([^\n]+animationTimestamp\)/)
@@ -1959,7 +1975,7 @@ test('direct visual-atlas eligibility keeps canonical order and rejects unsafe d
     {
       RUNTIME_VISUAL_ATLAS_MIN_INSTANCES: 256,
       alpha: value => value == null ? 1 : Math.max(0, Math.min(1, Number(value))),
-      canvasVisualAnimationTypes: new Set(CANVAS_VISUAL_TYPES),
+      canvasVisualSpriteTypes: new Set(CANVAS_VISUAL_TYPES),
       canvasVisualDirectAtlasFrameCache: null,
       committedExcludedDrawingIds: new Set(),
       committedExcludedNodeIds: new Set(),

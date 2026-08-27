@@ -1,25 +1,31 @@
 <script setup>
-import { computed, onUnmounted, ref, shallowRef, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue'
 import {
   ArrowLeft,
   Box,
   Check,
+  ChevronDown,
+  Columns3,
   Database,
   Link2,
   Lock,
   Palette,
   Percent,
   RefreshCw,
+  Rows3,
+  Search,
   SlidersHorizontal,
   TableProperties,
   Timer,
   ToggleLeft,
   Type,
-  Unlink
+  Unlink,
+  X
 } from 'lucide-vue-next'
 import JsonPathTree from './JsonPathTree.vue'
 import { formatRuntimeValue } from '../utils/runtimeValueFormat.js'
 import { isUsableSourceSnapshot } from '../utils/sourceSnapshotValidation.js'
+import { createSourceConnectionListModel } from '../utils/sourceConnectionList.js'
 import {
   directBindingCompatibility,
   parameterDataFormatGuide,
@@ -30,6 +36,11 @@ import {
   evaluateJsonPath,
   jsonValueType
 } from '../utils/jsonPathBinding.js'
+
+const SOURCE_PICKER_PAGE_SIZE = 60
+const SOURCE_PROTOCOL_ORDER = Object.freeze([
+  'MQTT', 'HTTP', 'MySQL', 'SQL Server', 'Redis', 'Socket', 'WebSocket'
+])
 
 const props = defineProps({
   node: { type: Object, default: null },
@@ -49,6 +60,8 @@ const sources = shallowRef([])
 const sourcesLoading = ref(false)
 const sourcesLoaded = ref(false)
 const sourcesError = ref('')
+const sourceQuery = ref('')
+const sourceProtocolFilter = ref('all')
 const selectedSourceId = ref('')
 const snapshot = shallowRef(null)
 const snapshotLoading = ref(false)
@@ -59,6 +72,13 @@ const pathError = ref('')
 const previewValue = shallowRef(undefined)
 const previewValueType = ref('unknown')
 const compatibility = shallowRef(null)
+const activeFormatExampleId = ref('')
+const panelElement = ref(null)
+const sourcePickerOpen = ref(false)
+const sourcePickerVisibleLimit = ref(SOURCE_PICKER_PAGE_SIZE)
+const sourcePickerElement = ref(null)
+const sourcePickerTriggerElement = ref(null)
+const sourcePickerSearchElement = ref(null)
 let sourceLoadGeneration = 0
 let snapshotLoadGeneration = 0
 let sourceRevisionGeneration = 0
@@ -78,6 +98,8 @@ const VALUE_TYPE_ICONS = Object.freeze({
   boolean: ToggleLeft,
   text: Type,
   table: TableProperties,
+  'text-list': Columns3,
+  'table-rows': Rows3,
   percent: Percent,
   duration: Timer
 })
@@ -91,6 +113,8 @@ const JSON_VALUE_TYPE_LABELS = Object.freeze({
   null: '空值',
   unknown: '未知'
 })
+
+const SOURCE_SNAPSHOT_UNAVAILABLE_MESSAGE = '当前连接没有可用数据，请先到“数据源”完成正式测试。'
 
 function text(value) {
   return String(value ?? '').trim()
@@ -137,6 +161,50 @@ function displayValue(value, maximum = 72) {
   })
 }
 
+function boundedArrayLength(value, maximum) {
+  if (!Array.isArray(value)) return 0
+  const length = Number(value.length)
+  return Number.isFinite(length) ? Math.min(maximum, Math.max(0, Math.trunc(length))) : 0
+}
+
+function tableHeaderText(header) {
+  if (header && typeof header === 'object' && !Array.isArray(header)) {
+    return text(header.title ?? header.label ?? header.name ?? header.key)
+  }
+  return text(header)
+}
+
+function parameterValueSummary(parameter) {
+  const target = parameterTarget(parameter)
+  const value = rawParameterValue(parameter)
+  if (target === 'tableHeaders') {
+    const count = boundedArrayLength(value, 12)
+    const labels = []
+    for (let index = 0; index < Math.min(count, 3); index += 1) {
+      const label = tableHeaderText(value[index])
+      if (label) labels.push(label)
+    }
+    return `${count} 列${labels.length ? ` · ${labels.join('、')}${count > labels.length ? '…' : ''}` : ''}`
+  }
+  if (target === 'tableCells') {
+    const rows = boundedArrayLength(value, 50)
+    let columns = Math.min(12, Math.max(0, Number(props.node?.tableColumns) || 0))
+    if (!columns && rows && Array.isArray(value[0])) columns = boundedArrayLength(value[0], 12)
+    if (!columns) columns = boundedArrayLength(props.node?.tableHeaders, 12)
+    return `${rows} 行 × ${columns} 列`
+  }
+  if (target === 'tableData') {
+    const rows = boundedArrayLength(value?.rows, 50)
+    const columns = boundedArrayLength(value?.columns, 12)
+    return `${rows} 行 × ${columns} 列`
+  }
+  return displayValue(value, 48)
+}
+
+function parameterBadge(parameter) {
+  return parameter?.legacy ? '旧版' : parameterValueTypeLabel(parameter)
+}
+
 function isColorParameter(parameter) {
   return text(parameter?.valueType || parameter?.targetType).toLowerCase() === 'color'
 }
@@ -173,8 +241,13 @@ const activeParameter = computed(() => parameterByTarget.value.get(activeTarget.
 const activeParameterLabel = computed(() => parameterLabel(activeParameter.value?.source))
 const activeFormatGuide = computed(() => parameterDataFormatGuide(activeParameter.value?.source))
 const activeFormatGuideTitle = computed(() => {
+  if (activeFormatGuide.value?.title) return activeFormatGuide.value.title
   const label = parameterValueTypeLabel(activeParameter.value?.source)
   return `${label.endsWith('数据') ? label : `${label}数据`}格式`
+})
+const activeFormatExample = computed(() => {
+  const examples = activeFormatGuide.value?.examples || []
+  return examples.find(example => example.id === activeFormatExampleId.value) || examples[0] || null
 })
 
 const bindingsByTarget = computed(() => {
@@ -194,6 +267,39 @@ const boundCount = computed(() => normalizedParameters.value.reduce(
 ))
 const sourceById = computed(() => new Map(sources.value.map(source => [text(source?.id), source])))
 const selectedSource = computed(() => sourceById.value.get(selectedSourceId.value) || null)
+const sourceListModel = computed(() => createSourceConnectionListModel(sources.value, {
+  query: sourceQuery.value,
+  protocol: sourceProtocolFilter.value
+}))
+const sourceProtocolOptions = computed(() => {
+  const counts = sourceListModel.value.protocolCounts
+  const known = SOURCE_PROTOCOL_ORDER.filter(protocol => counts.has(protocol))
+  const knownSet = new Set(known)
+  const extra = [...counts.keys()]
+    .filter(protocol => protocol && !knownSet.has(protocol))
+    .sort((left, right) => left.localeCompare(right, 'zh-CN'))
+  return [...known, ...extra].map(protocol => ({
+    value: protocol,
+    label: protocol,
+    count: counts.get(protocol) || 0
+  }))
+})
+const visibleSourceItems = computed(() => {
+  const filtered = sourceListModel.value.filtered
+  const limit = Math.max(SOURCE_PICKER_PAGE_SIZE, sourcePickerVisibleLimit.value)
+  const visible = filtered.slice(0, limit)
+  const selectedIndex = filtered.findIndex(source => text(source?.id) === selectedSourceId.value)
+  if (selectedIndex < limit || selectedIndex < 0) return visible
+  return [filtered[selectedIndex], ...visible.slice(0, limit - 1)]
+})
+const hiddenSourceItemCount = computed(() => Math.max(
+  0,
+  sourceListModel.value.filtered.length - visibleSourceItems.value.length
+))
+const selectedSourceFilteredOut = computed(() => (
+  Boolean(selectedSource.value)
+  && !sourceListModel.value.filteredIds.has(selectedSourceId.value)
+))
 const nodeTitle = computed(() => text(
   props.node?.displayName || props.node?.name || props.node?.text || props.node?.type
 ) || '已选组件')
@@ -231,6 +337,58 @@ function sourceStatus(source) {
   return ''
 }
 
+function sourceEndpoint(source) {
+  return text(source?.endpoint || source?.url || source?.address)
+}
+
+function resetSourcePickerFilters() {
+  sourceQuery.value = ''
+  sourceProtocolFilter.value = 'all'
+  sourcePickerVisibleLimit.value = SOURCE_PICKER_PAGE_SIZE
+}
+
+async function showMoreSources() {
+  const previousIds = new Set(visibleSourceItems.value.map(source => text(source?.id)))
+  sourcePickerVisibleLimit.value = Math.min(
+    sourceListModel.value.filtered.length,
+    sourcePickerVisibleLimit.value + SOURCE_PICKER_PAGE_SIZE
+  )
+  await nextTick()
+  const optionButtons = sourcePickerElement.value?.querySelectorAll('[data-testid="communication-source-option"]') || []
+  const firstNewOption = [...optionButtons].find(button => !previousIds.has(text(button.dataset.sourceId)))
+  firstNewOption?.focus()
+}
+
+function closeSourcePicker({ restoreFocus = false } = {}) {
+  sourcePickerOpen.value = false
+  resetSourcePickerFilters()
+  if (restoreFocus) nextTick(() => sourcePickerTriggerElement.value?.focus())
+}
+
+function openSourcePicker() {
+  if (props.locked || sourcesLoading.value || !sources.value.length) return
+  resetSourcePickerFilters()
+  sourcePickerOpen.value = true
+  nextTick(() => sourcePickerSearchElement.value?.focus())
+}
+
+function toggleSourcePicker() {
+  if (sourcePickerOpen.value) closeSourcePicker()
+  else openSourcePicker()
+}
+
+function handleSourcePickerPointerDown(event) {
+  if (!sourcePickerOpen.value || sourcePickerElement.value?.contains(event.target)) return
+  closeSourcePicker()
+}
+
+function handleSourcePickerKeydown(event) {
+  if (!sourcePickerOpen.value || event.key !== 'Escape') return
+  event.preventDefault()
+  event.stopPropagation()
+  closeSourcePicker({ restoreFocus: true })
+}
+
 function invalidateSourceCache() {
   sourceLoadGeneration += 1
   sourcesLoading.value = false
@@ -250,8 +408,14 @@ function resetSnapshot() {
   compatibility.value = null
 }
 
+function resetPanelScroll() {
+  if (panelElement.value) panelElement.value.scrollTop = 0
+}
+
 function closeBindingPage() {
   activeTarget.value = ''
+  activeFormatExampleId.value = ''
+  closeSourcePicker()
   selectedSourceId.value = ''
   pathDraft.value = '$'
   resetSnapshot()
@@ -348,7 +512,7 @@ async function loadSnapshot(sourceId, { preservePath = false } = {}) {
     const result = await props.gateway.getSourceSnapshot(normalizedSourceId, { shared: true })
     if (generation !== snapshotLoadGeneration || selectedSourceId.value !== normalizedSourceId) return
     if (!isUsableSourceSnapshot(result, normalizedSourceId)) {
-      throw new TypeError('数据样例格式无效')
+      throw new TypeError(SOURCE_SNAPSHOT_UNAVAILABLE_MESSAGE)
     }
     snapshot.value = result
     updatePathPreview()
@@ -363,6 +527,7 @@ async function loadSnapshot(sourceId, { preservePath = false } = {}) {
 async function openBindingPage(target) {
   if (props.locked || !parameterByTarget.value.has(target)) return
   activeTarget.value = target
+  activeFormatExampleId.value = activeFormatGuide.value?.examples?.[0]?.id || ''
   resetSnapshot()
   await loadSources()
   if (activeTarget.value !== target) return
@@ -379,8 +544,14 @@ async function openBindingPage(target) {
 
 function changeSource(event) {
   selectedSourceId.value = text(event?.target?.value)
+  sourceQuery.value = ''
   pathDraft.value = '$'
   void loadSnapshot(selectedSourceId.value)
+}
+
+function chooseSource(sourceId) {
+  changeSource({ target: { value: sourceId } })
+  closeSourcePicker({ restoreFocus: true })
 }
 
 function selectTreePath(payload) {
@@ -408,6 +579,19 @@ function unbind(target) {
 }
 
 watch(pathDraft, updatePathPreview)
+watch([sourceQuery, sourceProtocolFilter], () => {
+  sourcePickerVisibleLimit.value = SOURCE_PICKER_PAGE_SIZE
+})
+watch(sourceProtocolOptions, options => {
+  if (sourceProtocolFilter.value === 'all') return
+  if (!options.some(option => option.value === sourceProtocolFilter.value)) {
+    sourceProtocolFilter.value = 'all'
+  }
+})
+watch(activeFormatGuide, guide => {
+  activeFormatExampleId.value = guide?.examples?.[0]?.id || ''
+}, { immediate: true })
+watch([() => props.node?.id, activeTarget], resetPanelScroll, { flush: 'post' })
 watch(() => props.node?.id, () => {
   closeBindingPage()
   if (Array.isArray(props.node?.dataBindings) && props.node.dataBindings.some(binding => (
@@ -428,7 +612,14 @@ watch(normalizedParameters, parameters => {
   if (activeTarget.value && !parameters.some(parameter => parameter.target === activeTarget.value)) closeBindingPage()
 })
 
+onMounted(() => {
+  document.addEventListener('pointerdown', handleSourcePickerPointerDown)
+  document.addEventListener('keydown', handleSourcePickerKeydown)
+})
+
 onUnmounted(() => {
+  document.removeEventListener('pointerdown', handleSourcePickerPointerDown)
+  document.removeEventListener('keydown', handleSourcePickerKeydown)
   sourceLoadGeneration += 1
   snapshotLoadGeneration += 1
   sourceRevisionGeneration += 1
@@ -436,7 +627,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <section class="communication-binding-panel" data-testid="communication-binding-panel">
+  <section ref="panelElement" class="communication-binding-panel" data-testid="communication-binding-panel">
     <div v-if="!node" class="binding-empty" data-testid="communication-binding-empty">
       <Link2 />
       <b>未选择组件</b>
@@ -480,7 +671,7 @@ onUnmounted(() => {
               <span class="parameter-copy">
                 <span class="parameter-title">
                   <b>{{ parameterLabel(parameter.source) }}</b>
-                  <em>{{ parameterValueTypeLabel(parameter.source) }}</em>
+                  <em>{{ parameterBadge(parameter.source) }}</em>
                 </span>
                 <small>
                   属性当前值
@@ -489,7 +680,7 @@ onUnmounted(() => {
                     class="value-swatch"
                     :style="{ backgroundColor: colorSwatchValue(parameter.source) }"
                   ></i>
-                  <span :title="displayValue(rawParameterValue(parameter.source))">{{ displayValue(rawParameterValue(parameter.source), 48) }}</span>
+                  <span :title="displayValue(rawParameterValue(parameter.source))">{{ parameterValueSummary(parameter.source) }}</span>
                 </small>
               </span>
               <span class="parameter-action" :class="{ bound: bindingRecord(parameter.target) }">
@@ -527,15 +718,89 @@ onUnmounted(() => {
       <section v-else class="binding-page" data-testid="communication-binding-page">
         <div class="binding-step">
           <div class="step-heading"><i>1</i><span><b>选择数据源</b><small>选择已经在“数据源”中配置的连接</small></span></div>
-          <div class="source-select-row">
-            <Database />
-            <select :value="selectedSourceId" :disabled="locked || sourcesLoading" aria-label="选择数据源" data-testid="communication-source-select" @change="changeSource">
-              <option value="">{{ sourcesLoading ? '正在读取…' : '请选择数据源' }}</option>
-              <option v-for="source in sources" :key="source.id" :value="source.id">
-                {{ source.name }}{{ sourceProtocol(source) ? ` · ${sourceProtocol(source)}` : '' }}{{ sourceStatus(source) ? ` · ${sourceStatus(source)}` : '' }}
-              </option>
-            </select>
-            <button type="button" title="刷新数据源" :disabled="sourcesLoading" @click="loadSources({ force: true })"><RefreshCw /></button>
+          <div ref="sourcePickerElement" class="source-picker">
+            <div class="source-select-row" :class="{ open: sourcePickerOpen }">
+              <Database aria-hidden="true" />
+              <button
+                ref="sourcePickerTriggerElement"
+                type="button"
+                class="source-picker-trigger"
+                :aria-expanded="sourcePickerOpen"
+                aria-controls="communication-source-picker-options"
+                :disabled="locked || sourcesLoading || !sources.length"
+                data-testid="communication-source-select"
+                @click="toggleSourcePicker"
+              >
+                <span :title="selectedSource?.name || ''">
+                  {{ sourcesLoading ? '正在读取…' : (selectedSource?.name || '请选择数据源') }}
+                  <small v-if="selectedSource">{{ sourceProtocol(selectedSource) }}{{ sourceStatus(selectedSource) ? ` · ${sourceStatus(selectedSource)}` : '' }}</small>
+                </span>
+                <ChevronDown :class="{ expanded: sourcePickerOpen }" aria-hidden="true" />
+              </button>
+              <button class="source-refresh-button" type="button" title="刷新数据源与样例" aria-label="刷新数据源与样例" :disabled="sourcesLoading || snapshotLoading" @click="refreshSourcesAfterMutation"><RefreshCw /></button>
+            </div>
+
+            <div
+              v-if="sourcePickerOpen"
+              id="communication-source-picker-options"
+              class="source-picker-menu"
+              role="region"
+              aria-label="数据源选择器"
+              data-testid="communication-source-picker"
+            >
+              <div class="source-search-row">
+                <Search aria-hidden="true" />
+                <input ref="sourcePickerSearchElement" v-model="sourceQuery" type="search" aria-label="按名称、协议、地址或状态搜索数据源" placeholder="搜索名称、协议或地址" autocomplete="off" data-testid="communication-source-search">
+                <button v-if="sourceQuery" type="button" title="清空搜索" aria-label="清空数据源搜索" @click="sourceQuery = ''"><X /></button>
+              </div>
+
+              <div class="source-picker-filter-row">
+                <label for="communication-source-protocol-filter">类型</label>
+                <select
+                  id="communication-source-protocol-filter"
+                  v-model="sourceProtocolFilter"
+                  aria-label="按协议类型筛选数据源"
+                  data-testid="communication-source-protocol-filter"
+                >
+                  <option value="all">全部类型（{{ sources.length }}）</option>
+                  <option v-for="option in sourceProtocolOptions" :key="option.value" :value="option.value">
+                    {{ option.label }}（{{ option.count }}）
+                  </option>
+                </select>
+                <span role="status" aria-live="polite" aria-atomic="true">{{ sourceListModel.filtered.length }} 项</span>
+                <button v-if="selectedSource" type="button" title="清除当前选择" aria-label="清除当前数据源选择" @click="chooseSource('')"><X /></button>
+              </div>
+
+              <div v-if="selectedSourceFilteredOut" class="source-picker-current" data-testid="communication-source-current-filtered">
+                <small>当前选择不在筛选结果中</small>
+                <b>{{ selectedSource.name }}</b>
+              </div>
+
+              <div v-if="sourceListModel.filtered.length" class="source-picker-options">
+                <button
+                  v-for="source in visibleSourceItems"
+                  :key="source.id"
+                  type="button"
+                  class="source-picker-option"
+                  :class="{ selected: selectedSourceId === source.id }"
+                  :aria-current="selectedSourceId === source.id ? 'true' : undefined"
+                  :data-source-id="source.id"
+                  data-testid="communication-source-option"
+                  @click="chooseSource(source.id)"
+                >
+                  <span>
+                    <b :title="source.name">{{ source.name }}</b>
+                    <small>{{ sourceProtocol(source) }}{{ sourceStatus(source) ? ` · ${sourceStatus(source)}` : '' }}</small>
+                    <em v-if="sourceEndpoint(source)" :title="sourceEndpoint(source)">{{ sourceEndpoint(source) }}</em>
+                  </span>
+                  <Check v-if="selectedSourceId === source.id" aria-label="当前选择" />
+                </button>
+                <button v-if="hiddenSourceItemCount" type="button" class="source-picker-more" data-testid="communication-source-more" @click="showMoreSources">
+                  显示更多 <small>还有 {{ hiddenSourceItemCount }} 项</small>
+                </button>
+              </div>
+              <p v-else class="source-picker-empty" aria-live="polite" data-testid="communication-source-search-empty">未找到匹配的数据源。可清空搜索或切换到“全部类型”，当前选择不会被清除。</p>
+            </div>
           </div>
           <p v-if="sourcesError" class="field-error">{{ sourcesError }}</p>
           <p v-else-if="sourcesLoaded && !sources.length" class="field-hint">暂无数据源，请先在顶部“数据源”中建立连接。</p>
@@ -548,9 +813,38 @@ onUnmounted(() => {
             <header>
               <span><b>{{ activeFormatGuideTitle }}</b><small>{{ activeFormatGuide.description }}</small></span>
             </header>
-            <article v-for="formatExample in activeFormatGuide.examples" :key="formatExample.label">
-              <div><b>{{ formatExample.label }}</b><span>JSONPath <code>{{ formatExample.jsonPath }}</code></span></div>
-              <pre><code>{{ formatExample.json }}</code></pre>
+            <div
+              v-if="activeFormatGuide.examples.length > 1"
+              class="format-variant-switch"
+              role="tablist"
+              :aria-label="`${activeFormatGuideTitle}选项`"
+              data-testid="communication-format-variants"
+            >
+              <button
+                v-for="formatExample in activeFormatGuide.examples"
+                :key="formatExample.id"
+                :id="`communication-format-tab-${formatExample.id}`"
+                type="button"
+                role="tab"
+                :class="{ active: activeFormatExample?.id === formatExample.id }"
+                :aria-selected="activeFormatExample?.id === formatExample.id"
+                :aria-controls="`communication-format-panel-${formatExample.id}`"
+                :tabindex="activeFormatExample?.id === formatExample.id ? 0 : -1"
+                @click="activeFormatExampleId = formatExample.id"
+              >
+                {{ formatExample.label }}<small v-if="formatExample.recommended">（推荐）</small>
+              </button>
+            </div>
+            <article
+              v-if="activeFormatExample"
+              :key="activeFormatExample.id"
+              :id="`communication-format-panel-${activeFormatExample.id}`"
+              :role="activeFormatGuide.examples.length > 1 ? 'tabpanel' : undefined"
+              :aria-labelledby="activeFormatGuide.examples.length > 1 ? `communication-format-tab-${activeFormatExample.id}` : undefined"
+            >
+              <p v-if="activeFormatExample.description" class="format-example-description">{{ activeFormatExample.description }}</p>
+              <div><b>{{ activeFormatGuide.examples.length > 1 ? '示例数据' : activeFormatExample.label }}</b><span>JSONPath <code>{{ activeFormatExample.jsonPath }}</code></span></div>
+              <pre><code>{{ activeFormatExample.json }}</code></pre>
             </article>
           </section>
 
@@ -609,7 +903,7 @@ onUnmounted(() => {
 .communication-binding-panel {
   width: 100%;
   min-width: 0;
-  min-height: 100%;
+  min-height: 0;
   overflow-x: hidden;
   background: #fff;
   color: #344b55;
@@ -1060,6 +1354,48 @@ select:disabled {
   min-width: 0;
 }
 
+.format-variant-switch {
+  display: grid;
+  grid-auto-columns: minmax(0, 1fr);
+  grid-auto-flow: column;
+  min-width: 0;
+  padding: 2px;
+  border: 1px solid #d4e3df;
+  background: #fff;
+}
+
+.format-variant-switch button {
+  min-width: 0;
+  min-height: 28px;
+  padding: 4px;
+  border: 0;
+  background: transparent;
+  color: #61747c;
+  cursor: pointer;
+  font-size: 9px;
+  letter-spacing: 0;
+  line-height: 1.25;
+}
+
+.format-variant-switch button.active {
+  background: #e8f6f3;
+  box-shadow: inset 0 0 0 1px #88c9bd;
+  color: #137c69;
+  font-weight: 600;
+}
+
+.format-variant-switch button small {
+  color: inherit;
+  font-size: 8px;
+}
+
+.format-example-description {
+  margin: 0 0 6px;
+  color: #60757d;
+  font-size: 9px;
+  line-height: 1.55;
+}
+
 .data-format-guide article > div {
   display: flex;
   align-items: center;
@@ -1092,6 +1428,10 @@ select:disabled {
   overflow-wrap: anywhere;
 }
 
+.source-picker {
+  min-width: 0;
+}
+
 .source-select-row {
   display: grid;
   grid-template-columns: 26px minmax(0, 1fr) 28px;
@@ -1102,6 +1442,11 @@ select:disabled {
   background: #fff;
 }
 
+.source-select-row.open,
+.source-select-row:focus-within {
+  border-color: #67b9aa;
+}
+
 .source-select-row > svg {
   width: 14px;
   height: 14px;
@@ -1109,19 +1454,47 @@ select:disabled {
   color: #168f79;
 }
 
-.source-select-row select {
+.source-picker-trigger {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 14px;
+  align-items: center;
+  gap: 4px;
   width: 100%;
   min-width: 0;
   height: 32px;
-  padding: 0 4px;
+  padding: 0 6px 0 4px;
   border: 0;
-  outline: 0;
   background: #fff;
   color: #405862;
-  font-size: 10px;
+  text-align: left;
 }
 
-.source-select-row button {
+.source-picker-trigger > span {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.source-picker-trigger small {
+  margin-left: 4px;
+  color: #718289;
+  font-size: 8px;
+}
+
+.source-picker-trigger > svg {
+  width: 12px;
+  height: 12px;
+  transition: transform .16s ease;
+}
+
+.source-picker-trigger > svg.expanded {
+  transform: rotate(180deg);
+}
+
+.source-refresh-button {
   display: grid;
   place-items: center;
   width: 28px;
@@ -1133,9 +1506,292 @@ select:disabled {
   color: #60747d;
 }
 
-.source-select-row button svg {
+.source-refresh-button:hover,
+.source-refresh-button:focus-visible,
+.source-picker-trigger:hover,
+.source-picker-trigger:focus-visible {
+  background: #edf9f6;
+  color: #137c69;
+  outline: 0;
+}
+
+.source-refresh-button svg {
   width: 13px;
   height: 13px;
+}
+
+.source-picker-menu {
+  min-width: 0;
+  margin-top: 4px;
+  border: 1px solid #cfdcda;
+  background: #fff;
+  box-shadow: 0 6px 16px rgba(36, 70, 73, .12);
+}
+
+.source-search-row {
+  display: grid;
+  grid-template-columns: 26px minmax(0, 1fr) 26px;
+  align-items: center;
+  min-width: 0;
+  min-height: 32px;
+  border-bottom: 1px solid #dce6e4;
+  background: #fff;
+}
+
+.source-search-row > svg {
+  width: 14px;
+  height: 14px;
+  margin: auto;
+  color: #788991;
+}
+
+.source-search-row input {
+  width: 100%;
+  min-width: 0;
+  height: 31px;
+  padding: 0 4px;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: #405862;
+  font-size: 10px;
+}
+
+.source-search-row input::-webkit-search-cancel-button {
+  display: none;
+}
+
+.source-search-row:focus-within {
+  box-shadow: inset 0 0 0 1px #67b9aa;
+}
+
+.source-search-row button {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 31px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #788991;
+}
+
+.source-search-row button:hover,
+.source-search-row button:focus-visible {
+  background: #edf9f6;
+  color: #137c69;
+  outline: 0;
+}
+
+.source-search-row button svg {
+  width: 12px;
+  height: 12px;
+}
+
+.source-picker-filter-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  min-height: 32px;
+  padding: 3px 5px 3px 8px;
+  border-bottom: 1px solid #e5ecea;
+  background: #f8fbfa;
+}
+
+.source-picker-filter-row label {
+  flex: 0 0 auto;
+  color: #5e747c;
+  font-size: 9px;
+}
+
+.source-picker-filter-row select {
+  flex: 1 1 auto;
+  width: 100%;
+  min-width: 0;
+  height: 25px;
+  padding: 0 4px;
+  border: 1px solid #cfddda;
+  border-radius: 2px;
+  outline: 0;
+  background: #fff;
+  color: #405862;
+  font-size: 9px;
+}
+
+.source-picker-filter-row select:focus {
+  border-color: #67b9aa;
+  box-shadow: 0 0 0 1px rgba(103, 185, 170, .18);
+}
+
+.source-picker-filter-row > span {
+  flex: 0 0 auto;
+  color: #718289;
+  font-size: 9px;
+  white-space: nowrap;
+}
+
+.source-picker-filter-row button {
+  display: grid;
+  flex: 0 0 24px;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #a05555;
+}
+
+.source-picker-filter-row button:hover,
+.source-picker-filter-row button:focus-visible {
+  background: #fff2f2;
+  outline: 1px solid #e3b9b9;
+}
+
+.source-picker-filter-row svg {
+  width: 10px;
+  height: 10px;
+}
+
+.source-picker-current {
+  display: grid;
+  gap: 2px;
+  padding: 6px 9px;
+  border-bottom: 1px solid #d8e7e4;
+  background: #f1faf8;
+  color: #3f625f;
+}
+
+.source-picker-current small {
+  color: #718985;
+  font-size: 8px;
+}
+
+.source-picker-current b {
+  overflow: hidden;
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.source-picker-options {
+  max-height: min(320px, 42vh);
+  overflow-y: auto;
+  background: #fff;
+  overscroll-behavior: contain;
+}
+
+.source-picker-option {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 16px;
+  align-items: center;
+  gap: 5px;
+  width: 100%;
+  min-height: 43px;
+  padding: 5px 8px 5px 9px;
+  border: 0;
+  border-top: 1px solid #edf1f0;
+  background: #fff;
+  color: #405862;
+  text-align: left;
+}
+
+.source-picker-option:hover,
+.source-picker-option:focus-visible {
+  background: #f2faf8;
+}
+
+.source-picker-option:hover {
+  outline: 0;
+}
+
+.source-picker-option:focus-visible {
+  outline: 2px solid #168f79;
+  outline-offset: -2px;
+}
+
+.source-picker-option.selected {
+  background: #e5f6f2;
+  color: #116d5d;
+  box-shadow: inset 3px 0 #18a88f;
+}
+
+.source-picker-option > span,
+.source-picker-option b,
+.source-picker-option small,
+.source-picker-option em {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.source-picker-option b {
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.source-picker-option small {
+  margin-top: 2px;
+  color: #6e8188;
+  font-size: 8px;
+}
+
+.source-picker-option em {
+  margin-top: 1px;
+  color: #8a999e;
+  font-size: 8px;
+  font-style: normal;
+}
+
+.source-picker-option > svg {
+  width: 13px;
+  height: 13px;
+  color: #15977f;
+}
+
+.source-picker-more,
+.source-picker-empty {
+  margin: 0;
+  padding: 9px;
+  color: #718289;
+  font-size: 9px;
+  line-height: 1.45;
+  text-align: center;
+}
+
+.source-picker-more {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  width: 100%;
+  min-height: 34px;
+  border: 0;
+  border-top: 1px solid #e7eeec;
+  background: #fafcfc;
+}
+
+.source-picker-more:hover,
+.source-picker-more:focus-visible {
+  background: #edf9f6;
+  color: #137c69;
+}
+
+.source-picker-more:hover {
+  outline: 0;
+}
+
+.source-picker-more:focus-visible {
+  outline: 2px solid #168f79;
+  outline-offset: -2px;
+}
+
+.source-picker-more small {
+  color: #8a999e;
+  font-size: 8px;
 }
 
 .snapshot-state {

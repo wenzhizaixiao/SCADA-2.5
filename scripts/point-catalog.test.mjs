@@ -57,8 +57,14 @@ test('provides one built-in color demo and one numeric demo for every protocol',
       assert.equal(snapshot.data.status, 'online')
       assert.equal(snapshot.data.enabled, true)
       assert.match(snapshot.data.updatedAt, /^2026-08-04T/)
+      assert.equal(typeof snapshot.data.table.title, 'string')
+      assert.ok(Array.isArray(snapshot.data.table.headers))
       assert.ok(Array.isArray(snapshot.data.table.columns))
       assert.ok(snapshot.data.table.columns.length >= 3)
+      assert.deepEqual(
+        snapshot.data.table.headers,
+        snapshot.data.table.columns.map(column => column.title)
+      )
       assert.ok(Array.isArray(snapshot.data.table.rows))
       assert.ok(snapshot.data.table.rows.length >= 5)
       assert.ok(Buffer.byteLength(JSON.stringify(snapshot.data), 'utf8') <= 4096)
@@ -333,6 +339,73 @@ test('tests valid and invalid connections and retains only a compact response su
   assert.ok(restored.points.every(point => point.status === 'offline'))
 })
 
+test('tests unsaved connection drafts without changing or persisting the source catalog', async () => {
+  let persistenceWrites = 0
+  const store = {
+    getPersistenceStatus() { return { durable: true } },
+    async save() {
+      persistenceWrites += 1
+      return { durable: true }
+    }
+  }
+  const gateway = createLocalPointCatalogGateway({ store })
+  const before = await gateway.listSources()
+  const savedHttp = before.find(source => source.protocol === 'HTTP')
+  const catalogEvents = []
+  const snapshotEvents = []
+  gateway.subscribe(event => catalogEvents.push(event))
+  gateway.subscribeSnapshots(snapshot => snapshotEvents.push(snapshot))
+
+  const createdDraft = await gateway.testSourceDraft({
+    name: '未保存 HTTP 草稿',
+    protocol: 'HTTP',
+    enabled: true,
+    config: {
+      url: 'https://draft-gateway.example/realtime',
+      method: 'GET',
+      pollInterval: 1000,
+      headers: '{}',
+      dataPath: '$.data'
+    }
+  })
+  assert.equal(createdDraft.ok, true)
+  assert.equal(createdDraft.snapshot.quality, 'good')
+  assert.equal(createdDraft.snapshot.meta.origin, 'connection-draft-test')
+  assert.equal(createdDraft.snapshot.data.source.name, '未保存 HTTP 草稿')
+
+  const editedDraft = await gateway.testSourceDraft({
+    id: savedHttp.id,
+    name: '未保存的名称',
+    protocol: 'HTTP',
+    enabled: true,
+    config: {
+      url: 'https://draft-gateway.example/edited',
+      method: 'POST',
+      pollInterval: 2500,
+      headers: '{}',
+      dataPath: '$.payload'
+    }
+  }, { sharedSnapshot: true })
+  assert.equal(editedDraft.ok, true)
+  assert.equal(editedDraft.snapshot.sourceId, savedHttp.id)
+
+  const invalidDraft = await gateway.testSourceDraft({
+    name: '无效草稿',
+    protocol: 'HTTP',
+    enabled: true,
+    config: { url: '', method: 'GET', pollInterval: 1000, headers: '{}', dataPath: '$.data' }
+  })
+  assert.equal(invalidDraft.ok, false)
+  assert.match(invalidDraft.response.message, /请求地址不能为空/)
+  assert.equal(invalidDraft.snapshot, null)
+
+  assert.deepEqual(await gateway.listSources(), before)
+  assert.equal((await gateway.getSource(savedHttp.id)).name, savedHttp.name)
+  assert.equal(persistenceWrites, 0)
+  assert.deepEqual(catalogEvents, [])
+  assert.deepEqual(snapshotEvents, [])
+})
+
 test('validates numeric bounds, select enums and HTTP header JSON before a connection succeeds', async () => {
   const gateway = createLocalPointCatalogGateway({ sources: [] })
   const source = await gateway.createSource({
@@ -340,7 +413,7 @@ test('validates numeric bounds, select enums and HTTP header JSON before a conne
     protocol: 'HTTP',
     config: {
       url: 'https://gateway.example/realtime',
-      method: 'PATCH',
+      method: 'DELETE',
       pollInterval: 99,
       headers: '{broken'
     }
@@ -366,6 +439,13 @@ test('validates numeric bounds, select enums and HTTP header JSON before a conne
   const nonNumeric = await gateway.testSource(source.id)
   assert.equal(nonNumeric.ok, false)
   assert.match(nonNumeric.response.message, /采集周期（毫秒）必须是有效数字/)
+
+  await gateway.updateSource(source.id, {
+    config: { pollInterval: 1000.5, headers: '{}' }
+  })
+  const nonInteger = await gateway.testSource(source.id)
+  assert.equal(nonInteger.ok, false)
+  assert.match(nonInteger.response.message, /采集周期（毫秒）必须是整数/)
 })
 
 test('generates non-reusable source ids across deletion and gateway reconstruction', async () => {
@@ -435,7 +515,18 @@ test('publishes monotonic memory-only snapshots with latest-value replacement', 
   const gateway = createLocalPointCatalogGateway({ now })
   const sourceId = 'source-http-energy'
   const initial = await gateway.getSourceSnapshot(sourceId)
-  assert.deepEqual(Object.keys(initial), ['sourceId', 'revision', 'timestamp', 'quality', 'data', 'meta'])
+  assert.deepEqual(Object.keys(initial), [
+    'workspaceId',
+    'workspaceGeneration',
+    'sourceId',
+    'revision',
+    'timestamp',
+    'quality',
+    'data',
+    'meta'
+  ])
+  assert.equal(initial.workspaceId, 'default')
+  assert.equal(initial.workspaceGeneration, gateway.activeWorkspaceGeneration)
   assert.equal(initial.data.data.power, 386.2)
 
   const events = []
@@ -939,4 +1030,196 @@ test('fails closed into a corrupt target workspace without leaking or overwritin
   // 同一目标仍处于损坏状态时必须重新读取，不能走“已激活”早退。
   await assert.rejects(gateway.activateWorkspace('workspace-b'), /数据源存储损坏/)
   assert.equal(corruptLoadCount, 2)
+})
+
+test('a good payload brings an enabled offline source online in source reads and listings', async () => {
+  const sourceId = 'source-runtime-offline-to-online'
+  const gateway = createLocalPointCatalogGateway({
+    sources: [{
+      id: sourceId,
+      name: 'Runtime status source',
+      protocol: 'HTTP',
+      enabled: true,
+      status: 'offline',
+      config: { url: 'https://gateway.example/runtime-status' },
+      points: []
+    }]
+  })
+
+  gateway.ingestSourceSnapshot(sourceId, { value: 42 }, {
+    quality: 'good',
+    origin: 'live-adapter'
+  })
+
+  assert.equal((await gateway.getSource(sourceId)).status, 'online')
+  assert.equal((await gateway.listSources()).find(source => source.id === sourceId)?.status, 'online')
+  assert.equal((await gateway.getSourceSnapshot(sourceId)).quality, 'good')
+})
+
+test('consecutive good payloads emit only one source status transition event', async () => {
+  const sourceId = 'source-runtime-status-event'
+  const gateway = createLocalPointCatalogGateway({
+    sources: [{
+      id: sourceId,
+      name: 'Runtime event source',
+      protocol: 'HTTP',
+      enabled: true,
+      status: 'offline',
+      config: { url: 'https://gateway.example/runtime-event' },
+      points: []
+    }]
+  })
+  const statusEvents = []
+  gateway.subscribe(event => {
+    if (event.type === 'source-status-changed' && event.sourceId === sourceId) {
+      statusEvents.push(event)
+    }
+  })
+
+  gateway.ingestSourceSnapshot(sourceId, { sequence: 1 }, { quality: 'good' })
+  gateway.ingestSourceSnapshot(sourceId, { sequence: 2 }, { quality: 'good' })
+
+  assert.equal(statusEvents.length, 1)
+  assert.equal(statusEvents[0].source.status, 'online')
+  assert.deepEqual(statusEvents[0].changedSourceIds, [sourceId])
+  assert.equal((await gateway.getSourceSnapshot(sourceId)).data.sequence, 2)
+})
+
+test('a disabled source stays offline when a good payload is ingested', async () => {
+  const sourceId = 'source-runtime-disabled'
+  const gateway = createLocalPointCatalogGateway({
+    sources: [{
+      id: sourceId,
+      name: 'Disabled runtime source',
+      protocol: 'HTTP',
+      enabled: false,
+      status: 'offline',
+      config: { url: 'https://gateway.example/disabled' },
+      points: []
+    }]
+  })
+
+  gateway.ingestSourceSnapshot(sourceId, { value: 99 }, { quality: 'good' })
+
+  assert.equal((await gateway.getSource(sourceId)).status, 'offline')
+  assert.equal((await gateway.listSources()).find(source => source.id === sourceId)?.status, 'offline')
+  assert.equal((await gateway.getSourceSnapshot(sourceId)).quality, 'offline')
+})
+
+test('an adapter error received during connection testing wins over the successful test result', async () => {
+  const sourceId = 'source-runtime-error-during-test'
+  const gateway = createLocalPointCatalogGateway({
+    testDelayMs: 20,
+    sources: [{
+      id: sourceId,
+      name: 'Concurrent runtime source',
+      protocol: 'HTTP',
+      enabled: true,
+      status: 'offline',
+      config: { url: 'https://gateway.example/concurrent-test' },
+      points: []
+    }]
+  })
+
+  const pendingTest = gateway.testSource(sourceId, { includePoints: false })
+  await Promise.resolve()
+  gateway.ingestSourceSnapshot(sourceId, undefined, {
+    quality: 'error',
+    origin: 'live-adapter',
+    message: 'adapter read failed'
+  })
+  const tested = await pendingTest
+
+  assert.equal(tested.source.status, 'error')
+  assert.equal((await gateway.getSource(sourceId)).status, 'error')
+  assert.equal((await gateway.listSources()).find(source => source.id === sourceId)?.status, 'error')
+  const snapshot = await gateway.getSourceSnapshot(sourceId)
+  assert.equal(snapshot.quality, 'error')
+  assert.equal(snapshot.data, undefined)
+})
+
+test('rejects an old adapter generation after configuration changes', async () => {
+  const sourceId = 'source-runtime-old-generation'
+  const gateway = createLocalPointCatalogGateway({
+    sources: [{
+      id: sourceId,
+      name: 'Generation guarded source',
+      protocol: 'HTTP',
+      enabled: true,
+      status: 'online',
+      config: { url: 'https://gateway.example/generation-v1' },
+      points: []
+    }]
+  })
+  const before = await gateway.getSource(sourceId, { includePoints: false })
+  const updated = await gateway.updateSource(sourceId, {
+    config: { url: 'https://gateway.example/generation-v2' }
+  }, { includePoints: false })
+  const staleSnapshot = await gateway.getSourceSnapshot(sourceId, { shared: true })
+
+  assert.equal(updated.adapterGeneration, before.adapterGeneration + 1)
+  const rejected = gateway.ingestSourceSnapshot(sourceId, { value: 'old' }, {
+    quality: 'good',
+    adapterGeneration: before.adapterGeneration
+  }, { sharedResult: true })
+
+  assert.strictEqual(rejected, staleSnapshot)
+  assert.strictEqual(await gateway.getSourceSnapshot(sourceId, { shared: true }), staleSnapshot)
+  assert.equal((await gateway.getSource(sourceId)).status, 'offline')
+})
+
+test('accepts the current adapter generation and brings the source online', async () => {
+  const sourceId = 'source-runtime-current-generation'
+  const gateway = createLocalPointCatalogGateway({
+    sources: [{
+      id: sourceId,
+      name: 'Current generation source',
+      protocol: 'HTTP',
+      enabled: true,
+      status: 'online',
+      config: { url: 'https://gateway.example/current-v1' },
+      points: []
+    }]
+  })
+  const updated = await gateway.updateSource(sourceId, {
+    config: { url: 'https://gateway.example/current-v2' }
+  }, { includePoints: false })
+
+  const accepted = gateway.ingestSourceSnapshot(sourceId, { value: 'current' }, {
+    quality: 'good',
+    adapterGeneration: updated.adapterGeneration
+  }, { sharedResult: true })
+
+  assert.equal(accepted.data.value, 'current')
+  assert.equal(accepted.quality, 'good')
+  assert.equal((await gateway.getSource(sourceId)).status, 'online')
+  assert.equal((await gateway.listSources()).find(source => source.id === sourceId)?.status, 'online')
+})
+
+test('rolls back the temporary testing state when persistence fails', async () => {
+  const sourceId = 'source-test-persistence-rollback'
+  const store = {
+    getPersistenceStatus() { return { durable: true } },
+    async saveSource() { throw new Error('source write rejected') }
+  }
+  const gateway = createLocalPointCatalogGateway({
+    store,
+    sources: [{
+      id: sourceId,
+      name: 'Rollback source',
+      protocol: 'HTTP',
+      enabled: true,
+      status: 'offline',
+      config: { url: 'https://gateway.example/rollback' },
+      points: []
+    }]
+  })
+
+  await assert.rejects(
+    gateway.testSource(sourceId, { includePoints: false }),
+    /source write rejected/
+  )
+
+  assert.equal((await gateway.getSource(sourceId)).status, 'offline')
+  assert.equal((await gateway.listSources()).find(source => source.id === sourceId)?.status, 'offline')
 })

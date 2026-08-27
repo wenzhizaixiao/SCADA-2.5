@@ -3,6 +3,7 @@ export const EDITOR_LOD_MAX_ZOOM = 0.3
 export const EDITOR_LOD_MAX_OVERLAY_NODES = 128
 export const EDITOR_LOD_MAX_OVERLAY_EDGES = 512
 export const EDITOR_LOD_MAX_REMOVAL_COVER_REGIONS = 32
+export const EDITOR_LOD_ANIMATED_FLOW_DIRECTION_THRESHOLD = 96
 
 function finiteNumber(value, fallback = 0) {
   const parsed = Number(value)
@@ -415,6 +416,22 @@ export function shouldHideEditorLodGeometryDom(options = {}) {
 export function shouldUseEditorLod(nodeCount, zoom) {
   return finiteNumber(nodeCount) >= EDITOR_LOD_NODE_THRESHOLD
     && finiteNumber(zoom, 1) <= EDITOR_LOD_MAX_ZOOM
+}
+
+export function shouldUseAnimatedFlowDirectionLod(nodes, threshold = EDITOR_LOD_ANIMATED_FLOW_DIRECTION_THRESHOLD) {
+  const limit = Math.max(1, Math.floor(finiteNumber(threshold, EDITOR_LOD_ANIMATED_FLOW_DIRECTION_THRESHOLD)))
+  let animatedCount = 0
+  for (const node of nodes || []) {
+    if (
+      node?.type !== 'flowDirection'
+      || node.animation !== 'flow'
+      || node.animationPaused === true
+      || finiteNumber(node.opacity, 1) <= 0
+    ) continue
+    animatedCount += 1
+    if (animatedCount >= limit) return true
+  }
+  return false
 }
 
 export function editorLodOverlayNodeIds(options = {}) {

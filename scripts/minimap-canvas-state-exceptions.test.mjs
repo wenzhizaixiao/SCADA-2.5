@@ -34,6 +34,12 @@ function finiteNumber(value, fallback = 0) {
   return Number.isFinite(parsed) ? parsed : fallback
 }
 
+function roundedRect(context, x, y, width, height, radius) {
+  const safeRadius = Math.max(0, Math.min(finiteNumber(radius), width / 2, height / 2))
+  context.beginPath()
+  context.roundRect(x, y, width, height, safeRadius)
+}
+
 function createFaultCanvasContext(failure = {}) {
   const state = {
     counts: new Map(),
@@ -92,6 +98,7 @@ function createFaultCanvasContext(failure = {}) {
     'quadraticCurveTo',
     'rect',
     'rotate',
+    'roundRect',
     'scale',
     'setTransform',
     'stroke',
@@ -127,6 +134,7 @@ function compileDrawNode(overrides = {}) {
       effectiveScaleY: 1
     }),
     drawImageFit: () => {},
+    nodePath: () => {},
     isCanvasVisualAnimationCandidate,
     lineShapeBodyDashSegments: () => [],
     lineShapeBodyInset: () => 0,
@@ -140,6 +148,7 @@ function compileDrawNode(overrides = {}) {
     runtimePointValue: () => undefined,
     runtimeValue: () => undefined,
     shapePoints: {},
+    strokeNodeOutline: () => {},
     visibleStroke: () => 1,
     visualAnimationTimeline: { resolve: (_node, timestamp) => timestamp },
     ...overrides
@@ -149,6 +158,7 @@ function compileDrawNode(overrides = {}) {
 function compilePolyline(overrides = {}) {
   const packet = sourceBetween('function drawPolylineArrow', '\nfunction drawGrid')
   return compileSource(packet, 'drawPolyline', {
+    flowDirectionDashOffset: () => 0,
     number: finiteNumber,
     polylineArrowSize: () => 4,
     polylineDashSegments: () => [],
@@ -269,13 +279,14 @@ test('flow-pipe stripe failures restore the clipping state', () => {
     VISUAL_ACCENT_COLOR: '#16b89a',
     canvasVisualDetailSize,
     fillAndStroke: () => {},
-    flowPipeDashOffset
+    flowPipeDashOffset,
+    roundedRect
   })
-  const { context, state } = createFaultCanvasContext({ method: 'stroke' })
+  const { context, state } = createFaultCanvasContext({ method: 'fillRect' })
 
   assert.throws(
     () => drawFlowPipe(context, { type: 'flowPipe', animation: 'flow' }, 100, 20, 1, 200),
-    /injected stroke failure/
+    /injected fillRect failure/
   )
   assert.equal(state.maximumDepth, 1)
   assert.equal(state.depth, 0, 'flow-pipe stripe failure must restore its clipping state')
@@ -287,11 +298,12 @@ test('rotating fan blade failures restore the blade transform state', () => {
     VISUAL_ACCENT_COLOR: '#16b89a',
     canvasVisualDetailSize,
     fillAndStroke: () => {},
+    roundedRect,
     rotatingFanAngle
   })
-  const { context, state } = createFaultCanvasContext({ method: 'stroke', occurrence: 3 })
+  const { context, state } = createFaultCanvasContext({ method: 'fill', occurrence: 2 })
 
-  assert.throws(() => drawFan(context, {}, 40, 20, 1), /injected stroke failure/)
+  assert.throws(() => drawFan(context, {}, 40, 20, 1), /injected fill failure/)
   assert.equal(state.maximumDepth, 2)
   assert.equal(state.depth, 0, 'rotating fan blade must restore its transform state')
 })
@@ -305,6 +317,30 @@ test('drawImageFit restores its clipping state when drawImage throws', () => {
   assert.throws(() => drawImageFit(context, image, 40, 20, 'contain'), /injected drawImage failure/)
   assert.equal(state.maximumDepth, 1)
   assert.equal(state.depth, 0, 'image clipping state must be restored')
+})
+
+test('media placeholders use the same clipped background and configurable outline as loaded media', () => {
+  const packet = sourceBetween('function drawMediaPlaceholder', '\nfunction drawFormControl')
+  const calls = []
+  const drawMediaPlaceholder = compileSource(packet, 'drawMediaPlaceholder', {
+    alpha: value => finiteNumber(value, 1),
+    nodePath: (_context, node, width, height) => calls.push(['path', node, width, height]),
+    strokeNodeOutline: (_context, node, width, height, worldPixel) => calls.push(['outline', node, width, height, worldPixel]),
+    visibleStroke: () => 2
+  })
+  const { context, state } = createFaultCanvasContext()
+  context.clip = () => calls.push(['clip'])
+  context.fillRect = (...args) => calls.push(['background', ...args])
+  const node = { type: 'image', backgroundOpacity: .25, borderVisible: true, radius: 16 }
+
+  drawMediaPlaceholder(context, node, 80, 60, .5, true)
+
+  assert.deepEqual(calls.filter(([kind]) => ['path', 'clip', 'background', 'outline'].includes(kind)).map(([kind]) => kind), [
+    'path', 'clip', 'background', 'outline'
+  ])
+  assert.equal(calls.at(-1)[1], node)
+  assert.equal(calls.at(-1)[4], .5)
+  assert.equal(state.depth, 0)
 })
 
 test('signal light failures restore the nested opacity state', () => {
@@ -340,18 +376,12 @@ test('faithful dynamic visuals keep the shared frame without reusing dark text a
     VISUAL_ACCENT_COLOR: '#16b89a',
     canvasVisualDetailSize,
     fillAndStroke: () => {},
+    roundedRect,
     rotatingFanAngle
   })
-  const fanStrokeStyles = []
-  Object.defineProperty(fanContext, 'strokeStyle', {
-    get: () => fanStrokeStyles.at(-1),
-    set: value => fanStrokeStyles.push(value),
-    configurable: true
-  })
   drawFan(fanContext, { color: '#28323c' }, 110, 110, 1)
-  assert.ok(fanStrokeStyles.includes('#16b89a'))
+  assert.ok(fanFillStyles.includes('#16b89a'))
   assert.equal(fanFillStyles.includes('#28323c'), false)
-  assert.equal(fanStrokeStyles.includes('#28323c'), false)
 
   const specialPacket = sourceBetween('function drawSpecialNode', '\nfunction canvasNodeLayout')
   const frameCalls = []
@@ -394,9 +424,62 @@ test('faithful dynamic visuals keep the shared frame without reusing dark text a
 
   assert.match(sourceBetween('function drawChart', '\nfunction drawGauge'), /ctx\.fillStyle = VISUAL_ACCENT_COLOR/)
   assert.match(sourceBetween('function drawGauge', '\nfunction drawFlowPipe'), /ctx\.strokeStyle = VISUAL_ACCENT_COLOR/)
-  assert.match(sourceBetween('function drawFlowPipe', '\nfunction drawFan'), /ctx\.strokeStyle = node\.visualPrimaryColor \|\| VISUAL_ACCENT_COLOR/)
+  assert.match(sourceBetween('function drawFlowPipe', '\nfunction drawFan'), /ctx\.fillStyle = node\.visualPrimaryColor \|\| VISUAL_ACCENT_COLOR/)
   assert.match(specialPacket, /node\.motionColor \|\| VISUAL_ACCENT_COLOR/)
   assert.match(specialPacket, /ctx\.strokeStyle = node\.visualPrimaryColor \|\| VISUAL_HEARTBEAT_COLOR/)
+})
+
+test('static special components render through the shared configurable frame', () => {
+  const packet = sourceBetween('function drawSpecialNode', '\nfunction canvasNodeLayout')
+  const frameCalls = []
+  const drawSpecialNode = compileSource(packet, 'drawSpecialNode', {
+    VISUAL_ACCENT_COLOR: '#16b89a',
+    VISUAL_HEARTBEAT_COLOR: '#ef5350',
+    canvasVisualDetailSize,
+    drawChart: () => {},
+    drawGauge: () => {},
+    fillAndStroke: (_context, node, width, height, worldPixel, fallbackFill) => {
+      frameCalls.push({ fallbackFill, height, node, width, worldPixel })
+    },
+    hasEnabledRuntimeBinding: () => false,
+    progressTrackFrame: () => ({ x: 0, y: 0, width: 100, height: 10, startRadius: 5, endRadius: 5 }),
+    progressTrackPath: () => {},
+    roundedRect: context => context.beginPath()
+  })
+  const { context } = createFaultCanvasContext()
+
+  for (const type of ['chart', 'gauge', 'progress', 'server', 'database']) {
+    const node = { type, backgroundOpacity: .35, borderVisible: true, radius: 18 }
+    frameCalls.length = 0
+    drawSpecialNode(context, node, 120, 80, 2, undefined, 'static', .5)
+    assert.equal(frameCalls.length, 1, `${type} must draw one shared configurable frame`)
+    assert.equal(frameCalls[0].node, node)
+    assert.deepEqual([frameCalls[0].width, frameCalls[0].height, frameCalls[0].worldPixel], [120, 80, .5])
+  }
+
+  const serverBranch = sourceBetween("if (node.type === 'server')", "if (node.type === 'database')")
+  const databaseBranch = sourceBetween("if (node.type === 'database')", "if (['network', 'router', 'disk', 'cloud', 'customMotion', 'customIndicator'].includes(node.type))")
+  assert.doesNotMatch(serverBranch, /ctx\.fillStyle = node\.fill/, 'the server icon must not repaint the configurable background')
+  assert.doesNotMatch(databaseBranch, /ctx\.fillStyle = node\.fill/, 'the database icon must not repaint the configurable background')
+})
+
+test('static progress geometry uses the configured length, thickness, and endpoint shapes', () => {
+  const packet = sourceBetween('function progressTrackFrame', '\nfunction drawSpecialNode')
+  const progressTrackFrame = compileSource(packet, 'progressTrackFrame', { number: finiteNumber })
+
+  assert.deepEqual(
+    progressTrackFrame({
+      progressLength: 40,
+      progressThickness: 8,
+      progressStartShape: 'square',
+      progressEndShape: 'round'
+    }, 200, 60),
+    { endRadius: 4, height: 8, startRadius: 0, width: 80, x: 60, y: 26 }
+  )
+
+  const progressBranch = sourceBetween("if (node.type === 'progress')", "if (node.type === 'server')")
+  assert.match(progressBranch, /progressTrackFrame\(node, width, height\)/)
+  assert.match(progressBranch, /progressTrackPath\(ctx, track\.x, track\.y, track\.width/)
 })
 
 test('drawNode restores dashed lineShape body state when stroke throws', () => {
@@ -434,6 +517,42 @@ test('drawNode restores image background state when fillRect throws', () => {
   )
   assert.ok(state.maximumDepth >= 2, 'the injected failure must reach the image background state')
   assert.equal(state.depth, 0, 'image background and drawNode states must both be restored')
+})
+
+test('drawNode clips ready images to the component path before drawing the configured outline', () => {
+  const image = { complete: true, naturalHeight: 50, naturalWidth: 100 }
+  const calls = []
+  const node = {
+    type: 'image',
+    backgroundOpacity: .4,
+    borderDashGap: 7,
+    borderDashLength: 11,
+    borderStyle: 'dashed',
+    borderVisible: true,
+    borderWidth: 6,
+    imageFit: 'cover',
+    imageUrl: 'fixture.png',
+    opacity: .45,
+    radius: 10,
+    stroke: '#ef3340'
+  }
+  const drawNode = compileDrawNode({
+    cachedImage: () => image,
+    drawImageFit: (_context, source, width, height, fit) => calls.push(['image', source, width, height, fit]),
+    nodePath: (_context, source, width, height) => calls.push(['path', source, width, height]),
+    strokeNodeOutline: (_context, source, width, height, worldPixel) => calls.push(['outline', source, width, height, worldPixel])
+  })
+  const { context, state } = createFaultCanvasContext()
+  context.clip = () => calls.push(['clip'])
+  context.fillRect = (...args) => calls.push(['background', ...args])
+
+  drawNode(context, node, 1, 1, 1, 'static', 1, { node })
+
+  assert.deepEqual(calls.map(([kind]) => kind), ['path', 'clip', 'background', 'image', 'outline'])
+  assert.equal(calls[0][1], node)
+  assert.deepEqual(calls[3].slice(2), [40, 20, 'cover'])
+  assert.equal(calls[4][1], node)
+  assert.equal(state.depth, 0)
 })
 
 test('closed temporary drawings balance both saved states when fill throws', () => {

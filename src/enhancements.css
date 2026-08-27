@@ -329,6 +329,7 @@ html::backdrop { background: #e9edf0; }
 .node-body.terminal { border-radius: var(--shape-outer-radius, 0) !important; }
 .inline-text-editor { position: absolute; inset: 50% 8px auto; z-index: 10; width: calc(100% - 16px); min-width: 0; height: 30px; transform: translateY(-50%); border: 1px solid #168eea; outline: 2px solid #168eea33; background: #fff; color: #26323d; padding: 4px 7px; text-align: center; user-select: text; }
 .node-body.disabled { filter: grayscale(.8); opacity: .55 !important; }
+.node-body.code { background: var(--shape-fill) !important; color: var(--form-color) !important; }
 
 .node-image { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
 .node-video { position: absolute; inset: 0; z-index: 1; width: 100%; height: 100%; background: var(--shape-fill); pointer-events: none; }
@@ -905,52 +906,48 @@ html::backdrop { background: #e9edf0; }
 .context-menu kbd { color: #6d777f; font-family: inherit; font-size: 13px; }
 
 .animated-pipe {
-  width: 75%;
-  height: 16px;
-  border: 2px solid #3c8fa0;
-  background: #e4f7fa;
+  width: 90%;
+  height: min(42%, 18px);
+  min-height: 10px;
+  box-sizing: border-box;
+  padding: 3px;
+  background: #edf3f2;
   overflow: hidden;
-  border-radius: 0 !important;
+  border-radius: 999px !important;
 }
 
 .animated-pipe i {
   display: block;
   width: 100%;
   height: 100%;
-  background: repeating-linear-gradient(115deg, var(--visual-primary-color, #16b89a) 0 10px, transparent 10px 20px);
-  border-radius: 0 !important;
+  background: repeating-linear-gradient(90deg, var(--visual-primary-color, #16b89a) 0 24px, transparent 24px 40px);
+  border-radius: 999px !important;
 }
 
 .fan-visual {
-  width: 64px;
-  height: 64px;
+  width: min(78%, 86px);
+  aspect-ratio: 1;
   position: relative;
   flex: none;
-  border: 2px solid #8ea5aa;
   border-radius: 50%;
-  background: #f2f7f7;
-  box-shadow: inset 0 0 0 5px #dfeaea;
+  background: #edf3f2;
 }
 
 .fan-rotor {
   position: absolute;
-  inset: 6px;
-  width: 48px;
-  height: 48px;
+  inset: 7px;
+  width: calc(100% - 14px);
+  height: calc(100% - 14px);
   overflow: visible;
   color: var(--visual-primary-color, #16b89a);
   transform-origin: center;
 }
 
 .fan-blade {
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 8px;
-  stroke-linecap: round;
+  fill: currentColor;
+  stroke: none;
 }
-
-.fan-hub-ring { fill: #e7f7f4; }
-.fan-hub { fill: #176e69; }
+.fan-hub { fill: #26323d; }
 
 .signal-visual {
   width: 48px;
@@ -960,13 +957,12 @@ html::backdrop { background: #e9edf0; }
   justify-content: center;
 }
 
-.signal-visual i { width: 40px; height: 40px; box-sizing: border-box; border-radius: 50%; box-shadow: inset 0 0 0 1px #26323d26; }
+.signal-visual i { width: 40px; height: 40px; box-sizing: border-box; border-radius: 50%; }
 
 .tank-visual {
   position: relative;
   width: 68px;
   height: 95px;
-  border: 3px solid #3c6f7a;
   border-radius: 4px 4px 12px 12px;
   overflow: hidden;
   background: #f6fbfc;
@@ -976,7 +972,16 @@ html::backdrop { background: #e9edf0; }
 .tank-visual i::before { content: ""; position: absolute; left: -20%; top: -6px; width: 140%; height: 12px; border-radius: 50%; background: color-mix(in srgb, var(--visual-primary-color, #3bb9df) 55%, white); }
 .tank-visual b { position: absolute; inset: 0; display: grid; place-items: center; z-index: 1; color: #174b58; font-size: 13px; }
 
-.heartbeat-visual { color: var(--visual-primary-color, #ef5350); }
+.alarm-visual {
+  width: min(62%, 58px);
+  height: min(70%, 58px);
+  overflow: visible;
+  color: var(--visual-primary-color, #ef5350);
+  transform-origin: center;
+}
+.alarm-shape, .alarm-mark { fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; }
+.alarm-shape { stroke-width: 4; }
+.alarm-mark { stroke-width: 5; }
 .particles-visual { position: relative; width: 80%; height: 52px; overflow: hidden; }
 .particles-visual i { position: absolute; left: 0; top: calc((var(--particle, 1) - 1) * 7px); width: 7px; height: 7px; border-radius: 50%; background: var(--visual-primary-color, #16b89a); }
 .particles-visual i:nth-child(1) { --particle: 1; left: 5%; }.particles-visual i:nth-child(2) { --particle: 2; left: 16%; }.particles-visual i:nth-child(3) { --particle: 3; left: 28%; }.particles-visual i:nth-child(4) { --particle: 4; left: 40%; }.particles-visual i:nth-child(5) { --particle: 5; left: 52%; }.particles-visual i:nth-child(6) { --particle: 6; left: 64%; }.particles-visual i:nth-child(7) { --particle: 7; left: 76%; }.particles-visual i:nth-child(8) { --particle: 2; left: 88%; }
@@ -1028,6 +1033,11 @@ html::backdrop { background: #e9edf0; }
   animation: preview-pipe 1s linear infinite;
   animation-delay: var(--built-in-animation-delay, 0s);
 }
+
+.node-shell .animation-flow .flow-direction-path {
+  animation: preview-flow-direction-dash var(--motion-speed, 1.5s) linear infinite;
+  animation-delay: var(--built-in-animation-delay, 0s);
+}
 .node-shell .animation-flow .fan-rotor {
   animation: preview-fan-spin var(--motion-speed, 1.5s) linear infinite;
   animation-delay: var(--built-in-animation-delay, 0s);
@@ -1038,13 +1048,18 @@ html::backdrop { background: #e9edf0; }
   animation-direction: var(--motion-direction, normal);
 }
 .node-shell .heartbeat.animation-pulse { animation: none; }
-.node-shell .animation-pulse .heartbeat-visual {
+.node-shell .animation-pulse .alarm-visual {
   animation: preview-heartbeat 1.15s ease-in-out infinite;
   animation-delay: var(--built-in-animation-delay, 0s);
 }
 .node-shell .animation-flow .particles-visual i {
   animation: preview-particles 1.8s linear infinite;
   animation-delay: calc(var(--built-in-animation-delay, 0s) + var(--particle-delay, 0s));
+}
+
+@keyframes preview-flow-direction-dash {
+  from { stroke-dashoffset: 0; }
+  to { stroke-dashoffset: calc(var(--flow-dash-cycle, 14px) * -1); }
 }
 
 .node-shell .node-body,
@@ -1103,7 +1118,7 @@ html::backdrop { background: #e9edf0; }
   to { transform: rotate(65deg); }
 }
 
-@keyframes preview-pipe { to { background-position: -20px 0; } }
+@keyframes preview-pipe { to { background-position: -40px 0; } }
 @keyframes preview-fan-spin { to { transform: rotate(90deg); } }
 @keyframes preview-water {
   0%, 100% { transform: translateX(0) scaleX(1.04); }
@@ -1194,6 +1209,22 @@ html::backdrop { background: #e9edf0; }
 .workspace-settings .primary-wide { width: 100%; margin: 10px 0 0; cursor: pointer; }
 .context-action-label { min-width: 0; display: flex; align-items: center; gap: 9px; }
 .context-action-label svg { width: 16px; height: 16px; flex: none; stroke-width: 1.7; }
+
+/* 右侧页签固定，所有属性页只占用剩余高度并独立滚动。 */
+.right-panel { display: flex; flex-direction: column; min-height: 0; }
+.right-tabs { flex: none; }
+.right-panel > .properties {
+  width: 100%;
+  height: auto;
+  min-height: 0;
+  flex: 1;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+/* 给属性页最后一项留出完整点击区域，避免原生下拉框紧贴窗口底边。 */
+.right-panel > .properties:not(.communication-properties) { padding-bottom: 16px; }
 
 /* 大图纸的图层结构采用窗口化列表，滚动高度完整但只挂载视口附近的行。 */
 .structure-list { display: flex; flex-direction: column; overflow: hidden; }

@@ -70,6 +70,7 @@ import { diffPointCatalog } from './utils/pointCatalogDiff'
 import { canonicalizeJsonPath, evaluateJsonPath, jsonValueType } from './utils/jsonPathBinding'
 import { isSourceBindingRuntimeKey } from './utils/runtimeKey'
 import { normalizeWorkspaceId } from './utils/workspaceIdentity'
+import { drawingPointSourceScopeId } from './utils/drawingPointSourceScope'
 import { applyEntityEntry, captureEntityEntry, createEntityInsertionEntry } from './utils/entityHistory'
 import {
   applyFieldRecord,
@@ -90,9 +91,11 @@ import {
   editorLodRemovalCoverRegions as mergeEditorLodRemovalRegions,
   editorLodOverlayEdges,
   editorLodOverlayNodeIds,
+  EDITOR_LOD_ANIMATED_FLOW_DIRECTION_THRESHOLD,
   EDITOR_LOD_MAX_OVERLAY_NODES,
   pickTopEditorEntity,
   shouldHideEditorLodGeometryDom,
+  shouldUseAnimatedFlowDirectionLod,
   shouldUseEditorLod
 } from './utils/editorLod'
 import { formatTimeValue, parseTimeValue, resolveTimeValue, timeInputStep, timeInputType } from './utils/formTime'
@@ -107,6 +110,7 @@ import {
   clampPolylineSegmentCount,
   createEvenlySpacedPolylinePoints,
   DEFAULT_POLYLINE_SEGMENT_COUNT,
+  isPolylineNodeType,
   nearestPolylinePointIndex,
   polylineFrameFromWorldPoints,
   polylineNormalizedPointsToLocal,
@@ -179,6 +183,7 @@ import { createCancellableIdleTask } from './utils/cancellableIdleTask'
 import { createSourceSnapshotReplayCoordinator } from './utils/sourceSnapshotReplayCoordinator'
 import { createLegacyPointReplayCoordinator } from './utils/legacyPointReplayCoordinator'
 import { isUsableSourceSnapshot } from './utils/sourceSnapshotValidation'
+import { resolveTableCellViewDetail } from './utils/tableCellViewer.js'
 
 // 顶部品牌名称只在这里定义，修改后会同步更新显示文字和图标的无障碍名称。
 const BRAND_NAME = '苔岑2D绘图'
@@ -409,11 +414,15 @@ const currentTimeTick = ref(Date.now())
 const rightOpen = ref(true)
 const leftTab = ref('组件')
 const rightTab = ref('属性')
-// 数据源是工作空间级配置；pointCatalog 只为旧 pointId 图纸保留，新绑定直接使用源快照。
+// 数据源按当前图纸隔离；pointCatalog 只为旧 pointId 图纸保留，新绑定直接使用源快照。
 const dataSourceManagerOpen = ref(false)
 const dataSourceRevision = ref(0)
 const pointCatalog = shallowRef([])
 let pointCatalogLoadGeneration = 0
+let pointCatalogActivationGeneration = 0
+let pointCatalogScopeReady = false
+const activePointSourceScopeId = ref('')
+const propertiesPanel = ref(null)
 const structureScroller = ref(null)
 const structureScrollTop = ref(0)
 const structureViewportHeight = ref(0)
@@ -423,6 +432,7 @@ const fileName = ref('未命名图纸')
 const workspaceId = ref(initialWorkspaceId())
 const workspaceDraft = ref(workspaceId.value)
 const projectId = ref(createEntityId('project'))
+const currentPointSourceScopeId = computed(() => drawingPointSourceScopeId(workspaceId.value, projectId.value))
 const projectRevision = ref(0)
 const projectCreatedAt = ref(new Date().toISOString())
 const projectUpdatedAt = ref(null)
@@ -576,6 +586,7 @@ const sourceSnapshotReplayCoordinator = createSourceSnapshotReplayCoordinator({
     return pointCatalogGateway.getSourceSnapshot?.(sourceId, { shared: true })
   },
   commitSnapshot(snapshot, options) {
+    if (!pointCatalogScopeReady || snapshot?.workspaceId !== activePointSourceScopeId.value) return
     sourceBindingRuntime.ingest(snapshot, options)
   },
   isActive: () => componentLifecycleActive
@@ -593,6 +604,7 @@ const legacyPointReplayCoordinator = createLegacyPointReplayCoordinator({
   }
 })
 const unsubscribeSourceSnapshots = pointCatalogGateway.subscribeSnapshots?.(snapshot => {
+  if (!pointCatalogScopeReady || snapshot?.workspaceId !== activePointSourceScopeId.value) return
   sourceBindingRuntime.ingest(snapshot)
 }, { shared: true }) || (() => false)
 
@@ -663,23 +675,59 @@ async function refreshPointCatalog({ replay = true, throwOnError = false, requir
     return false
   }
 }
-async function activatePointCatalogWorkspace(targetWorkspace, options = {}) {
+async function activatePointCatalogDrawing(targetWorkspace, targetDrawingId, options = {}) {
+  const normalizedWorkspace = normalizeWorkspaceId(targetWorkspace, DEFAULT_WORKSPACE_ID)
+  const normalizedDrawingId = String(targetDrawingId || '').trim()
+  const targetScopeId = drawingPointSourceScopeId(normalizedWorkspace, normalizedDrawingId)
+  const activationGeneration = ++pointCatalogActivationGeneration
+  const activationIsCurrent = () => (
+    activationGeneration === pointCatalogActivationGeneration
+    && componentLifecycleActive
+    && workspaceId.value === normalizedWorkspace
+    && projectId.value === normalizedDrawingId
+  )
+  pointCatalogScopeReady = false
+  activePointSourceScopeId.value = ''
   invalidateRuntimeDataReplays()
   ++pointCatalogLoadGeneration
   try {
-    await pointCatalogGateway.activateWorkspace(targetWorkspace)
-    if (!componentLifecycleActive) return false
+    const activation = await pointCatalogGateway.activateWorkspace(targetScopeId, {
+      legacyWorkspaceId: options.inheritLegacyWorkspace === false ? '' : normalizedWorkspace,
+      // 图纸安装完成后由当前调用方按绑定关系重放，切换过程中不向旧图纸发布快照。
+      publishSnapshots: false
+    })
+    if (!activationIsCurrent()) return false
+    if (activation?.workspaceId !== targetScopeId) throw new Error('图纸数据源作用域激活结果不一致')
+    activePointSourceScopeId.value = targetScopeId
     sourceBindingRuntime.reset?.({ keepBindings: true })
+    pointCatalogScopeReady = true
+    dataSourceRevision.value += 1
     await refreshPointCatalog(options)
-    if (options.replay !== false) await replaySourceSnapshotsForNodes()
+    if (!activationIsCurrent()) return false
+    if (options.replay !== false) {
+      await replaySourceSnapshotsForNodes()
+      if (!activationIsCurrent()) return false
+    }
     return true
   } catch (error) {
+    if (!activationIsCurrent()) return false
+    pointCatalogScopeReady = false
+    activePointSourceScopeId.value = ''
     if (componentLifecycleActive) clearPointCatalogRuntimeValues()
     throw error
   }
 }
+
+async function activateCurrentDrawingPointCatalog(options = {}) {
+  try {
+    return await activatePointCatalogDrawing(workspaceId.value, projectId.value, options)
+  } catch (error) {
+    notify(`当前图纸数据源暂不可用，已按静态属性打开：${error?.message || '目录加载失败'}`)
+    return false
+  }
+}
 const unsubscribePointCatalog = pointCatalogGateway.subscribe(event => {
-  // 工作空间激活由调用方显式刷新，避免订阅与生命周期调用重复读取目录。
+  // 图纸数据源激活由调用方显式刷新，避免订阅与生命周期调用重复读取目录。
   if (event?.type === 'workspace-activated') return
   if (!event?.catalogChanged) return
   // 停用、删除或重新测试连接后，旧批次即使晚到也不能恢复已失效的点位值。
@@ -821,6 +869,7 @@ const previewSmallDocument = computed(() => (
   nodes.value.length <= PREVIEW_DOM_NODE_LIMIT
   && edges.value.length <= PREVIEW_DOM_EDGE_LIMIT
   && drawings.value.length <= PREVIEW_DOM_DRAWING_LIMIT
+  && !shouldUseAnimatedFlowDirectionLod(nodes.value)
 ))
 const previewViewportCanvasPlanned = computed(() => (
   showPreview.value
@@ -1014,6 +1063,7 @@ function invalidateRuntimeDataReplays() {
 }
 
 async function replaySourceSnapshotsForNodes(source = nodes.value, { force = false } = {}) {
+  if (!pointCatalogScopeReady) return false
   const sourceIds = new Set()
   for (const node of source) {
     for (const sourceId of bindingSourceIds(node)) sourceIds.add(sourceId)
@@ -1293,6 +1343,15 @@ const selectedNodeInteractionBounds = computed(() => largeSelectionPreviewBounds
 const selectedDrawing = computed(() => drawingIndex.value.get(selectedDrawingId.value) || null)
 const selectedEntitiesContainLocked = computed(() => selectedNodesContainLocked.value || Boolean(selectedDrawing.value?.locked))
 const selectedEntity = computed(() => selected.value || selectedDrawing.value)
+const propertyInspectionIdentity = computed(() => {
+  const documentIdentity = String(projectId.value || '')
+  if (paperSelected.value) return `${documentIdentity}:paper`
+  if (selectedDrawingId.value) return `${documentIdentity}:drawing:${selectedDrawingId.value}`
+  if (selectedNodeIds.value.length) {
+    return `${documentIdentity}:nodes:${selectedNodeIds.value.join(',')}:primary:${selectedId.value || ''}`
+  }
+  return `${documentIdentity}:empty`
+})
 const activeTableDataNode = computed(() => {
   const node = nodeIndex.value.get(tableDataEditor.value.nodeId)
   return node?.type === 'table' && !node.locked ? node : null
@@ -1336,17 +1395,7 @@ const activeTableMergeLookup = computed(() => {
 const activeTableCellDetail = computed(() => {
   const indexedNode = nodeIndex.value.get(tableCellViewer.value.nodeId)
   const node = indexedNode?.type === 'table' ? indexedNode : null
-  const row = Number(tableCellViewer.value.row)
-  const column = Number(tableCellViewer.value.column)
-  if (!node || row < 0 || column < 0 || !Array.isArray(node.tableCells?.[row])) return null
-  const merge = (node.tableMerges || []).find(item => item.row === row && item.column === column)
-  const rowPosition = merge?.rowSpan > 1 ? `第 ${row + 1}-${row + merge.rowSpan} 行` : `第 ${row + 1} 行`
-  const columnPosition = merge?.columnSpan > 1 ? `第 ${column + 1}-${column + merge.columnSpan} 列` : `第 ${column + 1} 列`
-  return {
-    title: node.tableHeaders?.[column] || `第 ${column + 1} 列`,
-    position: `${rowPosition} · ${columnPosition}`,
-    text: String(node.tableCells[row][column] ?? '')
-  }
+  return resolveTableCellViewDetail(node, tableCellViewer.value)
 })
 const hasAutomaticTime = computed(() => {
   for (const node of timeNodeIndex.value.values()) {
@@ -1458,15 +1507,37 @@ function formatCanvasZoom(value) {
 }
 const selectedCategory = computed(() => selected.value ? typeCategory.get(selected.value.type) || (selected.value.type === 'pencil' ? '基本形状' : '通用组件') : '')
 const BUILT_IN_ANIMATION_OPTIONS = Object.freeze({
+  flowDirection: Object.freeze([{ value: 'flow', label: '流动' }, { value: 'none', label: '无' }]),
   flowPipe: Object.freeze([{ value: 'flow', label: '流动' }, { value: 'none', label: '无' }]),
   rotatingFan: Object.freeze([{ value: 'flow', label: '旋转' }, { value: 'none', label: '无' }]),
   signalLight: Object.freeze([{ value: 'blink', label: '颜色切换' }, { value: 'none', label: '无' }]),
   waterTank: Object.freeze([{ value: 'flow', label: '水面流动' }, { value: 'none', label: '无' }]),
-  heartbeat: Object.freeze([{ value: 'pulse', label: '心跳' }, { value: 'none', label: '无' }]),
+  heartbeat: Object.freeze([{ value: 'pulse', label: '告警脉冲' }, { value: 'none', label: '无' }]),
   particles: Object.freeze([{ value: 'flow', label: '粒子流动' }, { value: 'none', label: '无' }])
 })
 function builtInAnimationOptions(node) {
   return BUILT_IN_ANIMATION_OPTIONS[node?.type] || BUILT_IN_ANIMATION_OPTIONS.flowPipe
+}
+const INTERACTION_ANIMATION_OPTIONS = Object.freeze({
+  none: Object.freeze({ value: 'none', label: '无' }),
+  pulse: Object.freeze({ value: 'pulse', label: '呼吸' }),
+  float: Object.freeze({ value: 'float', label: '浮动' }),
+  flow: Object.freeze({ value: 'flow', label: '数据流动' }),
+  blink: Object.freeze({ value: 'blink', label: '状态闪烁' })
+})
+const INTERACTION_ANIMATION_BASE_VALUES = Object.freeze(['none', 'pulse', 'float'])
+const INTERACTION_ANIMATION_VALUES_BY_TYPE = Object.freeze({
+  chart: Object.freeze([...INTERACTION_ANIMATION_BASE_VALUES, 'flow']),
+  gauge: Object.freeze([...INTERACTION_ANIMATION_BASE_VALUES, 'flow']),
+  server: Object.freeze([...INTERACTION_ANIMATION_BASE_VALUES, 'blink'])
+})
+function interactionAnimationOptions(node) {
+  const values = INTERACTION_ANIMATION_VALUES_BY_TYPE[node?.type] || INTERACTION_ANIMATION_BASE_VALUES
+  return values.map(value => INTERACTION_ANIMATION_OPTIONS[value])
+}
+function supportsInteractionAnimation(node) {
+  if (!node || node.type === 'pencil' || formTypeIds.has(node.type)) return false
+  return !BUILT_IN_ANIMATION_OPTIONS[node.type] && !String(node.type || '').startsWith('custom')
 }
 function normalizeBuiltInAnimationDuration(node = selected.value) {
   if (!node || node.locked) return
@@ -1487,6 +1558,22 @@ function refreshBuiltInAnimation(node = selected.value) {
     editorLodDetailCanvas.value?.requestRuntimeRender?.(request)
   }
   if (showMiniMap.value) miniMapPreview.value?.requestRuntimeRender?.(request)
+}
+function setInteractionAnimation(node, value) {
+  if (!node || node.locked || !supportsInteractionAnimation(node)) return
+  const options = interactionAnimationOptions(node)
+  const next = options.some(option => option.value === value) ? value : 'none'
+  if (node.animation === next && node.animationPaused !== true) return
+  node.animation = next
+  node.animationPaused = false
+  // 大图纸会把组件交给 Canvas 绘制，属性修改后需主动刷新其缓存画面。
+  refreshBuiltInAnimation(node)
+}
+function setFlowDirectionAnimationEnabled(node, enabled) {
+  if (!node || node.type !== 'flowDirection' || node.locked) return
+  node.animation = enabled ? 'flow' : 'none'
+  if (enabled) node.animationPaused = false
+  refreshBuiltInAnimation(node)
 }
 function normalizeWaterTankProgress(node = selected.value) {
   if (!node || node.type !== 'waterTank' || node.locked) return
@@ -2082,10 +2169,11 @@ const visibleNodes = computed(() => {
 })
 // 低倍率或单屏节点过密时使用单个 Canvas，避免一次创建数百至数千个 NodeVisual。
 const editorDenseLodActive = computed(() => {
-  if (nodes.value.length <= EDITOR_DOM_NODE_LIMIT) return false
+  if (nodes.value.length < EDITOR_LOD_ANIMATED_FLOW_DIRECTION_THRESHOLD) return false
   void nodeSpatialRevision.value
   const bounds = transientCanvasRenderBounds.value || viewportWorldBounds(viewport.value, zoom.value, LARGE_DOCUMENT_OVERSCAN)
-  return nodeSpatialIndex.query(bounds, { sort: false, limit: EDITOR_DOM_NODE_LIMIT + 1 }).length > EDITOR_DOM_NODE_LIMIT
+  const visible = nodeSpatialIndex.query(bounds, { sort: false, limit: EDITOR_DOM_NODE_LIMIT + 1 })
+  return visible.length > EDITOR_DOM_NODE_LIMIT || shouldUseAnimatedFlowDirectionLod(visible)
 })
 const editorFullLodActive = computed(() => shouldUseEditorLod(nodes.value.length, zoom.value) || editorDenseLodActive.value)
 const editorDenseEdgeLodActive = computed(() => {
@@ -2959,6 +3047,7 @@ const toolHint = computed(() => ({
   select: '拖动空白区域框选，Ctrl 或 Shift 多点选，Alt 或中键拖动画布，滚轮缩放',
   pencil: '按住并拖动绘制自由曲线',
   polyline: '单击确定终点并生成等分线段，Esc 取消',
+  flowDirection: '单击确定终点并生成流向路径，Esc 取消',
   map: '鹰眼地图已开启', line: '依次点击两个组件创建连线'
 }[activeTool.value]))
 
@@ -3442,7 +3531,7 @@ function endPolylineStartPointDrag(e) {
   endEditorInteraction(POLYLINE_POINT_INTERACTION)
 }
 function startPolylineStartPointDrag(e) {
-  if ((e.button ?? 0) !== 0 || activeTool.value !== 'polyline' || !polylineDraft.value?.points?.length) return
+  if ((e.button ?? 0) !== 0 || !isPolylineNodeType(activeTool.value) || !polylineDraft.value?.points?.length) return
   e.preventDefault()
   e.stopPropagation()
   endPolylineStartPointDrag()
@@ -3456,12 +3545,12 @@ function startPolylineStartPointDrag(e) {
   window.addEventListener('blur', endPolylineStartPointDrag)
 }
 const selectedPolylinePointPaths = computed(() => (
-  selected.value?.type === 'polyline'
+  isPolylineNodeType(selected.value?.type)
     ? polylinePointHandlePaths(selected.value)
     : { all: '', endpoints: '' }
 ))
 function startPolylinePointLayerDrag(e, node) {
-  if ((e.button ?? 0) !== 0 || node?.type !== 'polyline') return
+  if ((e.button ?? 0) !== 0 || !isPolylineNodeType(node?.type)) return
   const localPoint = worldPointToPolylineLocal(node, pointFromEvent(e, false))
   const pointIndex = nearestPolylinePointIndex(node, localPoint, 12 / Math.max(.0001, zoom.value))
   if (pointIndex >= 0) startPolylinePointDrag(e, node, pointIndex)
@@ -3471,7 +3560,7 @@ function startPolylinePointDrag(e, node, pointIndex) {
     (e.button ?? 0) !== 0
     || activeTool.value !== 'select'
     || selectedNodeCount.value !== 1
-    || node.type !== 'polyline' || node.locked
+    || !isPolylineNodeType(node.type) || node.locked
     || operation.value
   ) return
   const points = polylineNormalizedPointsToLocal(node)
@@ -3500,7 +3589,7 @@ function polylineSegmentCount(node) {
   return clampPolylineSegmentCount((Array.isArray(node?.polylinePoints) ? node.polylinePoints.length : 0) - 1, 1)
 }
 function setPolylineSegmentCount(node, value) {
-  if (node?.type !== 'polyline' || node.locked) return
+  if (!isPolylineNodeType(node?.type) || node.locked) return
   const nextCount = clampPolylineSegmentCount(value)
   if (nextCount === polylineSegmentCount(node)) return
   const geometry = resamplePolylineNodeGeometry(node, nextCount)
@@ -3510,7 +3599,7 @@ function setPolylineSegmentCount(node, value) {
   markPreviewCanvasDocumentDirty()
 }
 function addPolylinePoint(e) {
-  if ((e.button ?? 0) !== 0 || activeTool.value !== 'polyline' || operation.value) return false
+  if ((e.button ?? 0) !== 0 || !isPolylineNodeType(activeTool.value) || operation.value) return false
   e.preventDefault()
   lastTablePointerDown = null
   paperSelected.value = false
@@ -3523,15 +3612,17 @@ function addPolylinePoint(e) {
     }
     clearNodeSelection()
     const point = polylinePointFromEvent(e)
+    const flowDirection = activeTool.value === 'flowDirection'
     polylineDraft.value = {
+      type: activeTool.value,
       points: [point],
       hover: point,
-      color: lineColor.value,
-      width: lineWidth.value,
-      dash: lineDash.value,
-      style: lineDash.value ? 'dashed' : 'solid',
+      color: flowDirection ? '#16b89a' : lineColor.value,
+      width: flowDirection ? 4 : lineWidth.value,
+      dash: flowDirection || lineDash.value,
+      style: flowDirection || lineDash.value ? 'dashed' : 'solid',
       startMarker: 'none',
-      endMarker: 'none',
+      endMarker: flowDirection ? 'arrow' : 'none',
       lineCap: 'round',
       lineJoin: 'round'
     }
@@ -3545,7 +3636,7 @@ function addPolylinePoint(e) {
   return finishPolylineDrawing(e)
 }
 function finishPolylineDrawing(e) {
-  if (activeTool.value !== 'polyline' || !polylineDraft.value) return false
+  if (!isPolylineNodeType(activeTool.value) || !polylineDraft.value) return false
   e?.preventDefault?.()
   e?.stopPropagation?.()
   const draft = polylineDraft.value
@@ -3566,13 +3657,13 @@ function finishPolylineDrawing(e) {
     ...baseNodeOptions(),
     id: createEntityId('node'),
     layer: reserveEntityLayers(),
-    type: 'polyline',
+    type: draft.type,
     x: frame.x,
     y: frame.y,
     w: frame.w,
     h: frame.h,
     rotate: 0,
-    text: '线段',
+    text: draft.type === 'flowDirection' ? '流向' : '线段',
     fill: '#ffffff',
     stroke: draft.color,
     color: draft.color,
@@ -3588,7 +3679,14 @@ function finishPolylineDrawing(e) {
     polylineStartMarker: draft.startMarker,
     polylineEndMarker: draft.endMarker,
     polylineLineCap: draft.lineCap,
-    polylineLineJoin: draft.lineJoin
+    polylineLineJoin: draft.lineJoin,
+    flowArrowVisible: draft.type === 'flowDirection',
+    animation: draft.type === 'flowDirection' ? 'flow' : 'none',
+    animationDuration: 1.5,
+    animationDirection: 'normal',
+    animationPaused: false,
+    borderDashLength: 8,
+    borderDashGap: 6
   })
   recordEntityInsertion({ nodes: [node], edges: [], drawings: [] })
   const [insertedNode] = appendNodes(node)
@@ -3601,7 +3699,7 @@ function cancelPolylineDrawing(showNotice = false) {
   endPolylineStartPointDrag()
   if (!polylineDraft.value) return false
   polylineDraft.value = null
-  if (activeTool.value === 'polyline') activeTool.value = 'select'
+  if (isPolylineNodeType(activeTool.value)) activeTool.value = 'select'
   if (showNotice) notify('已取消当前线段')
   return true
 }
@@ -3619,7 +3717,7 @@ function removeLastPolylinePoint() {
 }
 function handleCanvasPointerMove(e) {
   trackCanvasZoomPointer(e)
-  if (activeTool.value === 'polyline' && polylineDraft.value && !polylineStartPointDrag && !operation.value) polylineDraft.value.hover = polylinePointFromEvent(e)
+  if (isPolylineNodeType(activeTool.value) && polylineDraft.value && !polylineStartPointDrag && !operation.value) polylineDraft.value.hover = polylinePointFromEvent(e)
 }
 function handleCanvasPointerLeave() {
   clearCanvasZoomGesture()
@@ -3745,6 +3843,8 @@ function addNode(type, x = 350, y = 220) {
   const id = createEntityId('node')
   let n = { ...baseNodeOptions(), id, layer: reserveEntityLayers(), type, x, y, w: spec[1], h: spec[2], text: spec[0], fill: '#ffffff', stroke: '#16b89a', color: '#28323c', visualPrimaryColor: builtInVisualPrimaryColor(type), radius: type === 'circle' ? 50 : 6, animation: animationDefaults[type] || 'none', dataKey: animationDefaults[type] ? `demo.${type}.${id}` : '', ...(formNodeDefaults[type] || {}) }
   if (type === 'lineShape') { n.fill = '#16b89a'; n.stroke = '#485563'; n.borderWidth = 2 }
+  if (type === 'flowDirection') n.polylineColor = builtInVisualPrimaryColor(type)
+  if (type === 'code') { n.fill = '#25323b'; n.color = '#d8f5ee' }
   if (type === 'table') n = normalizeTableModel(n)
   if (type === 'select') n.selectOptions = normalizeSelectOptions(n)
   Object.assign(n, normalizeNodeGeometry(n, stageWidth.value, stageHeight.value))
@@ -4002,7 +4102,16 @@ function splitSelectedTableCells() {
 }
 function openTableCellViewer(node, cell) {
   if (!node || node.type !== 'table' || node.tableContentDisplay === 'wrap' || !cell || cell.row < 0 || cell.column < 0) return
-  tableCellViewer.value = { show: true, nodeId: node.id, row: cell.row, column: cell.column }
+  tableCellViewer.value = {
+    show: true,
+    nodeId: node.id,
+    row: cell.row,
+    column: cell.column,
+    rowSpan: cell.rowSpan,
+    columnSpan: cell.columnSpan,
+    title: cell.title,
+    text: cell.text
+  }
 }
 function closeTableCellViewer() {
   tableCellViewer.value = { show: false, nodeId: null, row: -1, column: -1 }
@@ -4163,8 +4272,8 @@ function pencilMemoKey(node) {
   return JSON.stringify([node.pencilPoints, node.pencilColor, node.pencilWidth, node.pencilDash, node.pencilSmooth, node.pencilClosed, node.pencilLineCap, node.pencilLineJoin])
 }
 function polylineMemoKey(node) {
-  if (node.type !== 'polyline') return ''
-  return JSON.stringify([node.polylinePoints, node.polylineColor, node.polylineWidth, node.polylineArrowSize, node.polylineStyle, node.polylineOpacity, node.polylineDash, node.polylineStartMarker, node.polylineEndMarker, node.polylineLineCap, node.polylineLineJoin, node.dash, node.width])
+  if (!isPolylineNodeType(node.type)) return ''
+  return JSON.stringify([node.polylinePoints, node.polylineColor, node.polylineWidth, node.polylineArrowSize, node.polylineStyle, node.polylineOpacity, node.polylineDash, node.polylineStartMarker, node.polylineEndMarker, node.polylineLineCap, node.polylineLineJoin, node.flowArrowVisible, node.dash, node.width])
 }
 function dataBindingsMemoKey(node) {
   return JSON.stringify((node.dataBindings || []).map(binding => [
@@ -4928,13 +5037,13 @@ function configureLibraryDrag(event, format, value, previewKind = 'component') {
 function dragStartItem(event, type) { configureLibraryDrag(event, 'shape', type, type) }
 function dragStartCustomComponent(event, id) { configureLibraryDrag(event, 'application/x-tc2d-custom-component', id) }
 function addCatalogItem(item) {
-  if (item.type !== 'polyline') addNode(item.type)
+  if (!isPolylineNodeType(item.type)) addNode(item.type)
 }
 function handleCatalogItemDoubleClick(item) {
-  if (item.type !== 'polyline') addCatalogItem(item)
+  if (!isPolylineNodeType(item.type)) addCatalogItem(item)
 }
 function catalogItemTitle(item) {
-  return item.type === 'polyline' ? '拖到画布确定线段起始点' : `拖动或双击添加${item.name}`
+  return isPolylineNodeType(item.type) ? `拖到画布确定${item.name}起始点` : `拖动或双击添加${item.name}`
 }
 const signalColorDefaults = ['#21c58e', '#ef5350', '#ffc440', '#168eea', '#9c5de5', '#ffffff', '#26323d', '#ff7a45']
 function setSignalColorCount(value) {
@@ -4955,9 +5064,9 @@ function dropItem(e) {
     return
   }
   const type = e.dataTransfer.getData('shape')
-  if (type === 'polyline') {
+  if (isPolylineNodeType(type)) {
     cancelPolylineDrawing()
-    setTool('polyline')
+    setTool(type)
     addPolylinePoint(e)
     return
   }
@@ -4972,7 +5081,7 @@ function setTool(id) {
   paperSelected.value = false
   editingFormId.value = null
   if (id === 'map') { showMiniMap.value = !showMiniMap.value; notify(showMiniMap.value ? '鹰眼地图已打开' : '鹰眼地图已关闭'); return }
-  if (id !== 'polyline') cancelPolylineDrawing()
+  if (!isPolylineNodeType(id)) cancelPolylineDrawing()
   activeTool.value = id; setConnectionAnchor(null)
 }
 
@@ -4984,7 +5093,7 @@ function closeDataSourceManager() {
 }
 function handleLockedBadgePointerDown(e, node) {
   if (activeTool.value === 'pencil') startPencilDrawing(e)
-  else if (activeTool.value === 'polyline') addPolylinePoint(e)
+  else if (isPolylineNodeType(activeTool.value)) addPolylinePoint(e)
   else selectSingleNode(node)
 }
 const TABLE_DOUBLE_POINTER_DELAY = 650
@@ -4992,7 +5101,7 @@ const TABLE_DOUBLE_POINTER_DISTANCE = 12
 const NODE_DRAG_START_DISTANCE = 4
 let lastTablePointerDown = null
 function canStartNodeTextEdit(node) {
-  return activeTool.value === 'select' && !node.locked && !['lineShape', 'pencil', 'polyline'].includes(node.type)
+  return activeTool.value === 'select' && !node.locked && !['lineShape', 'pencil'].includes(node.type) && !isPolylineNodeType(node.type)
 }
 function consumeTableDoublePointerDown(e, node) {
   if (node.type !== 'table' || !canStartNodeTextEdit(node) || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) {
@@ -5170,7 +5279,7 @@ async function startTextEdit(e, node) {
   if (editor) editor.setSelectionRange(0, editor.value.length)
 }
 function handleNodeDoubleClick(e, node) {
-  if (activeTool.value === 'polyline') {
+  if (isPolylineNodeType(activeTool.value)) {
     finishPolylineDrawing(e)
     return
   }
@@ -6282,7 +6391,7 @@ function applyPointerMove() {
   }
   if (op.type === 'polylinePoint') {
     const node = nodeIndex.value.get(op.id)
-    if (!node || node.type !== 'polyline' || node.locked || !op.points[op.pointIndex]) return
+    if (!node || !isPolylineNodeType(node.type) || node.locked || !op.points[op.pointIndex]) return
     const point = worldPointToPolylineLocal(op.frame, polylinePointFromEvent(e, false))
     const original = op.points[op.pointIndex]
     if (Math.hypot(point.x - original.x, point.y - original.y) <= 1e-8) return
@@ -6566,7 +6675,7 @@ function openCanvasContextMenu(e) {
 async function openContextMenu(e, node = null, drawing = null) {
   e.preventDefault()
   e.stopPropagation()
-  if (activeTool.value === 'polyline' && cancelPolylineDrawing(true)) return
+  if (isPolylineNodeType(activeTool.value) && cancelPolylineDrawing(true)) return
   paperSelected.value = false
   if (node && !isNodeSelected(node.id)) selectSingleNode(node)
   if (drawing) { clearNodeSelection(); selectedDrawingId.value = drawing.id }
@@ -7670,6 +7779,11 @@ watch([rightTab, rightOpen], async ([tab, open]) => {
   updateStructureViewport()
 })
 
+watch(propertyInspectionIdentity, async () => {
+  await nextTick()
+  if (propertiesPanel.value) propertiesPanel.value.scrollTop = 0
+}, { flush: 'post' })
+
 function rejectLockedSelection(action) {
   if (!selectedEntitiesContainLocked.value) return false
   notify(`对象已锁定，请先解锁后${action}`)
@@ -7970,6 +8084,9 @@ function resetDocumentSession() {
   invalidateProjectStorageChanges()
   invalidateProjectCacheTasks()
   invalidateRuntimeDataReplays()
+  pointCatalogActivationGeneration += 1
+  pointCatalogScopeReady = false
+  activePointSourceScopeId.value = ''
   editorLodDocumentResetPending = true
   clearEditorProgressiveDomMount()
   cancelPendingBundleWork('document-reset')
@@ -8052,7 +8169,6 @@ async function applyProject(data, isCurrent = () => true) {
   }
   restartEditorProgressiveDomMount()
   scheduleBundlePrewarm()
-  void refreshPointCatalog()
   return true
 }
 function drawingFileName(value) {
@@ -8127,6 +8243,8 @@ async function restorePaperSession(session, isCurrent = () => true) {
   history.value = Array.isArray(session.history) ? session.history : []
   historyBytes = history.value.reduce((total, entry) => total + historyEntryBytes(entry), 0)
   future.value = Array.isArray(session.future) ? session.future : []
+  await activateCurrentDrawingPointCatalog()
+  if (!isCurrent()) throw new ProjectRuntimePreparationCancelledError('superseded')
   return true
 }
 async function activatePaperSession(sessionId) {
@@ -8160,8 +8278,7 @@ function nextBlankPaperTitle() {
   while (titles.has(index === 1 ? '未命名图纸' : `未命名图纸 ${index}`)) index += 1
   return index === 1 ? '未命名图纸' : `未命名图纸 ${index}`
 }
-function createBlankPaperSession() {
-  if (fileOperationPending.value) return null
+async function createBlankPaperSession() {
   captureActivePaperSession()
   const title = nextBlankPaperTitle()
   resetToBlankProject()
@@ -8169,6 +8286,8 @@ function createBlankPaperSession() {
   const session = createPaperSession()
   paperSessions.value = [...paperSessions.value, session]
   activePaperSessionId.value = session.id
+  // 新图纸创建独立目录，不继承旧工作空间的共享连接。
+  await activateCurrentDrawingPointCatalog({ inheritLegacyWorkspace: false })
   selectPaper()
   scheduleWorkspaceSessionPersistence(250)
   return session
@@ -8195,6 +8314,7 @@ async function removePaperSession(sessionId) {
   const replacement = createPaperSession()
   paperSessions.value = [replacement]
   activePaperSessionId.value = replacement.id
+  await activateCurrentDrawingPointCatalog({ inheritLegacyWorkspace: false })
   selectPaper()
   scheduleWorkspaceSessionPersistence(250)
 }
@@ -8521,6 +8641,7 @@ async function openProjectDrawing(entry) {
       paperSessions.value = [...paperSessions.value, session]
     }
     activePaperSessionId.value = session.id
+    await activateCurrentDrawingPointCatalog()
     cacheProjectSnapshot(data, text)
     drawingBrowserOpen.value = false
     selectPaper()
@@ -8618,6 +8739,7 @@ async function applyExternalDrawingFile(file, handle = null) {
   const session = createPaperSession(projectData(), currentDrawingFile.value, handle)
   paperSessions.value = [...paperSessions.value, session]
   activePaperSessionId.value = session.id
+  await activateCurrentDrawingPointCatalog()
   cacheProjectSnapshot(data, serialized)
   selectPaper()
   scheduleWorkspaceSessionPersistence(250)
@@ -8831,6 +8953,7 @@ async function restoreStoredWorkspaceProject() {
     if (!componentLifecycleActive) return false
     await applyProject(data)
     replacePaperSessionsWithCurrent()
+    await activateCurrentDrawingPointCatalog()
     return true
   } catch (error) {
     if (projectParsingWasDisposed(error)) return false
@@ -8943,6 +9066,7 @@ async function switchWorkspace() {
   if (fileOperationPending.value) return notify('正在处理图纸文件，请稍候')
   if (workspaceSwitchPending.value) return
   const nextWorkspace = normalizeWorkspaceId(workspaceDraft.value, DEFAULT_WORKSPACE_ID)
+  const previousWorkspace = workspaceId.value
   workspaceDraft.value = nextWorkspace
   if (nextWorkspace === workspaceId.value) return notify('当前已在该工作空间')
   workspaceSwitchPending.value = true
@@ -8951,8 +9075,6 @@ async function switchWorkspace() {
     await saveLocal({ silent: true })
     if (!componentLifecycleActive) return
     const sessionsSaved = await storeWorkspacePaperSessions()
-    if (!componentLifecycleActive) return
-    await activatePointCatalogWorkspace(nextWorkspace, { replay: false })
     if (!componentLifecycleActive) return
     workspaceId.value = nextWorkspace
     rememberWorkspace()
@@ -8966,6 +9088,7 @@ async function switchWorkspace() {
       if (!componentLifecycleActive) return
       resetToBlankProject()
       replacePaperSessionsWithCurrent()
+      await activateCurrentDrawingPointCatalog({ inheritLegacyWorkspace: false })
       notify(workspaceSwitchMessage(workspaceId.value, sessionsSaved, true))
       return
     }
@@ -8973,9 +9096,11 @@ async function switchWorkspace() {
     notify(workspaceSwitchMessage(workspaceId.value, sessionsSaved))
   } catch (error) {
     if (!componentLifecycleActive) return
-    // 目标目录损坏时 gateway 已失败关闭到目标空间；恢复原目录，使未切换的静态图纸与数据上下文继续一致。
-    try { await activatePointCatalogWorkspace(workspaceId.value) } catch {}
-    if (componentLifecycleActive) notify(error?.message || '工作空间数据源加载失败，已保留当前图纸')
+    workspaceId.value = previousWorkspace
+    workspaceDraft.value = previousWorkspace
+    rememberWorkspace()
+    await restoreWorkspacePaperSessions()
+    if (componentLifecycleActive) notify(error?.message || '工作空间切换失败，已恢复原工作空间')
   } finally {
     if (componentLifecycleActive) workspaceSwitchPending.value = false
   }
@@ -9188,10 +9313,15 @@ function uploadNodeVideo(e) {
   })
   e.target.value = ''
 }
-function newFile() {
+async function newFile() {
   if (fileOperationPending.value) return notify('正在处理图纸文件，请稍候')
-  createBlankPaperSession()
-  notify(`已新建“${fileName.value}”`)
+  fileOperationPending.value = true
+  try {
+    const session = await createBlankPaperSession()
+    if (session) notify(`已新建“${fileName.value}”`)
+  } finally {
+    fileOperationPending.value = false
+  }
 }
 let clockTimer
 function handleWorkspaceNameKeydown(event) {
@@ -9294,7 +9424,7 @@ function keydown(e) {
     if (overlayBlocksEditorShortcut(e, typing, true)) e.preventDefault()
     return
   }
-  if (!typing && activeTool.value === 'polyline' && polylineDraft.value) {
+  if (!typing && isPolylineNodeType(activeTool.value) && polylineDraft.value) {
     if (e.key === 'Enter') {
       e.preventDefault()
       finishPolylineDrawing(e)
@@ -9346,26 +9476,21 @@ onMounted(async () => {
   componentLifecycleActive = true
   workspaceSwitchPending.value = true
   try {
-    try {
-      await activatePointCatalogWorkspace(workspaceId.value, { replay: false })
-    } catch (error) {
-      notify(`数据源暂不可用，图纸已按静态属性打开：${error?.message || '目录加载失败'}`)
-    }
-    if (!componentLifecycleActive) return
     let restored = await restoreWorkspacePaperSessions()
     if (!componentLifecycleActive) return
     if (!restored) {
       restored = await restoreStoredWorkspaceProject()
       if (!componentLifecycleActive) return
     }
-    if (!restored) ensurePaperSession()
+    if (!restored) {
+      ensurePaperSession()
+      // 首次进入空白图纸只建立独立的本地配置目录，不继承旧工作空间连接，也不会发起连接测试。
+      await activateCurrentDrawingPointCatalog({ inheritLegacyWorkspace: false })
+    }
   } finally {
     if (componentLifecycleActive) workspaceSwitchPending.value = false
   }
   if (!componentLifecycleActive) return
-  // 数据源可能先于图纸恢复完成；索引就绪后按需恢复源快照和旧点位值。
-  await replaySourceSnapshotsForNodes()
-  await refreshPointCatalog()
   window.addEventListener('keydown', keydown)
   window.addEventListener('pointerdown', closeContextMenu)
   window.addEventListener('pointerup', finishTableDataSelectionDrag)
@@ -9501,7 +9626,7 @@ onUnmounted(() => {
       <div v-if="leftTab === '组件'" class="library">
         <section v-for="g in filteredGroups" :key="g.name">
           <button class="section-title" @click="toggleGroup(g.name)"><ChevronDown v-if="groupIsOpen(g.name)" /><ChevronRight v-else />{{ g.name }}<small>{{ g.items.length }}</small></button>
-          <div v-show="groupIsOpen(g.name)" class="shape-grid"><button v-for="item in g.items" :key="item.type" :class="{ active: item.type === 'polyline' && activeTool === 'polyline', 'drawing-tool': item.type === 'polyline' }" draggable="true" :data-testid="item.type === 'polyline' ? 'polyline-library-item' : undefined" :aria-pressed="item.type === 'polyline' ? activeTool === 'polyline' : undefined" @dragstart="dragStartItem($event, item.type)" @dblclick="handleCatalogItemDoubleClick(item)" :title="catalogItemTitle(item)"><component :is="item.icon" /><span>{{ item.name }}</span></button></div>
+          <div v-show="groupIsOpen(g.name)" class="shape-grid"><button v-for="item in g.items" :key="item.type" :class="{ active: isPolylineNodeType(item.type) && activeTool === item.type, 'drawing-tool': isPolylineNodeType(item.type) }" draggable="true" :data-testid="isPolylineNodeType(item.type) ? `${item.type}-library-item` : undefined" :aria-pressed="isPolylineNodeType(item.type) ? activeTool === item.type : undefined" @dragstart="dragStartItem($event, item.type)" @dblclick="handleCatalogItemDoubleClick(item)" :title="catalogItemTitle(item)"><component :is="item.icon" /><span>{{ item.name }}</span></button></div>
         </section>
       </div>
       <div v-else-if="leftTab === '图纸'" class="paper-list">
@@ -9587,7 +9712,7 @@ onUnmounted(() => {
           </div>
 
           <div v-if="activeTool === 'select' && selected && selectedNodeCount === 1 && !selected.locked" class="single-node-transform-box node-shell selected selection-primary" :class="{ 'rotate-handle-below': rotateHandleBelow(selected), 'compact-resize-handles': Math.min(selected.w, selected.h) * zoom < 24 }" data-testid="single-node-transform-box" :style="{ left: selected.x + 'px', top: selected.y + 'px', width: selected.w + 'px', height: selected.h + 'px', transform: `rotate(${selected.rotate || 0}deg)`, '--node-counter-rotation': `${-(Number(selected.rotate) || 0)}deg` }">
-            <svg v-if="selected.type === 'polyline'" class="polyline-point-editor" :viewBox="`0 0 ${Math.max(.1, selected.w)} ${Math.max(.1, selected.h)}`" preserveAspectRatio="none" aria-label="线段节点编辑">
+            <svg v-if="isPolylineNodeType(selected.type)" class="polyline-point-editor" :viewBox="`0 0 ${Math.max(.1, selected.w)} ${Math.max(.1, selected.h)}`" preserveAspectRatio="none" :aria-label="selected.type === 'flowDirection' ? '流向节点编辑' : '线段节点编辑'">
               <path class="polyline-point-handle-layer" data-testid="polyline-point-handle-layer" :data-point-count="selected.polylinePoints.length" :d="selectedPolylinePointPaths.all" :stroke-width="24 / zoom" @pointerdown="startPolylinePointLayerDrag($event, selected)" />
               <path class="polyline-point-dot-outer" :d="selectedPolylinePointPaths.all" :stroke-width="12 / zoom" />
               <path class="polyline-point-dot-inner" :d="selectedPolylinePointPaths.all" :stroke-width="8 / zoom" />
@@ -9598,7 +9723,7 @@ onUnmounted(() => {
             <button class="rotate-handle" @pointerdown="startRotate($event, selected)" title="拖动旋转"><RotateCcw /></button>
           </div>
 
-          <div v-for="n in editorRenderedNodes" :key="n.id" :data-node-id="n.id" v-memo="[nodeRenderMemo(n),isNodeSelected(n.id),selectedId === n.id,selectedId === n.id && selectedNodeCount === 1,connectFrom === n.id,editingText?.id === n.id,editingFormId === n.id,editorProgressiveDomNodeHidden(n.id),editorLodSignalAnimationTimestamp(n)]" class="node-shell" :class="{ selected: isNodeSelected(n.id), 'selection-primary': selectedId === n.id, 'single-transform-source': selectedId === n.id && selectedNodeCount === 1 && !n.locked, 'multi-selected': selectedNodeCount > 1 && isNodeSelected(n.id), connecting: connectFrom === n.id, locked: n.locked, 'line-node': ['lineShape','polyline'].includes(n.type), 'form-interacting': editingFormId === n.id && !n.locked, 'progressive-dom-hidden': editorProgressiveDomNodeHidden(n.id) }" :style="{ left: n.x + 'px', top: n.y + 'px', width: n.w + 'px', height: n.h + 'px', zIndex: nodeLayerIndex.get(n.id), transform: `rotate(${n.rotate || 0}deg)` }" @pointerdown="nodePointerDown($event, n)" @dblclick="handleNodeDoubleClick($event, n)" @contextmenu="openContextMenu($event, n)">
+          <div v-for="n in editorRenderedNodes" :key="n.id" :data-node-id="n.id" v-memo="[nodeRenderMemo(n),isNodeSelected(n.id),selectedId === n.id,selectedId === n.id && selectedNodeCount === 1,connectFrom === n.id,editingText?.id === n.id,editingFormId === n.id,editorProgressiveDomNodeHidden(n.id),editorLodSignalAnimationTimestamp(n)]" class="node-shell" :class="{ selected: isNodeSelected(n.id), 'selection-primary': selectedId === n.id, 'single-transform-source': selectedId === n.id && selectedNodeCount === 1 && !n.locked, 'multi-selected': selectedNodeCount > 1 && isNodeSelected(n.id), connecting: connectFrom === n.id, locked: n.locked, 'line-node': n.type === 'lineShape' || isPolylineNodeType(n.type), 'form-interacting': editingFormId === n.id && !n.locked, 'progressive-dom-hidden': editorProgressiveDomNodeHidden(n.id) }" :style="{ left: n.x + 'px', top: n.y + 'px', width: n.w + 'px', height: n.h + 'px', zIndex: nodeLayerIndex.get(n.id), transform: `rotate(${n.rotate || 0}deg)` }" @pointerdown="nodePointerDown($event, n)" @dblclick="handleNodeDoubleClick($event, n)" @contextmenu="openContextMenu($event, n)">
             <i class="node-move-hit" data-testid="node-move-hit" aria-hidden="true"></i>
             <NodeVisual :key="`${n.id}:${n.dataKey}`" v-show="!editorLodGeometryHiddenNodeIds.has(n.id)" :node="n" :runtime-store="runtimeData" :time-context="timeRenderContext" :signal-animation-timestamp="editorLodSignalAnimationTimestamp(n)" :interactive="editingFormId === n.id && !n.locked" @form-change="handleFormChange(n, $event)" @table-cell-view="openTableCellViewer(n, $event)" @table-edit="openTableDataEditor(n)" />
             <input v-if="editingText?.id === n.id && !n.locked" ref="textEditor" v-model="n.text" data-testid="inline-text-editor" lang="zh-CN" inputmode="text" autocomplete="off" class="inline-text-editor" @pointerdown.stop @dblclick.stop @compositionstart="inlineTextComposing = true" @compositionend="inlineTextComposing = false" @keydown="handleInlineTextEditorKeydown" @blur="inlineTextComposing = false; finishTextEdit()" />
@@ -9623,7 +9748,7 @@ onUnmounted(() => {
       <button class="panel-toggle" @click="rightOpen = !rightOpen"><PanelRightClose /></button>
       <template v-if="rightOpen">
         <nav class="tabs right-tabs"><button v-for="t in ['属性', '通信', '布局', '结构']" :key="t" :class="{ on: rightTab === t }" @click="rightTab = t">{{ t }}</button></nav>
-        <div class="properties" v-if="rightTab === '属性'" @focusin.capture="beginSelectedFieldEdit" @focusout.capture="finishActiveFieldEdit" @input.capture="markDocumentInput" @change.capture="markDocumentInput">
+        <div ref="propertiesPanel" class="properties" v-show="rightTab === '属性'" @focusin.capture="beginSelectedFieldEdit" @focusout.capture="finishActiveFieldEdit" @input.capture="markDocumentInput" @change.capture="markDocumentInput">
           <template v-if="selected">
             <div class="prop-head"><div><b>{{ selectedNodeCount > 1 ? (selectedNodesAreSingleGroup ? '组合组件' : '多选组件') : (selected.type === 'text' ? '文本' : (selected.text || '图形')) }}</b><small>{{ selectedNodeCount > 1 ? `${selectedNodesAreSingleGroup ? '已组合' : '已选'} ${selectedNodeCount} 个组件` : `${selectedCategory} · ID ${selected.id}` }}</small></div><button @click="toggleLock" :title="selectedNodesAllLocked ? '解锁' : '锁定'"><Unlock v-if="selectedNodesAllLocked" /><Lock v-else /></button><button :disabled="selectedNodesContainLocked" @click="duplicate" title="复制"><Copy /></button><button class="danger" :disabled="selectedNodesContainLocked" @click="deleteSelected" title="删除"><Trash2 /></button></div>
             <div v-if="selectedNodesContainLocked" class="locked-property-state" data-testid="locked-property-state"><Lock /><div><b>组件已锁定</b><span>属性、内容和画布变换保持只读，请使用上方锁定按钮解锁。</span></div></div>
@@ -9645,31 +9770,35 @@ onUnmounted(() => {
               <div class="layer-actions"><button @click="bringFront">置顶</button><button @click="sendBack">置底</button><button @click="moveLayer(1)">上一个图层</button><button @click="moveLayer(-1)">下一个图层</button></div>
             </template>
             <template v-else>
-            <h3>{{ selected.type === 'lineShape' ? '线条尺寸' : selected.type === 'polyline' ? '线段尺寸' : '基础属性' }}</h3><div class="form-grid"><label>X<input type="number" v-model.number="selected.x" @change="normalizeSelectedNodeGeometry()" @blur="normalizeSelectedNodeGeometry()"></label><label>Y<input type="number" v-model.number="selected.y" @change="normalizeSelectedNodeGeometry()" @blur="normalizeSelectedNodeGeometry()"></label><label>{{ selected.type === 'lineShape' ? '宽度' : '宽' }}<input type="number" :min="nodeMinimumSize(selected).w" step="1" v-model.number="selected.w" @change="normalizeSelectedNodeGeometry()" @blur="normalizeSelectedNodeGeometry()"></label><label>{{ selected.type === 'lineShape' ? '高度' : '高' }}<input type="number" :min="nodeMinimumSize(selected).h" :step="selected.type === 'lineShape' ? 0.1 : 1" v-model.number="selected.h" @change="normalizeSelectedNodeGeometry()" @blur="normalizeSelectedNodeGeometry()"></label><label>旋转<input type="number" v-model.number="selected.rotate" @change="normalizeSelectedNodeGeometry()" @blur="normalizeSelectedNodeGeometry()"></label><label>层级<button @click="bringFront">置顶</button></label></div>
+            <h3>{{ selected.type === 'lineShape' ? '线条尺寸' : isPolylineNodeType(selected.type) ? (selected.type === 'flowDirection' ? '流向尺寸' : '线段尺寸') : '基础属性' }}</h3><div class="form-grid"><label>X<input type="number" v-model.number="selected.x" @change="normalizeSelectedNodeGeometry()" @blur="normalizeSelectedNodeGeometry()"></label><label>Y<input type="number" v-model.number="selected.y" @change="normalizeSelectedNodeGeometry()" @blur="normalizeSelectedNodeGeometry()"></label><label>{{ selected.type === 'lineShape' ? '宽度' : '宽' }}<input type="number" :min="nodeMinimumSize(selected).w" step="1" v-model.number="selected.w" @change="normalizeSelectedNodeGeometry()" @blur="normalizeSelectedNodeGeometry()"></label><label>{{ selected.type === 'lineShape' ? '高度' : '高' }}<input type="number" :min="nodeMinimumSize(selected).h" :step="selected.type === 'lineShape' ? 0.1 : 1" v-model.number="selected.h" @change="normalizeSelectedNodeGeometry()" @blur="normalizeSelectedNodeGeometry()"></label><label>旋转<input type="number" v-model.number="selected.rotate" @change="normalizeSelectedNodeGeometry()" @blur="normalizeSelectedNodeGeometry()"></label><label>层级<button @click="bringFront">置顶</button></label></div>
+            <template v-if="supportsInteractionAnimation(selected)">
+              <h3>交互动画</h3><label class="field">动画效果<select :value="selected.animation" data-testid="interaction-animation-select" @change="setInteractionAnimation(selected, $event.target.value)"><option v-for="option in interactionAnimationOptions(selected)" :key="option.value" :value="option.value">{{ option.label }}</option></select></label>
+            </template>
             <template v-if="selected.type === 'pencil'">
               <h3>线条编辑</h3><label class="field">线条颜色<input type="color" v-model="selected.pencilColor"></label><label class="field">线条宽度<input type="number" min="0.1" max="100" step="0.1" v-model.number="selected.pencilWidth"></label><label class="field">透明度<input type="range" min="0" max="1" step="0.05" v-model.number="selected.opacity"><span>{{ Math.round((selected.opacity ?? 1) * 100) }}%</span></label><label class="switch-row">虚线<input type="checkbox" v-model="selected.pencilDash"><i></i></label><label class="switch-row">平滑曲线<input type="checkbox" v-model="selected.pencilSmooth"><i></i></label><label class="switch-row">闭合并填充<input type="checkbox" v-model="selected.pencilClosed"><i></i></label><label class="field">端点<select v-model="selected.pencilLineCap"><option value="round">圆形</option><option value="butt">平直</option><option value="square">方形</option></select></label><label class="field">连接<select v-model="selected.pencilLineJoin"><option value="round">圆角</option><option value="bevel">斜角</option><option value="miter">尖角</option></select></label>
               <h3>组件操作</h3><p class="property-note">铅笔线稿是普通组件，可框选、旋转、缩放、锁定，并可与其他组件组合或添加到“我的”。</p>
             </template>
-            <template v-if="selected.type === 'polyline'">
+            <template v-if="isPolylineNodeType(selected.type)">
               <h3>线条样式</h3>
               <label class="field">线条颜色<input type="color" v-model="selected.polylineColor"></label>
               <label class="switch-row">线条完全透明<input type="checkbox" :checked="selected.polylineOpacity === 0" @change="selected.polylineOpacity = $event.target.checked ? 0 : 1"><i></i></label>
               <label class="field">线条不透明度<input type="range" min="0" max="1" step="0.05" v-model.number="selected.polylineOpacity"><span>{{ Math.round((selected.polylineOpacity ?? 1) * 100) }}%</span></label>
-              <label class="field">线条样式<select v-model="selected.polylineStyle" data-testid="polyline-style"><option value="solid">实线</option><option value="dashed">虚线</option><option value="dotted">点线</option></select></label>
-              <template v-if="selected.polylineStyle !== 'solid'"><label class="field">线段长度<input type="number" min="0.1" max="50" step="0.1" v-model.number="selected.borderDashLength"></label><label class="field">线段间隔<input type="number" min="0.1" max="50" step="0.1" v-model.number="selected.borderDashGap"></label></template>
+              <label v-if="selected.type === 'polyline'" class="field">线条样式<select v-model="selected.polylineStyle" data-testid="polyline-style"><option value="solid">实线</option><option value="dashed">虚线</option><option value="dotted">点线</option></select></label>
+              <template v-if="selected.type === 'flowDirection'"><label class="field">虚线长度<input type="number" min="0.1" max="50" step="0.1" v-model.number="selected.borderDashLength"></label><label class="field">虚线间隔<input type="number" min="0.1" max="50" step="0.1" v-model.number="selected.borderDashGap"></label></template>
+              <template v-else-if="selected.polylineStyle !== 'solid'"><label class="field">线段长度<input type="number" min="0.1" max="50" step="0.1" v-model.number="selected.borderDashLength"></label><label class="field">线段间隔<input type="number" min="0.1" max="50" step="0.1" v-model.number="selected.borderDashGap"></label></template>
               <label class="switch-row">显示轮廓<input type="checkbox" v-model="selected.borderVisible"><i></i></label>
               <label class="field">轮廓颜色<input type="color" v-model="selected.stroke"></label>
               <label class="field">轮廓宽度<input type="number" min="0" max="20" step="0.1" v-model.number="selected.borderWidth"></label>
-              <h3>线段属性</h3>
+              <h3 v-if="selected.type === 'flowDirection'">流向属性</h3><h3 v-else>线段属性</h3>
               <label class="field">分段数<input type="number" min="1" max="9999" step="1" :value="polylineSegmentCount(selected)" data-testid="polyline-segment-count" @change="setPolylineSegmentCount(selected, $event.target.value)"></label>
               <label class="field">线条宽度<input type="number" min="0.1" max="100" step="0.1" v-model.number="selected.polylineWidth"></label>
               <label class="field">箭头大小<input type="number" min="1" max="100" step="1" v-model.number="selected.polylineArrowSize" data-testid="polyline-arrow-size"></label>
-              <label class="field">起点样式<select v-model="selected.polylineStartMarker"><option value="none">无</option><option value="arrow">箭头</option></select></label>
-              <label class="field">终点样式<select v-model="selected.polylineEndMarker"><option value="none">无</option><option value="arrow">箭头</option></select></label>
+              <template v-if="selected.type === 'flowDirection'"><label class="field">流动方向<select v-model="selected.animationDirection" @change="refreshBuiltInAnimation(selected)"><option value="normal">从起点到终点</option><option value="reverse">从终点到起点</option></select></label><label class="switch-row">显示方向箭头<input type="checkbox" v-model="selected.flowArrowVisible"><i></i></label><label class="switch-row">启用流动<input type="checkbox" :checked="selected.animation === 'flow'" @change="setFlowDirectionAnimationEnabled(selected, $event.target.checked)"><i></i></label><label class="field">流动周期（秒）<input type="number" :min="ANIMATION_DURATION_MIN_SECONDS" :max="BUILT_IN_ANIMATION_DURATION_MAX_SECONDS" step="0.1" v-model.number="selected.animationDuration" @input="refreshBuiltInAnimation(selected)" @change="normalizeBuiltInAnimationDuration(selected)"></label><label class="switch-row">暂停流动<input type="checkbox" v-model="selected.animationPaused" @change="refreshBuiltInAnimation(selected)"><i></i></label></template>
+              <template v-else><label class="field">起点样式<select v-model="selected.polylineStartMarker"><option value="none">无</option><option value="arrow">箭头</option></select></label><label class="field">终点样式<select v-model="selected.polylineEndMarker"><option value="none">无</option><option value="arrow">箭头</option></select></label></template>
               <label class="field">端点<select v-model="selected.polylineLineCap"><option value="round">圆形</option><option value="butt">平直</option><option value="square">方形</option></select></label>
               <label class="field">连接<select v-model="selected.polylineLineJoin"><option value="round">圆角</option><option value="bevel">斜角</option><option value="miter">尖角</option></select></label>
             </template>
-            <template v-if="!['lineShape','pencil','polyline','flowPipe','rotatingFan','signalLight','waterTank','heartbeat','particles'].includes(selected.type) && !['table','input','select','time','formProgress'].includes(selected.type)">
+            <template v-if="!['lineShape','pencil','polyline','flowDirection','flowPipe','rotatingFan','signalLight','waterTank','heartbeat','particles'].includes(selected.type) && !['table','input','select','time','formProgress'].includes(selected.type)">
               <h3>文字编辑</h3>
               <label class="field">内容<input v-model="selected.text" data-testid="selected-text-content" lang="zh-CN" inputmode="text" autocomplete="off"></label>
               <div v-if="selected.type === 'text'" class="field"><span>文字排布</span><div class="text-layout-control" role="radiogroup" aria-label="文字排布" data-testid="text-layout-control"><label><input type="radio" v-model="selected.textLayout" value="horizontal" aria-label="横向排布"><span>横向</span></label><label><input type="radio" v-model="selected.textLayout" value="vertical" aria-label="竖向排布"><span>竖向</span></label></div></div>
@@ -9697,7 +9826,7 @@ onUnmounted(() => {
               <label class="field hint-field">次数说明<span>0 表示无限循环</span></label>
               <label class="switch-row">开启声音<input type="checkbox" :checked="!selected.videoMuted" @change="selected.videoMuted = !$event.target.checked"><i></i></label>
             </template>
-            <h3 v-if="!['pencil','polyline'].includes(selected.type)">{{ selected.type === 'table' ? '表格样式' : selected.type === 'lineShape' ? '线条样式' : '外观与样式' }}</h3>
+            <h3 v-if="!['pencil','polyline','flowDirection'].includes(selected.type)">{{ selected.type === 'table' ? '表格样式' : selected.type === 'lineShape' ? '线条样式' : '外观与样式' }}</h3>
             <template v-if="selected.type === 'lineShape'">
               <label class="field">线条颜色<input type="color" v-model="selected.fill"></label>
               <label class="switch-row">线条完全透明<input type="checkbox" :checked="selected.backgroundOpacity === 0" @change="selected.backgroundOpacity = $event.target.checked ? 0 : 1"><i></i></label>
@@ -9708,7 +9837,7 @@ onUnmounted(() => {
               <label class="field">轮廓颜色<input type="color" v-model="selected.stroke"></label>
               <label class="field">轮廓宽度<input type="number" min="0" max="20" step="0.1" v-model.number="selected.borderWidth"></label>
             </template>
-            <template v-else-if="!['table','pencil','polyline'].includes(selected.type)">
+            <template v-else-if="!['table','pencil','polyline','flowDirection'].includes(selected.type)">
               <label class="field">填充颜色<input type="color" v-model="selected.fill"></label>
               <label class="switch-row">背景完全透明<input type="checkbox" :checked="selected.backgroundOpacity === 0" @change="selected.backgroundOpacity = $event.target.checked ? 0 : 1"><i></i></label>
               <label class="field">背景不透明度<input type="range" min="0" max="1" step="0.05" v-model.number="selected.backgroundOpacity"><span>{{ Math.round((selected.backgroundOpacity ?? 1) * 100) }}%</span></label>
@@ -9828,16 +9957,13 @@ onUnmounted(() => {
             <template v-if="selectedCategory === '网络与云'">
               <h3>网络属性</h3><label class="field vertical">地址<input v-model="selected.address" placeholder="192.168.1.10"></label><label class="field vertical">数据键<input :value="selected.dataKey" placeholder="network.status" @input="setSelectedDataKey($event.target.value)"></label><label class="field">状态<select v-model="selected.status"><option>正常</option><option>告警</option><option>离线</option></select></label>
             </template>
-            <template v-if="selectedCategory === '动效组件'">
+            <template v-if="selectedCategory === '动效组件' && selected.type !== 'flowDirection'">
               <template v-if="selected.type === 'signalLight'"><h3>信号灯属性</h3><label class="field">切换颜色数量<input type="number" min="1" :max="MAX_SIGNAL_COLORS" :value="selected.signalColorCount" @input="setSignalColorCount($event.target.value)"></label><label v-for="index in selected.signalColorCount" :key="index" class="field">颜色 {{ index }}<input type="color" v-model="selected.signalColors[index - 1]"></label><label class="switch-row">完全透明<input type="checkbox" :checked="selected.signalOpacity === 0" @change="selected.signalOpacity = $event.target.checked ? 0 : 1"><i></i></label><label class="field">灯光不透明度<input type="range" min="0" max="1" step="0.05" v-model.number="selected.signalOpacity"><span>{{ Math.round((selected.signalOpacity ?? 1) * 100) }}%</span></label></template>
               <template v-else><h3>主体属性</h3><label class="field">主体颜色<input type="color" v-model="selected.visualPrimaryColor" data-testid="visual-primary-color"></label><label v-if="selected.type === 'waterTank'" class="field">液位（%）<input type="number" min="0" max="100" step="0.1" v-model.number="selected.progressValue" @change="normalizeWaterTankProgress(selected)"></label></template>
               <h3>动效属性</h3><label class="field">动画类型<select v-model="selected.animation" @change="refreshBuiltInAnimation(selected)"><option v-for="option in builtInAnimationOptions(selected)" :key="option.value" :value="option.value">{{ option.label }}</option></select></label><label class="field">动画周期（秒）<input type="number" :min="ANIMATION_DURATION_MIN_SECONDS" :max="BUILT_IN_ANIMATION_DURATION_MAX_SECONDS" step="0.1" v-model.number="selected.animationDuration" @input="refreshBuiltInAnimation(selected)" @change="normalizeBuiltInAnimationDuration(selected)"></label><label class="field">播放方向<select v-model="selected.animationDirection" @change="refreshBuiltInAnimation(selected)"><option value="normal">正向</option><option value="reverse">反向</option><option value="alternate">往返</option></select></label><label class="switch-row">暂停动画<input type="checkbox" v-model="selected.animationPaused" @change="refreshBuiltInAnimation(selected)"><i></i></label><label class="switch-row">显示边框<input type="checkbox" v-model="selected.borderVisible"><i></i></label>
             </template>
             <template v-else-if="selectedCategory === '自定义动效'">
               <h3>自定义动效</h3><label class="field">效果<select v-model="selected.customEffect"><option value="bounce">弹跳</option><option value="slide">水平移动</option><option value="rotate">旋转</option><option value="scale">缩放</option><option value="fade">淡入淡出</option><option value="color">颜色变化</option></select></label><label class="field">周期（秒）<input type="number" min="0.2" max="20" step="0.1" v-model.number="selected.animationDuration"></label><label class="field">延迟（秒）<input type="number" min="0" max="20" step="0.1" v-model.number="selected.animationDelay"></label><label class="field">缓动<select v-model="selected.animationEasing"><option value="linear">匀速</option><option value="ease-in-out">平滑</option><option value="ease-out">减速</option><option value="steps(4,end)">步进</option></select></label><label class="field">循环<select v-model="selected.animationIterations"><option value="infinite">无限</option><option value="1">1 次</option><option value="2">2 次</option><option value="3">3 次</option></select></label><label class="field">方向<select v-model="selected.animationDirection"><option value="normal">正向</option><option value="reverse">反向</option><option value="alternate">往返</option></select></label><label v-if="['bounce','slide'].includes(selected.customEffect)" class="field">位移距离<input type="number" min="1" max="200" v-model.number="selected.motionDistance"></label><label v-if="selected.customEffect === 'scale'" class="field">缩放倍数<input type="number" min="0.1" max="3" step="0.05" v-model.number="selected.motionScale"></label><label v-if="selected.customEffect === 'rotate'" class="field">旋转角度<input type="number" min="1" max="1440" v-model.number="selected.motionRotate"></label><label v-if="selected.customEffect === 'color'" class="field">目标颜色<input type="color" v-model="selected.motionColor"></label><label class="switch-row">暂停动画<input type="checkbox" v-model="selected.animationPaused"><i></i></label><label class="switch-row">显示边框<input type="checkbox" v-model="selected.borderVisible"><i></i></label>
-            </template>
-            <template v-else-if="selected.type !== 'pencil' && !['表单','工业设备','图表组件','网络与云'].includes(selectedCategory)">
-              <h3>交互效果</h3><label class="field">预览动画<select v-model="selected.animation"><option value="none">无</option><option value="pulse">呼吸</option><option value="float">浮动</option><option value="flow">数据流动</option><option value="blink">状态闪烁</option></select></label>
             </template>
             </template>
             </fieldset>
@@ -9880,7 +10006,7 @@ onUnmounted(() => {
           <div v-else class="property-empty-state"><FileJson /><b>未选择对象</b></div>
         </div>
         <CommunicationBindingPanel
-          v-else-if="rightTab === '通信'"
+          v-if="rightTab === '通信'"
           class="properties communication-properties"
           :node="selectedNodeCount === 1 ? selected : null"
           :parameters="selectedBindingParameters"
@@ -9890,8 +10016,8 @@ onUnmounted(() => {
           @bind="bindSelectedParameter"
           @unbind="unbindSelectedParameter"
         />
-        <div class="properties" v-else-if="rightTab === '布局'"><h3>画布布局</h3><div class="layout-actions"><button @click="align('h')"><AlignCenterHorizontal />水平居中</button><button @click="align('v')"><AlignCenterVertical />垂直居中</button><button @click="bringFront"><BringToFront />置于顶层</button><button @click="fitView"><ZoomIn />适应画布</button></div></div>
-        <div class="properties structure-list" v-else>
+        <div class="properties" v-if="rightTab === '布局'"><h3>画布布局</h3><div class="layout-actions"><button @click="align('h')"><AlignCenterHorizontal />水平居中</button><button @click="align('v')"><AlignCenterVertical />垂直居中</button><button @click="bringFront"><BringToFront />置于顶层</button><button @click="fitView"><ZoomIn />适应画布</button></div></div>
+        <div class="properties structure-list" v-if="rightTab === '结构'">
           <h3>图层结构（{{ layerEntries.length }}）</h3>
           <div ref="structureScroller" class="structure-scroll" data-testid="structure-scroll" @scroll.passive="updateStructureViewport">
             <div class="structure-virtual-content" :style="structureContentStyle">
@@ -9905,7 +10031,9 @@ onUnmounted(() => {
 
   <DataSourceManager
     v-if="dataSourceManagerOpen"
+    :key="currentPointSourceScopeId"
     :gateway="pointCatalogGateway"
+    :drawing-name="fileName"
     @changed="handleDataSourceChanged"
     @close="closeDataSourceManager"
   />

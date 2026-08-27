@@ -44,60 +44,91 @@ function freezeFields(fields) {
 // UI 与未来后台适配器共用这份协议字段定义，防止两端配置名称逐渐偏离。
 export const POINT_SOURCE_CONFIG_FIELDS = Object.freeze({
   MQTT: freezeFields([
-    { key: 'brokerUrl', label: 'Broker 地址', required: true, span: 2, placeholder: 'mqtt://127.0.0.1:1883', default: 'mqtt://127.0.0.1:1883' },
-    { key: 'clientId', label: 'Client ID', required: true, placeholder: 'tc2d-client', default: 'tc2d-client' },
-    { key: 'topic', label: '订阅 Topic', required: true, placeholder: 'factory/+/telemetry', default: 'factory/+/telemetry' },
-    { key: 'username', label: '用户名', placeholder: '可选', default: '' },
-    { key: 'password', label: '密码', type: 'password', placeholder: '可选', default: '' },
-    { key: 'qos', label: 'QoS', type: 'select', options: ['0', '1', '2'], default: '1' },
-    { key: 'keepAlive', label: 'Keep Alive（秒）', type: 'number', min: 5, max: 86_400, default: 60 }
+    { key: 'brokerUrl', label: 'Broker 地址', section: 'basic', required: true, span: 2, placeholder: 'mqtt://127.0.0.1:1883', default: 'mqtt://127.0.0.1:1883', help: '支持 mqtt://、mqtts://、ws:// 与 wss://' },
+    { key: 'clientId', label: 'Client ID', section: 'basic', required: true, placeholder: 'tc2d-client', default: 'tc2d-client', help: '同一 Broker 下保持唯一' },
+    { key: 'qos', label: 'QoS', section: 'basic', type: 'select', options: ['0', '1', '2'], default: '1', help: '订阅消息的服务质量等级' },
+    { key: 'topic', label: '订阅 Topic', section: 'basic', type: 'textarea', required: true, span: 2, placeholder: 'factory/+/telemetry', default: 'factory/+/telemetry', help: '支持 + 与 # 通配符；多个 Topic 每行填写一个' },
+    { key: 'keepAlive', label: 'Keep Alive（秒）', section: 'basic', type: 'number', min: 5, max: 86_400, default: 60, help: '客户端心跳保持周期' },
+    { key: 'username', label: '用户名', section: 'advanced', placeholder: '可选', default: '', help: '敏感凭据仅用于当前会话测试' },
+    { key: 'password', label: '密码', section: 'advanced', type: 'password', placeholder: '可选', default: '', help: '不会写入图纸文件' },
+    { key: 'cleanSession', label: '清理会话', section: 'advanced', type: 'select', options: ['true', 'false'], default: 'true', help: '断开时是否清理服务端会话状态' },
+    { key: 'connectTimeoutMs', label: '连接超时（毫秒）', section: 'advanced', type: 'number', min: 1_000, max: 120_000, default: 10_000 },
+    { key: 'reconnectIntervalMs', label: '重连间隔（毫秒）', section: 'advanced', type: 'number', min: 500, max: 300_000, default: 3_000 },
+    { key: 'tlsMode', label: 'TLS 模式', section: 'advanced', type: 'select', options: ['自动', '启用', '关闭'], default: '自动', help: '生产环境建议启用加密连接' }
   ]),
   HTTP: freezeFields([
-    { key: 'url', label: '请求地址', required: true, span: 2, placeholder: 'https://gateway.example/api/realtime', default: 'https://gateway.example/api/realtime' },
-    { key: 'method', label: '请求方法', type: 'select', options: ['GET', 'POST'], default: 'GET' },
-    { key: 'pollInterval', label: '采集周期（毫秒）', type: 'number', min: 100, max: 86_400_000, default: 1000 },
-    { key: 'headers', label: '请求头（JSON）', type: 'textarea', span: 2, placeholder: '{"Authorization":"Bearer ..."}', default: '{}' },
-    { key: 'dataPath', label: '数据路径', span: 2, placeholder: '$.data', default: '$.data' }
+    { key: 'method', label: '请求方法', section: 'basic', type: 'select', options: ['GET', 'POST', 'PUT', 'PATCH'], default: 'GET' },
+    { key: 'pollInterval', label: '采集周期（毫秒）', section: 'basic', type: 'number', min: 100, max: 86_400_000, default: 1000, help: '两次请求之间的最小间隔' },
+    { key: 'url', label: '请求地址', section: 'basic', required: true, span: 2, placeholder: 'https://gateway.example/api/realtime', default: 'https://gateway.example/api/realtime' },
+    { key: 'dataPath', label: '数据路径', section: 'basic', span: 2, placeholder: '$.data', default: '$.data', help: '从响应 JSON 中选择业务数据的 JSONPath' },
+    { key: 'headers', label: '请求头（JSON）', section: 'advanced', type: 'textarea', span: 2, placeholder: '{"Authorization":"Bearer ..."}', default: '{}', help: '鉴权请求头仅用于当前会话测试' },
+    { key: 'body', label: '请求体', section: 'advanced', type: 'textarea', span: 2, placeholder: '{"deviceId":"line-1"}', default: '', help: 'GET 请求可留空，其他方法支持 JSON 或文本' },
+    { key: 'timeoutMs', label: '请求超时（毫秒）', section: 'advanced', type: 'number', min: 500, max: 300_000, default: 10_000 },
+    { key: 'retryCount', label: '失败重试次数', section: 'advanced', type: 'number', min: 0, max: 10, default: 2 },
+    { key: 'retryIntervalMs', label: '重试间隔（毫秒）', section: 'advanced', type: 'number', min: 100, max: 60_000, default: 1_000 },
+    { key: 'responseType', label: '响应类型', section: 'advanced', type: 'select', options: ['JSON', '文本'], default: 'JSON' }
   ]),
   MySQL: freezeFields([
-    { key: 'host', label: '主机地址', required: true, placeholder: '127.0.0.1', default: '127.0.0.1' },
-    { key: 'port', label: '端口', type: 'number', required: true, min: 1, max: 65_535, default: 3306 },
-    { key: 'database', label: '数据库', required: true, placeholder: 'production', default: 'production' },
-    { key: 'username', label: '用户名', required: true, placeholder: 'readonly', default: 'readonly' },
-    { key: 'password', label: '密码', type: 'password', placeholder: '由后台安全保存', default: '' },
-    { key: 'pollInterval', label: '查询周期（毫秒）', type: 'number', min: 200, max: 86_400_000, default: 1000 },
-    { key: 'query', label: '查询语句', type: 'textarea', span: 2, required: true, placeholder: 'SELECT ...', default: 'SELECT * FROM device_snapshot' }
+    { key: 'host', label: '主机地址', section: 'basic', required: true, placeholder: '127.0.0.1', default: '127.0.0.1' },
+    { key: 'port', label: '端口', section: 'basic', type: 'number', required: true, min: 1, max: 65_535, default: 3306 },
+    { key: 'database', label: '数据库', section: 'basic', required: true, placeholder: 'production', default: 'production' },
+    { key: 'pollInterval', label: '查询周期（毫秒）', section: 'basic', type: 'number', min: 200, max: 86_400_000, default: 1000 },
+    { key: 'query', label: '查询语句', section: 'basic', type: 'textarea', span: 2, required: true, placeholder: 'SELECT ...', default: 'SELECT * FROM device_snapshot', help: '建议使用只读账号并限制返回行数' },
+    { key: 'username', label: '用户名', section: 'advanced', required: true, placeholder: 'readonly', default: 'readonly' },
+    { key: 'password', label: '密码', section: 'advanced', type: 'password', placeholder: '当前会话使用', default: '', help: '不会写入图纸文件' },
+    { key: 'connectTimeoutMs', label: '连接超时（毫秒）', section: 'advanced', type: 'number', min: 1_000, max: 120_000, default: 10_000 },
+    { key: 'queryTimeoutMs', label: '查询超时（毫秒）', section: 'advanced', type: 'number', min: 1_000, max: 300_000, default: 30_000 },
+    { key: 'maxRows', label: '最大返回行数', section: 'advanced', type: 'number', min: 1, max: 100_000, default: 1_000 },
+    { key: 'sslMode', label: 'SSL 模式', section: 'advanced', type: 'select', options: ['禁用', '首选', '必需'], default: '首选' }
   ]),
   'SQL Server': freezeFields([
-    { key: 'host', label: '服务器地址', required: true, placeholder: '127.0.0.1', default: '127.0.0.1' },
-    { key: 'port', label: '端口', type: 'number', required: true, min: 1, max: 65_535, default: 1433 },
-    { key: 'database', label: '数据库', required: true, placeholder: 'Quality', default: 'Quality' },
-    { key: 'username', label: '用户名', required: true, placeholder: 'readonly', default: 'readonly' },
-    { key: 'password', label: '密码', type: 'password', placeholder: '由后台安全保存', default: '' },
-    { key: 'pollInterval', label: '查询周期（毫秒）', type: 'number', min: 200, max: 86_400_000, default: 1000 },
-    { key: 'query', label: '查询语句', type: 'textarea', span: 2, required: true, placeholder: 'SELECT ...', default: 'SELECT * FROM dbo.DeviceSnapshot' }
+    { key: 'host', label: '服务器地址', section: 'basic', required: true, placeholder: '127.0.0.1', default: '127.0.0.1' },
+    { key: 'port', label: '端口', section: 'basic', type: 'number', required: true, min: 1, max: 65_535, default: 1433 },
+    { key: 'database', label: '数据库', section: 'basic', required: true, placeholder: 'Quality', default: 'Quality' },
+    { key: 'pollInterval', label: '查询周期（毫秒）', section: 'basic', type: 'number', min: 200, max: 86_400_000, default: 1000 },
+    { key: 'query', label: '查询语句', section: 'basic', type: 'textarea', span: 2, required: true, placeholder: 'SELECT ...', default: 'SELECT * FROM dbo.DeviceSnapshot', help: '建议使用只读账号并限制返回行数' },
+    { key: 'username', label: '用户名', section: 'advanced', required: true, placeholder: 'readonly', default: 'readonly' },
+    { key: 'password', label: '密码', section: 'advanced', type: 'password', placeholder: '当前会话使用', default: '', help: '不会写入图纸文件' },
+    { key: 'connectTimeoutMs', label: '连接超时（毫秒）', section: 'advanced', type: 'number', min: 1_000, max: 120_000, default: 10_000 },
+    { key: 'queryTimeoutMs', label: '查询超时（毫秒）', section: 'advanced', type: 'number', min: 1_000, max: 300_000, default: 30_000 },
+    { key: 'maxRows', label: '最大返回行数', section: 'advanced', type: 'number', min: 1, max: 100_000, default: 1_000 },
+    { key: 'encrypt', label: '加密连接', section: 'advanced', type: 'select', options: ['true', 'false'], default: 'true' },
+    { key: 'trustServerCertificate', label: '信任服务器证书', section: 'advanced', type: 'select', options: ['false', 'true'], default: 'false' }
   ]),
   Redis: freezeFields([
-    { key: 'host', label: '主机地址', required: true, placeholder: '127.0.0.1', default: '127.0.0.1' },
-    { key: 'port', label: '端口', type: 'number', required: true, min: 1, max: 65_535, default: 6379 },
-    { key: 'database', label: 'Database', type: 'number', min: 0, default: 0 },
-    { key: 'password', label: '密码', type: 'password', placeholder: '可选', default: '' },
-    { key: 'keyPattern', label: 'Key / Pattern', required: true, span: 2, placeholder: 'factory:*', default: 'factory:*' },
-    { key: 'pollInterval', label: '刷新周期（毫秒）', type: 'number', min: 100, max: 86_400_000, default: 500 }
+    { key: 'host', label: '主机地址', section: 'basic', required: true, placeholder: '127.0.0.1', default: '127.0.0.1' },
+    { key: 'port', label: '端口', section: 'basic', type: 'number', required: true, min: 1, max: 65_535, default: 6379 },
+    { key: 'database', label: 'Database', section: 'basic', type: 'number', min: 0, max: 15, default: 0 },
+    { key: 'pollInterval', label: '刷新周期（毫秒）', section: 'basic', type: 'number', min: 100, max: 86_400_000, default: 500 },
+    { key: 'keyPattern', label: 'Key / Pattern', section: 'basic', required: true, span: 2, placeholder: 'factory:*', default: 'factory:*', help: '支持精确 Key 或受控 Pattern' },
+    { key: 'username', label: '用户名', section: 'advanced', placeholder: 'Redis ACL 可选', default: '' },
+    { key: 'password', label: '密码', section: 'advanced', type: 'password', placeholder: '可选', default: '', help: '不会写入图纸文件' },
+    { key: 'connectTimeoutMs', label: '连接超时（毫秒）', section: 'advanced', type: 'number', min: 500, max: 120_000, default: 5_000 },
+    { key: 'commandTimeoutMs', label: '命令超时（毫秒）', section: 'advanced', type: 'number', min: 100, max: 120_000, default: 3_000 },
+    { key: 'maxResults', label: '最大返回条数', section: 'advanced', type: 'number', min: 1, max: 100_000, default: 1_000 },
+    { key: 'tlsMode', label: 'TLS 模式', section: 'advanced', type: 'select', options: ['自动', '启用', '关闭'], default: '自动' }
   ]),
   Socket: freezeFields([
-    { key: 'host', label: '主机地址', required: true, placeholder: '127.0.0.1', default: '127.0.0.1' },
-    { key: 'port', label: '端口', type: 'number', required: true, min: 1, max: 65_535, default: 9001 },
-    { key: 'encoding', label: '报文编码', type: 'select', options: ['UTF-8', 'GBK', 'HEX'], default: 'UTF-8' },
-    { key: 'delimiter', label: '报文边界', placeholder: '\\r\\n', default: '\\r\\n' },
-    { key: 'heartbeat', label: '心跳内容', placeholder: 'PING', default: 'PING' },
-    { key: 'heartbeatInterval', label: '心跳周期（秒）', type: 'number', min: 1, max: 86_400, default: 30 }
+    { key: 'host', label: '主机地址', section: 'basic', required: true, placeholder: '127.0.0.1', default: '127.0.0.1' },
+    { key: 'port', label: '端口', section: 'basic', type: 'number', required: true, min: 1, max: 65_535, default: 9001 },
+    { key: 'encoding', label: '报文编码', section: 'basic', type: 'select', options: ['UTF-8', 'GBK', 'HEX'], default: 'UTF-8' },
+    { key: 'delimiter', label: '报文边界', section: 'basic', placeholder: '\\r\\n', default: '\\r\\n', help: '用于拆分连续 TCP 数据帧' },
+    { key: 'heartbeat', label: '心跳内容', section: 'advanced', placeholder: 'PING', default: 'PING' },
+    { key: 'heartbeatInterval', label: '心跳周期（秒）', section: 'advanced', type: 'number', min: 1, max: 86_400, default: 30 },
+    { key: 'connectTimeoutMs', label: '连接超时（毫秒）', section: 'advanced', type: 'number', min: 500, max: 120_000, default: 5_000 },
+    { key: 'reconnectIntervalMs', label: '重连间隔（毫秒）', section: 'advanced', type: 'number', min: 500, max: 300_000, default: 3_000 },
+    { key: 'receiveBufferBytes', label: '接收缓冲区（字节）', section: 'advanced', type: 'number', min: 1_024, max: 16_777_216, default: 65_536 },
+    { key: 'tcpNoDelay', label: 'TCP No Delay', section: 'advanced', type: 'select', options: ['true', 'false'], default: 'true' }
   ]),
   WebSocket: freezeFields([
-    { key: 'url', label: '服务地址', required: true, span: 2, placeholder: 'wss://gateway.example/realtime', default: 'ws://127.0.0.1:8080' },
-    { key: 'subprotocol', label: '子协议', placeholder: '可选', default: '' },
-    { key: 'subscribeMessage', label: '订阅消息', type: 'textarea', span: 2, placeholder: '{"action":"subscribe"}', default: '{"action":"subscribe"}' },
-    { key: 'heartbeatInterval', label: '心跳周期（秒）', type: 'number', min: 1, max: 86_400, default: 30 }
+    { key: 'url', label: '服务地址', section: 'basic', required: true, span: 2, placeholder: 'wss://gateway.example/realtime', default: 'ws://127.0.0.1:8080' },
+    { key: 'subscribeMessage', label: '订阅消息', section: 'basic', type: 'textarea', span: 2, placeholder: '{"action":"subscribe"}', default: '{"action":"subscribe"}', help: '连接成功后发送，留空表示不主动订阅' },
+    { key: 'subprotocol', label: '子协议', section: 'advanced', placeholder: '可选', default: '' },
+    { key: 'heartbeatMessage', label: '心跳消息', section: 'advanced', placeholder: 'PING', default: 'PING' },
+    { key: 'heartbeatInterval', label: '心跳周期（秒）', section: 'advanced', type: 'number', min: 1, max: 86_400, default: 30 },
+    { key: 'connectTimeoutMs', label: '连接超时（毫秒）', section: 'advanced', type: 'number', min: 500, max: 120_000, default: 5_000 },
+    { key: 'reconnectIntervalMs', label: '重连间隔（毫秒）', section: 'advanced', type: 'number', min: 500, max: 300_000, default: 3_000 },
+    { key: 'binaryType', label: '二进制数据类型', section: 'advanced', type: 'select', options: ['文本', 'ArrayBuffer', 'Blob'], default: '文本' }
   ])
 })
 
@@ -485,6 +516,9 @@ function normalizeSource(source, now) {
     protocol,
     enabled: source.enabled !== false,
     status: ['online', 'offline', 'testing', 'error'].includes(source.status) ? source.status : 'offline',
+    adapterGeneration: Number.isSafeInteger(Number(source.adapterGeneration)) && Number(source.adapterGeneration) > 0
+      ? Number(source.adapterGeneration)
+      : 1,
     config: normalizeConfig(protocol, source.config),
     lastResponse: normalizeLastResponse(source.lastResponse, now),
     points: []
@@ -691,6 +725,8 @@ function createColorDemoSample(protocol, demo, updatedAt) {
     palette: rows.map(row => row.color),
     states,
     table: {
+      title: `${protocol} 状态颜色`,
+      headers: ['状态', '颜色', '启用'],
       columns: [
         { key: 'name', title: '状态' },
         { key: 'color', title: '颜色' },
@@ -728,6 +764,8 @@ function createNumberDemoSample(protocol, demo, updatedAt) {
     },
     series,
     table: {
+      title: `${protocol} ${details.metric}`,
+      headers: ['时间', `数值 (${details.unit})`, '质量'],
       columns: [
         { key: 'time', title: '时间' },
         { key: 'value', title: `数值 (${details.unit})` },
@@ -867,6 +905,7 @@ function sourceSummary(source, healthyPointCount = 0) {
     protocol: source.protocol,
     enabled: source.enabled,
     status: source.status,
+    adapterGeneration: source.adapterGeneration,
     endpoint: sourceEndpoint(source),
     pointCount: source.points.length,
     healthyPointCount,
@@ -889,6 +928,10 @@ function configErrors(source) {
       const number = Number(value)
       if (!Number.isFinite(number)) {
         errors.push(`${field.label}必须是有效数字`)
+        continue
+      }
+      if (!Number.isInteger(number)) {
+        errors.push(`${field.label}必须是整数`)
         continue
       }
       if (Number.isFinite(field.min) && number < field.min) errors.push(`${field.label}不能小于 ${field.min}`)
@@ -972,6 +1015,20 @@ function normalizedSnapshotQuality(value, fallback = 'good') {
   return ['good', 'stale', 'bad', 'error', 'offline', 'testing', 'unknown'].includes(quality)
     ? quality
     : fallback
+}
+
+/** 连接运行状态由最终可用快照统一派生，避免“有数据但离线”或“在线但数据不可用”。 */
+function sourceStatusFromSnapshot(source, snapshot) {
+  if (!source?.enabled) return 'offline'
+  const quality = normalizedSnapshotQuality(snapshot?.quality, 'offline')
+  if (quality === 'good') {
+    return snapshot && Object.hasOwn(snapshot, 'data') && snapshot.data !== undefined
+      ? 'online'
+      : 'error'
+  }
+  if (quality === 'testing') return 'testing'
+  if (quality === 'bad' || quality === 'error') return 'error'
+  return 'offline'
 }
 
 function sourceCanPublish(source) {
@@ -1108,6 +1165,7 @@ export function createLocalPointCatalogGateway(options = {}) {
     })
   }
   let sources = (Array.isArray(initialSources) ? initialSources : []).map(source => normalizeSource(source, now()))
+  let activeWorkspaceGeneration = 1
   const listeners = new Set()
   const snapshotListeners = new Map()
   const sourceSnapshots = new Map()
@@ -1217,7 +1275,10 @@ export function createLocalPointCatalogGateway(options = {}) {
       ? { ...meta.meta }
       : {}
     for (const [key, value] of Object.entries(meta)) {
-      if (!['quality', 'timestamp', 'meta', 'revision', 'sourceId', 'data'].includes(key)) details[key] = value
+      if (![
+        'quality', 'timestamp', 'meta', 'revision', 'sourceId', 'data',
+        'workspaceId', 'scopeId', 'workspaceGeneration'
+      ].includes(key)) details[key] = value
     }
     return cloneSnapshotValue(details)
   }
@@ -1237,6 +1298,8 @@ export function createLocalPointCatalogGateway(options = {}) {
     const revision = (snapshotRevisionBySource.get(sourceId) || 0) + 1
     const fallbackQuality = source.enabled && source.status === 'online' ? 'good' : 'offline'
     const snapshot = Object.freeze({
+      workspaceId: activeWorkspaceId,
+      workspaceGeneration: activeWorkspaceGeneration,
       sourceId,
       revision,
       timestamp: normalizeDate(meta?.timestamp, now()),
@@ -1290,6 +1353,7 @@ export function createLocalPointCatalogGateway(options = {}) {
       }
     }
     activeWorkspaceId = workspaceId
+    activeWorkspaceGeneration += 1
     recoveredOfflinePointSourceIds.clear()
     sources = validSources
     rebuildCatalogIndexes()
@@ -1391,16 +1455,65 @@ export function createLocalPointCatalogGateway(options = {}) {
     const sourceId = String(id ?? '').trim()
     const source = findSource(sourceId)
     if (!source) throw new RangeError(`数据源不存在：${sourceId}`)
+    const incomingWorkspaceId = String(meta?.workspaceId ?? meta?.scopeId ?? '').trim()
+    // 采集器启动时应记录 activeWorkspaceId 并随帧回传；图纸切换后拒绝旧图纸迟到的数据。
+    if (incomingWorkspaceId && incomingWorkspaceId !== activeWorkspaceId) {
+      const currentSnapshot = sourceSnapshots.get(sourceId) || null
+      return currentSnapshot && ingestOptions.sharedResult !== true
+        ? cloneSnapshotValue(currentSnapshot)
+        : currentSnapshot
+    }
+    const carriesWorkspaceGeneration = meta && typeof meta === 'object'
+      && Object.hasOwn(meta, 'workspaceGeneration')
+    if (carriesWorkspaceGeneration && Number(meta.workspaceGeneration) !== activeWorkspaceGeneration) {
+      const currentSnapshot = sourceSnapshots.get(sourceId) || null
+      return currentSnapshot && ingestOptions.sharedResult !== true
+        ? cloneSnapshotValue(currentSnapshot)
+        : currentSnapshot
+    }
+    const carriesAdapterGeneration = meta && typeof meta === 'object'
+      && Object.hasOwn(meta, 'adapterGeneration')
+    const adapterGeneration = Number(meta?.adapterGeneration)
+    // 新适配器应把 getSource 返回的代次随帧回传；配置保存后，旧实例的迟到帧会被精确丢弃。
+    // 未携带代次的现有适配器继续视为当前实例，保持原有接入契约。
+    if (carriesAdapterGeneration && adapterGeneration !== source.adapterGeneration) {
+      const currentSnapshot = sourceSnapshots.get(sourceId) || null
+      return currentSnapshot && ingestOptions.sharedResult !== true
+        ? cloneSnapshotValue(currentSnapshot)
+        : currentSnapshot
+    }
     // 收到新数据本身就是一次成功采集；停用连接仍强制保持离线。
     const quality = source.enabled
       ? normalizedSnapshotQuality(meta?.quality, 'good')
       : 'offline'
     // takeOwnership 会跳过大 JSON 深拷贝：调用方不得静默修改已移交的数据；复用同一
     // 引用时必须再次调用本方法生成新 revision，运行链路会按 generation 强制发布。
-    return commitSourceSnapshot(source, data, { ...meta, quality }, {
+    const result = commitSourceSnapshot(source, data, { ...meta, quality }, {
       takeOwnership: ingestOptions.takeOwnership === true,
       sharedResult: ingestOptions.sharedResult === true
     })
+    const committedSnapshot = sourceSnapshots.get(sourceId)
+    const nextStatus = sourceStatusFromSnapshot(source, committedSnapshot)
+    // 正式测试期间可能同时收到适配器帧，最终状态由 testSource 读取最新 revision 后裁决。
+    if (source.status !== 'testing' && nextStatus !== source.status) {
+      const previousCanPublish = sourceCanPublish(source)
+      const next = normalizeSourceMetadata({ ...source, status: nextStatus }, now(), source.points)
+      sources = candidateWithReplacement(source, next, false)
+      rebuildCatalogIndexes({ pointsChanged: false })
+      advanceCatalogRevision()
+      if (nextStatus === 'online' && source.points.length > 0) {
+        const offlineCount = offlinePointCountBySource.get(source.id) || 0
+        if (offlineCount === source.points.length) recoveredOfflinePointSourceIds.add(source.id)
+      } else {
+        recoveredOfflinePointSourceIds.delete(source.id)
+      }
+      emit('source-status-changed', next, null, {
+        catalogChanged: source.points.length > 0 && previousCanPublish !== sourceCanPublish(next),
+        includePointIds: false,
+        changedSourceIds: [next.id]
+      })
+    }
+    return result
   }
 
   function subscribeSnapshots(listener, listenerOptions = {}) {
@@ -1544,6 +1657,9 @@ export function createLocalPointCatalogGateway(options = {}) {
       const configChanged = protocolChanged || !sourceConfigEquals(protocol, current.config, next.config)
       const enabledChanged = next.enabled !== current.enabled
       const requiresVerification = configChanged || (!current.enabled && next.enabled)
+      next.adapterGeneration = requiresVerification
+        ? current.adapterGeneration + 1
+        : current.adapterGeneration
       if (configChanged) {
         next.codeDefinedSampleDetached = true
         if (patch.lastResponse === undefined && next.lastResponse) {
@@ -1606,6 +1722,7 @@ export function createLocalPointCatalogGateway(options = {}) {
         protocol,
         enabled: input.enabled !== false,
         status: 'offline',
+        adapterGeneration: 1,
         config: { ...defaultConfig(protocol), ...(input.config || {}) },
         points: input.points || [],
         lastResponse: null
@@ -1655,6 +1772,74 @@ export function createLocalPointCatalogGateway(options = {}) {
     })
   }
 
+  /**
+   * 测试当前表单草稿但不写入数据源目录。创建页和编辑页都可先验证配置，
+   * 后续接入后台时由远端适配器实现同名接口即可保持界面调用不变。
+   */
+  async function testSourceDraft(input = {}, resultOptions = {}) {
+    assertWorkspaceWritable()
+    const current = input.id ? findSource(input.id) : null
+    const protocol = normalizedProtocol(input.protocol || current?.protocol || 'HTTP')
+    const config = {
+      ...defaultConfig(protocol),
+      ...(current?.protocol === protocol ? current.config : {}),
+      ...(input.config || {})
+    }
+    const draft = normalizeSourceMetadata({
+      id: current?.id || `draft-${protocol.toLowerCase().replace(/\s+/g, '-')}`,
+      name: input.name || current?.name || `待测试 ${protocol} 连接`,
+      protocol,
+      enabled: input.enabled !== false,
+      status: 'testing',
+      config,
+      lastResponse: null
+    }, now(), current?.points || [])
+
+    if (delayMs) await new Promise(resolve => setTimeout(resolve, delayMs))
+    else await Promise.resolve()
+
+    const errors = configErrors(draft)
+    const testedAt = now()
+    const ok = errors.length === 0
+    const durationMs = ok ? 12 + (draft.id.length % 37) : 0
+    const response = Object.freeze({
+      ok,
+      at: new Date(testedAt).toISOString(),
+      durationMs,
+      message: ok ? '连接成功，数据测试正常' : errors.join('；'),
+      preview: ''
+    })
+    let snapshot = null
+    if (ok) {
+      const configUnchanged = current?.protocol === protocol
+        && sourceConfigEquals(protocol, current.config, draft.config)
+      const savedSnapshot = configUnchanged ? sourceSnapshots.get(current.id) : null
+      const data = savedSnapshot?.data ?? sampleDataFromPoints(draft)
+      snapshot = Object.freeze({
+        workspaceId: activeWorkspaceId,
+        workspaceGeneration: activeWorkspaceGeneration,
+        sourceId: current?.id || '',
+        revision: 0,
+        timestamp: response.at,
+        quality: 'good',
+        data,
+        meta: Object.freeze({
+          origin: 'connection-draft-test',
+          protocol,
+          sourceName: draft.name,
+          durationMs
+        })
+      })
+    }
+    return Object.freeze({
+      ok,
+      response,
+      snapshot: snapshot && resultOptions.sharedSnapshot !== true
+        ? cloneSnapshotValue(snapshot)
+        : snapshot
+    })
+  }
+
   async function testSource(id, resultOptions = {}) {
     return serializeMutation(async () => {
       assertWorkspaceWritable()
@@ -1677,24 +1862,64 @@ export function createLocalPointCatalogGateway(options = {}) {
 
       const errors = configErrors(testingSource)
       const testedAt = now()
-      const ok = errors.length === 0
-      const durationMs = ok ? 12 + (testingSource.id.length % 37) : 0
+      const configurationOk = errors.length === 0
+      const durationMs = configurationOk ? 12 + (testingSource.id.length % 37) : 0
+      const latestSnapshot = sourceSnapshots.get(testingSource.id)
+      const receivedSnapshotDuringTest = (latestSnapshot?.revision ?? 0) > currentSnapshotRevision
+      const plannedSnapshot = receivedSnapshotDuringTest
+        ? latestSnapshot
+        : {
+            quality: testingSource.enabled && configurationOk ? 'good' : (testingSource.enabled ? 'error' : 'offline'),
+            data: testData,
+            meta: {}
+          }
+      const finalStatus = configurationOk
+        ? sourceStatusFromSnapshot(testingSource, plannedSnapshot)
+        : (testingSource.enabled ? 'error' : 'offline')
+      const ok = configurationOk && finalStatus === 'online'
+      const responseMessage = ok
+        ? '连接成功，数据测试正常'
+        : (errors.join('；') || String(plannedSnapshot?.meta?.message || '').trim() || (
+            plannedSnapshot?.quality === 'good'
+              ? '连接返回数据为空，无法用于组件通信'
+              : '连接测试期间收到异常数据'
+          ))
       const response = {
         ok,
         at: new Date(testedAt).toISOString(),
         durationMs,
-        message: ok ? '连接成功，数据测试正常' : errors.join('；'),
+        message: responseMessage,
         preview: ''
       }
-      const nextStatus = !testingSource.enabled ? 'offline' : (ok ? 'online' : 'error')
       const next = normalizeSourceMetadata({
         ...testingSource,
-        status: nextStatus,
+        status: finalStatus,
         lastResponse: response,
         points: []
       }, testedAt, testingSource.points)
       const candidate = candidateWithReplacement(testingSource, next, false)
-      const persistence = await persist(candidate, { source: next, pointsChanged: false })
+      let persistence
+      try {
+        persistence = await persist(candidate, { source: next, pointsChanged: false })
+      } catch (error) {
+        // 测试开始时只临时展示 testing；持久化失败必须恢复目录，不能留下未保存的状态。
+        const rollbackSnapshot = sourceSnapshots.get(current.id)
+        const rollbackStatus = (rollbackSnapshot?.revision ?? 0) > currentSnapshotRevision
+          ? sourceStatusFromSnapshot(current, rollbackSnapshot)
+          : current.status
+        const rollbackSource = rollbackStatus === current.status
+          ? current
+          : normalizeSourceMetadata({ ...current, status: rollbackStatus }, now(), current.points)
+        sources = candidateWithReplacement(testingSource, rollbackSource, false)
+        rebuildCatalogIndexes({ pointsChanged: false })
+        advanceCatalogRevision()
+        emit('source-test-aborted', rollbackSource, null, {
+          catalogChanged: false,
+          includePointIds: false,
+          changedSourceIds: [rollbackSource.id]
+        })
+        throw error
+      }
       const recoversLegacyOfflinePoints = ok
         && next.enabled
         && current.status === 'error'
@@ -1706,13 +1931,11 @@ export function createLocalPointCatalogGateway(options = {}) {
       sources = candidate
       rebuildCatalogIndexes({ pointsChanged: false })
       advanceCatalogRevision()
-      const latestSnapshot = sourceSnapshots.get(next.id)
-      const receivedSnapshotDuringTest = (latestSnapshot?.revision ?? 0) > currentSnapshotRevision
       // A successful connection test must not overwrite fresher adapter data that arrived while it was running.
-      if (!receivedSnapshotDuringTest || !ok || !next.enabled) {
+      if (!receivedSnapshotDuringTest || !configurationOk || !next.enabled) {
         commitSourceSnapshot(next, receivedSnapshotDuringTest ? latestSnapshot.data : testData, {
           timestamp: response.at,
-          quality: next.enabled ? (ok ? 'good' : 'error') : 'offline',
+          quality: next.enabled ? (configurationOk ? 'good' : 'error') : 'offline',
           origin: 'connection-test',
           protocol: next.protocol,
           sourceName: next.name,
@@ -1735,15 +1958,26 @@ export function createLocalPointCatalogGateway(options = {}) {
     })
   }
 
-  async function activateWorkspace(workspaceId) {
+  async function activateWorkspace(workspaceId, activationOptions = {}) {
     return serializeMutation(async () => {
       const nextWorkspaceId = requiredWorkspaceId(workspaceId)
       if (workspaceLoaded && !workspaceCorruption && nextWorkspaceId === activeWorkspaceId) {
-        return { workspaceId: activeWorkspaceId, sources: await listSources(), persistence: lastPersistence }
+        return {
+          workspaceId: activeWorkspaceId,
+          workspaceGeneration: activeWorkspaceGeneration,
+          sources: await listSources(),
+          persistence: lastPersistence
+        }
       }
       let persisted = null
+      let inheritedLegacySources = false
       try {
         persisted = store?.load ? await store.load(nextWorkspaceId) : null
+        const legacyWorkspaceId = normalizeWorkspaceId(activationOptions.legacyWorkspaceId)
+        if (persisted == null && legacyWorkspaceId && legacyWorkspaceId !== nextWorkspaceId && store?.load) {
+          persisted = await store.load(legacyWorkspaceId)
+          inheritedLegacySources = persisted != null
+        }
       } catch (error) {
         if (isStorageCorruption(error)) quarantineCorruptWorkspace(nextWorkspaceId, error)
         throw error
@@ -1758,7 +1992,7 @@ export function createLocalPointCatalogGateway(options = {}) {
       ])]
       if (persisted == null && store?.save) {
         lastPersistence = normalizePersistenceResult(await store.save(nextWorkspaceId, nextSources), 'storage-write-failed')
-      } else if (migration.changed && store?.save) {
+      } else if ((migration.changed || inheritedLegacySources) && store?.save) {
         lastPersistence = normalizePersistenceResult(await store.save(nextWorkspaceId, nextSources), 'storage-write-failed')
       } else {
         lastPersistence = normalizePersistenceResult(
@@ -1767,9 +2001,13 @@ export function createLocalPointCatalogGateway(options = {}) {
         )
       }
       activeWorkspaceId = nextWorkspaceId
+      activeWorkspaceGeneration += 1
       recoveredOfflinePointSourceIds.clear()
       installPreparedCatalog(prepared)
-      seedSourceSnapshots(sources, { publish: true, reset: true })
+      seedSourceSnapshots(sources, {
+        publish: activationOptions.publishSnapshots !== false,
+        reset: true
+      })
       workspaceLoaded = true
       workspaceCorruption = null
       advanceCatalogRevision()
@@ -1778,7 +2016,12 @@ export function createLocalPointCatalogGateway(options = {}) {
         includePointIds: false,
         changedSourceIds
       })
-      return { workspaceId: activeWorkspaceId, sources: await listSources(), persistence: lastPersistence }
+      return {
+        workspaceId: activeWorkspaceId,
+        workspaceGeneration: activeWorkspaceGeneration,
+        sources: await listSources(),
+        persistence: lastPersistence
+      }
     })
   }
 
@@ -1839,6 +2082,7 @@ export function createLocalPointCatalogGateway(options = {}) {
     updateSource,
     createSource,
     removeSource,
+    testSourceDraft,
     testSource,
     activateWorkspace,
     refresh,
@@ -1850,6 +2094,7 @@ export function createLocalPointCatalogGateway(options = {}) {
       snapshotListeners.clear()
       sourceSnapshots.clear()
     },
-    get activeWorkspaceId() { return activeWorkspaceId }
+    get activeWorkspaceId() { return activeWorkspaceId },
+    get activeWorkspaceGeneration() { return activeWorkspaceGeneration }
   })
 }

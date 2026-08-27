@@ -3,6 +3,7 @@ import {
 } from '../utils/editorGeometry.js'
 import {
   MAX_POLYLINE_NODE_POINTS,
+  isPolylineNodeType,
   polylineArrowSize,
   polylineLineOpacity,
   polylineLineStyle
@@ -24,6 +25,7 @@ export const EDGE_ANCHOR_MODES = new Set(['edge', 'center'])
 const ANIMATION_VALUES = new Set(['none', 'pulse', 'float', 'flow', 'blink'])
 const ANIMATION_DIRECTIONS = new Set(['normal', 'reverse', 'alternate'])
 const BUILT_IN_ANIMATION_VALUES = Object.freeze({
+  flowDirection: new Set(['none', 'flow']),
   flowPipe: new Set(['none', 'flow']),
   rotatingFan: new Set(['none', 'flow']),
   signalLight: new Set(['none', 'blink']),
@@ -35,6 +37,7 @@ const SIGNAL_COLOR_DEFAULTS = Object.freeze([
   '#21c58e', '#ef5350', '#ffc440', '#168eea', '#9c5de5', '#ffffff', '#26323d', '#ff7a45'
 ])
 const BUILT_IN_VISUAL_PRIMARY_COLORS = Object.freeze({
+  flowDirection: '#16b89a',
   flowPipe: '#16b89a',
   rotatingFan: '#16b89a',
   signalLight: '#21c58e',
@@ -106,7 +109,7 @@ export function baseNodeOptions() {
     // 铅笔、线段与表格使用数组字段，必须由本函数逐次创建
     pencilPoints: [], pencilColor: '#485563', pencilWidth: 2, pencilDash: false, pencilSmooth: true, pencilClosed: false, pencilLineCap: 'round', pencilLineJoin: 'round',
     polylinePoints: [{ x: .08, y: .72 }, { x: .34, y: .28 }, { x: .64, y: .68 }, { x: .92, y: .24 }],
-    polylineColor: '#485563', polylineWidth: 2, polylineArrowSize: 8, polylineStyle: 'solid', polylineOpacity: 1, polylineDash: false, polylineStartMarker: 'none', polylineEndMarker: 'none', polylineLineCap: 'round', polylineLineJoin: 'round',
+    polylineColor: '#485563', polylineWidth: 2, polylineArrowSize: 8, polylineStyle: 'solid', polylineOpacity: 1, polylineDash: false, polylineStartMarker: 'none', polylineEndMarker: 'none', polylineLineCap: 'round', polylineLineJoin: 'round', flowArrowVisible: true,
     tableRows: 3, tableColumns: 3, showHeader: true, tableData: '设备 A,正常,68;设备 B,告警,42;设备 C,正常,86', tableHeaders: null, tableCells: null, tableColumnWidths: null, tableColumnWidthsPx: null, tableScrollX: true, tableScrollY: true,
     tableTitle: '数据表格', showTableTitle: true, tableTitleFill: '#26323d', tableTitleColor: '#ffffff', tableTitleSize: 14, tableTitleWeight: '600', tableTitleAlign: 'center',
     tableHeaderFill: '#eef2f4', tableHeaderColor: '#26323d', tableHeaderSize: 14, tableHeaderWeight: '600', tableHeaderAlign: 'center',
@@ -320,24 +323,26 @@ export function normalizeNode(node) {
     normalized.backgroundOpacity = 0
     normalized.borderVisible = false
   }
-  if (normalized.type === 'polyline') {
+  if (isPolylineNodeType(normalized.type)) {
+    const flowDirection = normalized.type === 'flowDirection'
     const fallbackPoints = baseNodeOptions().polylinePoints
     const sourcePoints = Array.isArray(source.polylinePoints) ? source.polylinePoints : fallbackPoints
     const validPoints = sourcePoints
       .filter(point => Number.isFinite(Number(point?.x)) && Number.isFinite(Number(point?.y)))
       .slice(0, MAX_POLYLINE_NODE_POINTS)
       .map(point => ({ x: clampNumber(Number(point.x), 0, 1), y: clampNumber(Number(point.y), 0, 1) }))
-    normalized.text = String(source.text || '线段')
+    normalized.text = String(source.text || (flowDirection ? '流向' : '线段'))
     normalized.polylinePoints = validPoints.length ? validPoints : fallbackPoints
-    normalized.polylineColor = String(source.polylineColor || source.fill || source.color || '#485563')
+    normalized.polylineColor = String(source.polylineColor || source.fill || source.color || (flowDirection ? '#16b89a' : '#485563'))
     normalized.polylineWidth = clampNumber(finiteNumber(source.polylineWidth, source.width ?? 2), .1, 100)
     normalized.polylineArrowSize = polylineArrowSize(source)
-    normalized.polylineStyle = polylineLineStyle(source)
+    normalized.polylineStyle = flowDirection ? 'dashed' : polylineLineStyle(source)
     normalized.polylineOpacity = polylineLineOpacity(source)
     // 保留旧字段用于读取早期图纸；新渲染统一使用三态 polylineStyle。
     normalized.polylineDash = normalized.polylineStyle !== 'solid'
     normalized.polylineStartMarker = ['none', 'arrow'].includes(source.polylineStartMarker) ? source.polylineStartMarker : 'none'
     normalized.polylineEndMarker = ['none', 'arrow'].includes(source.polylineEndMarker) ? source.polylineEndMarker : 'none'
+    normalized.flowArrowVisible = normalizeBoolean(source.flowArrowVisible, true)
     normalized.polylineLineCap = ['round', 'butt', 'square'].includes(source.polylineLineCap) ? source.polylineLineCap : (['round', 'butt', 'square'].includes(source.lineCap) ? source.lineCap : 'round')
     normalized.polylineLineJoin = ['round', 'bevel', 'miter'].includes(source.polylineLineJoin) ? source.polylineLineJoin : (['round', 'bevel', 'miter'].includes(source.lineJoin) ? source.lineJoin : 'round')
     normalized.borderDashLength = clampNumber(finiteNumber(source.borderDashLength, normalized.polylineStyle === 'dotted' ? 2 : 8), .1, 50)
@@ -346,6 +351,7 @@ export function normalizeNode(node) {
     normalized.borderVisible = source.borderVisible === true
     normalized.stroke = String(source.stroke || '#485563')
     normalized.backgroundOpacity = 0
+    if (flowDirection && normalized.animationDirection === 'alternate') normalized.animationDirection = 'normal'
   }
   if (normalized.type === 'table') {
     const alignments = ['left', 'center', 'right']

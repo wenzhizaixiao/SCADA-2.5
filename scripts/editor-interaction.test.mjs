@@ -373,7 +373,7 @@ test('requires native double-click for text while preserving the table pointer f
   assert.match(appSource, /const TABLE_DOUBLE_POINTER_DELAY = 650/)
   assert.match(appSource, /const TABLE_DOUBLE_POINTER_DISTANCE = 12/)
   assert.match(appSource, /const NODE_DRAG_START_DISTANCE = 4/)
-  assert.match(appSource, /function canStartNodeTextEdit\(node\)[\s\S]*?\['lineShape', 'pencil', 'polyline'\]\.includes\(node\.type\)/)
+  assert.match(appSource, /function canStartNodeTextEdit\(node\)[\s\S]*?!\['lineShape', 'pencil'\]\.includes\(node\.type\)[\s\S]*?!isPolylineNodeType\(node\.type\)/)
 
   const tableFallback = appSource.slice(
     appSource.indexOf('function consumeTableDoublePointerDown'),
@@ -517,7 +517,7 @@ test('starts pencil strokes above existing nodes before selection handlers', () 
   assert.ok(nodeHandler.indexOf('startPencilDrawing(e)') < nodeHandler.indexOf('consumeTableDoublePointerDown'))
   assert.match(appSource, /function drawingPointerDown\(e, drawing\)[\s\S]*?if \(startPencilDrawing\(e\)\) return[\s\S]*?moveDrawing/)
   assert.equal((appSource.match(/v-if="activeTool === 'select' && [^"]*" class="(?:drawing|group|single-node)-transform-box/g) || []).length, 3)
-  assert.match(appSource, /function handleLockedBadgePointerDown\(e, node\)[\s\S]*?activeTool\.value === 'pencil'[\s\S]*?activeTool\.value === 'polyline'[\s\S]*?selectSingleNode\(node\)/)
+  assert.match(appSource, /function handleLockedBadgePointerDown\(e, node\)[\s\S]*?activeTool\.value === 'pencil'[\s\S]*?isPolylineNodeType\(activeTool\.value\)[\s\S]*?selectSingleNode\(node\)/)
   assert.match(appSource, /@pointerdown\.stop="handleLockedBadgePointerDown\(\$event, n\)"/)
 })
 

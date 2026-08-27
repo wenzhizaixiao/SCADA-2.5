@@ -1,9 +1,9 @@
 import {
   Activity, ArrowRight, BarChart3, Box, ChartNoAxesColumnIncreasing, Circle, CircleDot, Clock3, Cloud, Code2,
-  Database, DatabaseZap, Diamond, Droplets, Fan, Gauge, GitBranch, HardDrive, HeartPulse, Hexagon, Image, ListFilter,
+  Database, DatabaseZap, Diamond, Droplets, Fan, Gauge, GitBranch, HardDrive, Hexagon, Image, ListFilter,
   Map as MapIcon, Minus, MousePointer2, MousePointerClick, MoveRight, Network, Pencil, RadioTower, Router, Server,
   Sparkles, Square, SquareCheckBig, Star, TableProperties, TextCursorInput, ToggleLeft, Triangle, Type,
-  Video, Waves
+  TriangleAlert, Video, Waves
 } from 'lucide-vue-next'
 
 // 组件入口、显示名称和新建默认值集中维护，避免页面模板与创建逻辑各留一份配置。
@@ -54,9 +54,9 @@ const COMPONENT_GROUPS = [
     { type: 'cloud', name: '云服务', icon: Cloud }, { type: 'network', name: '网络节点', icon: Network }
   ]},
   { name: '动效组件', open: true, items: [
-    { type: 'flowPipe', name: '流动管道', icon: MoveRight }, { type: 'rotatingFan', name: '旋转风机', icon: Fan },
+    { type: 'flowDirection', name: '流向', icon: MoveRight }, { type: 'flowPipe', name: '流动管道', icon: MoveRight }, { type: 'rotatingFan', name: '旋转风机', icon: Fan },
     { type: 'signalLight', name: '信号灯', icon: RadioTower }, { type: 'waterTank', name: '动态水箱', icon: Droplets },
-    { type: 'heartbeat', name: '心跳监测', icon: HeartPulse }, { type: 'particles', name: '粒子流', icon: Waves }
+    { type: 'heartbeat', name: '告警', icon: TriangleAlert }, { type: 'particles', name: '粒子流', icon: Waves }
   ]},
   { name: '自定义动效', open: true, items: [
     { type: 'customMotion', name: '自定义图形', icon: Sparkles }, { type: 'customTextMotion', name: '动态文字', icon: Type },
@@ -90,8 +90,8 @@ export const SHAPE_DEFAULTS = {
   terminal: ['开始 / 结束', 150, 64], database: ['数据库', 115, 95], gauge: ['仪表盘', 120, 120], server: ['服务器', 120, 90],
   disk: ['存储器', 120, 85], router: ['路由器', 130, 80], chart: ['数据图表', 180, 110], progress: ['68%', 180, 45],
   code: ['function main() {}', 190, 90], cloud: ['云服务', 140, 80], network: ['网络节点', 140, 74],
-  flowPipe: ['介质流动', 190, 48], rotatingFan: ['风机', 110, 110], signalLight: ['运行状态', 90, 130],
-  waterTank: ['液位', 120, 150], heartbeat: ['实时心率', 180, 85], particles: ['粒子流', 180, 90],
+  flowDirection: ['流向', 220, 130], flowPipe: ['介质流动', 190, 48], rotatingFan: ['风机', 110, 110], signalLight: ['运行状态', 90, 130],
+  waterTank: ['液位', 120, 150], heartbeat: ['告警', 110, 100], particles: ['粒子流', 180, 90],
   customMotion: ['自定义图形', 150, 100], customTextMotion: ['动态文字', 180, 70],
   customImageMotion: ['动态图片', 170, 110], customIndicator: ['状态指示', 140, 90]
 }
@@ -125,5 +125,5 @@ export const FORM_NODE_DEFAULTS = {
 
 export const ANIMATION_DEFAULTS = {
   chart: 'flow', gauge: 'flow', progress: 'none', cloud: 'float', network: 'pulse', server: 'blink', router: 'pulse',
-  flowPipe: 'flow', rotatingFan: 'flow', signalLight: 'blink', waterTank: 'flow', heartbeat: 'pulse', particles: 'flow'
+  flowDirection: 'flow', flowPipe: 'flow', rotatingFan: 'flow', signalLight: 'blink', waterTank: 'flow', heartbeat: 'pulse', particles: 'flow'
 }

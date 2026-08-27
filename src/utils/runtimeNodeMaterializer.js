@@ -44,6 +44,7 @@ const DIRECT_TARGETS = new Set([
   'animationDuration'
 ])
 const SIGNAL_COLOR_TARGET_PATTERN = /^signalColors\.(\d+)$/
+const TABLE_BINDING_TARGETS = new Set(['tableData', 'tableTitle', 'tableHeaders', 'tableCells'])
 
 const RUNTIME_TABLE_CELL_FORMAT_LIMITS = Object.freeze({
   maxLength: MAX_RUNTIME_TABLE_CELL_TEXT_LENGTH,
@@ -104,9 +105,133 @@ function materializeTableData(node, tableData) {
   }
 }
 
+function tableHeaderDescriptor(value, index) {
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    return {
+      key: String(value.key || `column${index + 1}`),
+      title: tableCellText(value.title ?? value.label ?? value.name ?? value.key ?? `列 ${index + 1}`),
+      explicitKey: Boolean(String(value.key ?? '').trim())
+    }
+  }
+  return {
+    key: '',
+    title: tableCellText(value ?? `列 ${index + 1}`),
+    explicitKey: false
+  }
+}
+
+function inferredTableRowKeys(rows, maximum) {
+  const keys = []
+  const seen = new Set()
+  for (const row of rows) {
+    if (!row || typeof row !== 'object' || Array.isArray(row)) continue
+    let inspected = 0
+    try {
+      for (const key in row) {
+        inspected += 1
+        if (inspected > MAX_RUNTIME_TABLE_COLUMNS * 2 + 4) break
+        if (!Object.prototype.hasOwnProperty.call(row, key) || seen.has(key)) continue
+        if (key === '__proto__' || key === 'prototype' || key === 'constructor') continue
+        seen.add(key)
+        keys.push(key)
+        if (keys.length >= maximum) return keys
+      }
+    } catch {
+      // Keep the keys already read from hostile or transient records.
+    }
+  }
+  return keys
+}
+
+function tableArrayRowWidth(row) {
+  if (!Array.isArray(row)) return 0
+  try {
+    const length = Number(row.length)
+    if (!Number.isFinite(length)) return 0
+    return Math.min(MAX_RUNTIME_TABLE_COLUMNS, Math.max(0, Math.trunc(length)))
+  } catch {
+    return 0
+  }
+}
+
+function materializedTableColumnWidthsPx(node, columnCount) {
+  const sourceWidths = Array.isArray(node.tableColumnWidthsPx) ? node.tableColumnWidthsPx : []
+  if (!sourceWidths.length || sourceWidths.length >= columnCount) return node.tableColumnWidthsPx
+
+  const validWidths = sourceWidths
+    .map(width => Number(width))
+    .filter(width => Number.isFinite(width) && width > 0)
+  const fallbackWidth = validWidths.length
+    ? validWidths.reduce((total, width) => total + width, 0) / validWidths.length
+    : 120
+  return Array.from({ length: columnCount }, (_, index) => {
+    const width = Number(sourceWidths[index])
+    return Math.max(40, Math.min(2000, Number.isFinite(width) && width > 0 ? width : fallbackWidth))
+  })
+}
+
+function materializeTableSections(node, headerData, rowData) {
+  const sourceHeaders = Array.isArray(headerData)
+    ? headerData.slice(0, MAX_RUNTIME_TABLE_COLUMNS)
+    : []
+  const sourceRows = Array.isArray(rowData)
+    ? rowData.slice(0, MAX_RUNTIME_TABLE_ROWS)
+    : []
+  const inferredKeys = inferredTableRowKeys(sourceRows, MAX_RUNTIME_TABLE_COLUMNS)
+  let arrayRowWidth = 0
+  for (const row of sourceRows) {
+    arrayRowWidth = Math.max(arrayRowWidth, tableArrayRowWidth(row))
+    if (arrayRowWidth >= MAX_RUNTIME_TABLE_COLUMNS) break
+  }
+  const columnCount = Math.max(
+    1,
+    Math.min(
+      MAX_RUNTIME_TABLE_COLUMNS,
+      Math.max(sourceHeaders.length, arrayRowWidth, inferredKeys.length)
+    )
+  )
+  const descriptors = Array.from({ length: columnCount }, (_, index) => (
+    tableHeaderDescriptor(sourceHeaders[index], index)
+  ))
+  const explicitKeys = new Set(descriptors
+    .filter(descriptor => descriptor.explicitKey)
+    .map(descriptor => descriptor.key))
+  const positionalKeys = inferredKeys.filter(key => !explicitKeys.has(key))
+  let positionalKeyIndex = 0
+  const keys = descriptors.map((descriptor, index) => {
+    if (descriptor.explicitKey) return descriptor.key
+    return positionalKeys[positionalKeyIndex++] || `column${index + 1}`
+  })
+  const headers = descriptors.map((descriptor, index) => (
+    descriptor.title || `列 ${index + 1}`
+  ))
+  const cells = sourceRows.map(row => keys.map((key, columnIndex) => {
+    if (Array.isArray(row)) return tableCellText(row[columnIndex])
+    if (row && typeof row === 'object') {
+      try {
+        return Object.prototype.hasOwnProperty.call(row, key) ? tableCellText(row[key]) : ''
+      } catch {
+        return '[Thrown]'
+      }
+    }
+    return columnIndex === 0 ? tableCellText(row) : ''
+  }))
+
+  while (cells.length < 1) cells.push(Array.from({ length: columnCount }, () => ''))
+  const tableColumnWidthsPx = materializedTableColumnWidthsPx(node, columnCount)
+  return {
+    ...node,
+    tableHeaders: headers,
+    tableCells: cells,
+    tableRows: cells.length,
+    tableColumns: columnCount,
+    ...(tableColumnWidthsPx === undefined ? {} : { tableColumnWidthsPx })
+  }
+}
+
 /**
  * 将运行时覆盖值物化成只读视觉节点。未绑定时直接返回原节点；有绑定时仅浅拷贝，
- * 表格数组只在 tableData 变化时生成，绝不把实时值写回图纸 JSON。
+ * 表格数组只在表格绑定变化时生成，绝不把实时值写回图纸 JSON。
  */
 export function materializeRuntimeNode(node, getPointValue) {
   if (!node || typeof node !== 'object' || !Array.isArray(node.dataBindings) || !node.dataBindings.length) return node
@@ -117,17 +242,33 @@ export function materializeRuntimeNode(node, getPointValue) {
 
   let effective = { ...node }
   let signalColors = null
+  if (Object.prototype.hasOwnProperty.call(overrides, 'tableData')) {
+    effective = materializeTableData(effective, overrides.tableData)
+  }
+  if (node.type === 'table' && Object.prototype.hasOwnProperty.call(overrides, 'text')) {
+    effective.text = overrides.text
+    effective.tableTitle = overrides.text
+  }
+  if (Object.prototype.hasOwnProperty.call(overrides, 'tableTitle')) {
+    effective.tableTitle = overrides.tableTitle
+  }
+  const hasHeaderOverride = Object.prototype.hasOwnProperty.call(overrides, 'tableHeaders')
+  const hasRowOverride = Object.prototype.hasOwnProperty.call(overrides, 'tableCells')
+  if (hasHeaderOverride || hasRowOverride) {
+    effective = materializeTableSections(
+      effective,
+      hasHeaderOverride ? overrides.tableHeaders : effective.tableHeaders,
+      hasRowOverride ? overrides.tableCells : effective.tableCells
+    )
+  }
   for (const target of targets) {
-    if (target === 'fill' || target === 'stroke' || target === 'visualPrimaryColor') {
+    if (TABLE_BINDING_TARGETS.has(target) || (node.type === 'table' && target === 'text')) continue
+    if (target === 'fill' || target === 'stroke' || target === 'visualPrimaryColor' || target === 'polylineColor') {
       effective[target] = runtimeColor(overrides[target], node[target])
       continue
     }
     if (target === 'animationPlaying') {
       effective.animationPaused = !Boolean(overrides.animationPlaying)
-      continue
-    }
-    if (target === 'tableData') {
-      effective = materializeTableData(effective, overrides.tableData)
       continue
     }
     const signalColorMatch = SIGNAL_COLOR_TARGET_PATTERN.exec(target)

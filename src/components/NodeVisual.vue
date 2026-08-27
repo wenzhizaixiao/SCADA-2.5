@@ -1,6 +1,6 @@
 <script setup>
 import { computed, getCurrentInstance, nextTick, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue'
-import { Check, ChevronDown, Clock3, Cloud, Database, HardDrive, HeartPulse, Image, Network, Router, Server, Sparkles, Video } from 'lucide-vue-next'
+import { Check, ChevronDown, Clock3, Cloud, Database, HardDrive, Image, Network, Router, Server, Sparkles, Video } from 'lucide-vue-next'
 import RuntimeValueText from './RuntimeValueText.vue'
 import { normalizedVisualScale } from '../utils/editorGeometry'
 import { resolveTimeValue, timeInputStep, timeInputType } from '../utils/formTime'
@@ -19,6 +19,8 @@ import {
 import {
   polylineArrowSize,
   polylineDashArray,
+  polylineDashCycle,
+  isPolylineNodeType,
   polylineLineOpacity,
   polylineLineWidth,
   polylineOutlineWidth,
@@ -29,6 +31,7 @@ import {
   createTableVirtualWindow,
   shouldVirtualizeTable
 } from '../utils/tableVirtualization'
+import { createTableCellViewPayload } from '../utils/tableCellViewer.js'
 import { bindingPointIds } from '../models/dataBindingModel.js'
 import { MAX_SIGNAL_COLORS } from '../config/componentBindingSchema.js'
 import {
@@ -39,7 +42,7 @@ import {
 import { normalizeRuntimeKey, runtimeKeySignature } from '../utils/runtimeKey.js'
 import { rectangularNodeBorderGeometry } from '../utils/nodeBorderGeometry.js'
 
-const visualOnlyTypes = new Set(['flowPipe', 'rotatingFan', 'signalLight', 'waterTank', 'heartbeat', 'particles'])
+const visualOnlyTypes = new Set(['flowDirection', 'flowPipe', 'rotatingFan', 'signalLight', 'waterTank', 'heartbeat', 'particles'])
 const formVisualTypes = new Set(['table', 'checkbox', 'radio', 'switch', 'formProgress', 'button', 'input', 'select', 'time'])
 
 function fontWeight(node) {
@@ -526,7 +529,8 @@ function tableCellCanOpen(cell) {
   return node.value.tableContentDisplay !== 'wrap' && !cell.header && String(cell.text || '').length > 0
 }
 function emitTableCellView(cell) {
-  emit('table-cell-view', { row: cell.row, column: cell.column })
+  const payload = createTableCellViewPayload(node.value, cell)
+  if (payload) emit('table-cell-view', payload)
 }
 function handleTableCellClick(event, cell) {
   if (!props.preview || !tableCellCanOpen(cell)) return
@@ -730,7 +734,7 @@ function visualTimestamp() {
 // delay aligns progressively mounted nodes to the same clock without reactive
 // per-node updates on every frame.
 function hasBuiltInCssAnimation(source) {
-  if (['flowPipe', 'rotatingFan', 'waterTank', 'particles'].includes(source?.type)) {
+  if (['flowDirection', 'flowPipe', 'rotatingFan', 'waterTank', 'particles'].includes(source?.type)) {
     return source.animation === 'flow'
   }
   return source?.type === 'heartbeat' && source.animation === 'pulse'
@@ -899,6 +903,14 @@ function polylinePath(node) {
   if (coordinates.length === 1) return `M ${first.x} ${first.y} L ${first.x + .001} ${first.y + .001}`
   return `M ${first.x} ${first.y} ${coordinates.slice(1).map(point => `L ${point.x} ${point.y}`).join(' ')}`
 }
+function polylineStartArrowVisible(node) {
+  if (node.type === 'flowDirection') return node.flowArrowVisible !== false && node.animationDirection === 'reverse'
+  return node.polylineStartMarker === 'arrow'
+}
+function polylineEndArrowVisible(node) {
+  if (node.type === 'flowDirection') return node.flowArrowVisible !== false && node.animationDirection !== 'reverse'
+  return node.polylineEndMarker === 'arrow'
+}
 if (props.node.type === 'signalLight') {
   setupSignalMotionPreference()
   watch(() => {
@@ -976,12 +988,12 @@ function colorWithOpacity(color, opacity = 1) {
       '--motion-rotate': `${node.motionRotate || 360}deg`,
       '--motion-color': node.motionColor || '#16b89a',
       '--visual-primary-color': node.visualPrimaryColor || '#16b89a',
-      background: node.type === 'polyline' ? 'transparent' : colorWithOpacity(node.fill, node.backgroundOpacity ?? 1),
+      background: isPolylineNodeType(node.type) ? 'transparent' : colorWithOpacity(node.fill, node.backgroundOpacity ?? 1),
       borderColor: node.stroke,
       borderWidth: 0,
       borderStyle: 'none',
-      boxShadow: node.type === 'polyline' ? 'none' : undefined,
-      overflow: node.type === 'polyline' ? 'visible' : undefined,
+      boxShadow: isPolylineNodeType(node.type) ? 'none' : undefined,
+      overflow: isPolylineNodeType(node.type) ? 'visible' : undefined,
       color: node.color,
       borderRadius: node.type === 'lineShape' ? '0' : `${customBorderGeometry.outerRadius}px`,
       opacity: node.opacity ?? 1,
@@ -998,7 +1010,7 @@ function colorWithOpacity(color, opacity = 1) {
         <line v-if="lineShapeBorderWidth(visualNode) > 0 && lineShapeInnerThickness(visualNode) > 0" data-testid="line-shape-body-fill" :x1="lineShapeBodyInset(visualNode)" :y1="lineShapeHeight(visualNode) / 2" :x2="lineShapeWidth(visualNode) - lineShapeBodyInset(visualNode)" :y2="lineShapeHeight(visualNode) / 2" :stroke="colorWithOpacity(node.fill, node.backgroundOpacity ?? 1)" :stroke-width="lineShapeInnerThickness(visualNode)" :stroke-dasharray="lineShapeBodyDashArray(visualNode)" :stroke-linecap="node.borderStyle === 'dotted' ? 'round' : 'butt'" />
       </template>
     </svg>
-    <svg v-if="node.borderVisible !== false && !['lineShape','pencil','polyline'].includes(node.type) && !formVisualTypes.has(node.type)" class="custom-border" :viewBox="node.type === 'circle' || ['triangle','diamond','decision','star','hexagon','arrow'].includes(node.type) ? '0 0 100 100' : `0 0 ${customBorderGeometry.width} ${customBorderGeometry.height}`" preserveAspectRatio="none" aria-hidden="true">
+    <svg v-if="node.borderVisible !== false && !['lineShape','pencil','polyline','flowDirection'].includes(node.type) && !formVisualTypes.has(node.type)" class="custom-border" :viewBox="node.type === 'circle' || ['triangle','diamond','decision','star','hexagon','arrow'].includes(node.type) ? '0 0 100 100' : `0 0 ${customBorderGeometry.width} ${customBorderGeometry.height}`" preserveAspectRatio="none" aria-hidden="true">
       <circle v-if="node.type === 'circle'" cx="50" cy="50" r="50" />
       <polygon v-else-if="['triangle','diamond','decision','star','hexagon','arrow'].includes(node.type)" :points="({ triangle: '50,0 100,100 0,100', diamond: '50,0 100,50 50,100 0,50', decision: '50,0 100,50 50,100 0,50', star: '50,0 61,34 100,34 68,55 79,92 50,70 21,92 32,55 0,34 39,34', hexagon: '25,0 75,0 100,50 75,100 25,100 0,50', arrow: '0,25 65,25 65,0 100,50 65,100 65,75 0,75' })[node.type]" />
       <rect v-else x="0" y="0" :width="customBorderGeometry.width" :height="customBorderGeometry.height" :rx="customBorderGeometry.radius" :ry="customBorderGeometry.radius" />
@@ -1008,14 +1020,14 @@ function colorWithOpacity(color, opacity = 1) {
         <path :d="pencilPath(node)" :fill="node.pencilClosed ? colorWithOpacity(node.pencilColor, .16) : 'none'" :stroke="node.pencilColor" :stroke-width="Math.max(.1, Number(node.pencilWidth) || 2)" :stroke-dasharray="node.pencilDash ? `${Math.max(1, (Number(node.pencilWidth) || 2) * 4)} ${Math.max(1, (Number(node.pencilWidth) || 2) * 3)}` : 'none'" :stroke-linecap="node.pencilLineCap || 'round'" :stroke-linejoin="node.pencilLineJoin || 'round'" vector-effect="non-scaling-stroke" />
       </svg>
     </template>
-    <template v-else-if="node.type === 'polyline'">
-      <svg class="pencil-node-visual polyline-node-visual" :viewBox="`0 0 ${visualNode.w} ${visualNode.h}`" preserveAspectRatio="none" aria-label="线段">
+    <template v-else-if="isPolylineNodeType(node.type)">
+      <svg class="pencil-node-visual polyline-node-visual" :viewBox="`0 0 ${visualNode.w} ${visualNode.h}`" preserveAspectRatio="none" :aria-label="node.type === 'flowDirection' ? '流向' : '线段'">
         <defs>
-          <marker v-if="node.polylineStartMarker === 'arrow'" :id="polylineStartMarkerId" viewBox="0 0 10 10" :markerWidth="polylineArrowSize(node)" :markerHeight="polylineArrowSize(node)" refX="9" refY="5" markerUnits="userSpaceOnUse" orient="auto-start-reverse" overflow="visible"><path d="M0,0 L10,5 L0,10 Z" :fill="colorWithOpacity(node.polylineColor || '#485563', polylineLineOpacity(node))" :stroke="polylineOutlineWidth(node) > 0 ? (node.stroke || '#485563') : 'none'" :stroke-width="polylineOutlineWidth(node)" stroke-linejoin="round" vector-effect="non-scaling-stroke" paint-order="stroke fill" /></marker>
-          <marker v-if="node.polylineEndMarker === 'arrow'" :id="polylineEndMarkerId" viewBox="0 0 10 10" :markerWidth="polylineArrowSize(node)" :markerHeight="polylineArrowSize(node)" refX="9" refY="5" markerUnits="userSpaceOnUse" orient="auto" overflow="visible"><path d="M0,0 L10,5 L0,10 Z" :fill="colorWithOpacity(node.polylineColor || '#485563', polylineLineOpacity(node))" :stroke="polylineOutlineWidth(node) > 0 ? (node.stroke || '#485563') : 'none'" :stroke-width="polylineOutlineWidth(node)" stroke-linejoin="round" vector-effect="non-scaling-stroke" paint-order="stroke fill" /></marker>
+          <marker v-if="polylineStartArrowVisible(node)" :id="polylineStartMarkerId" viewBox="0 0 10 10" :markerWidth="polylineArrowSize(node)" :markerHeight="polylineArrowSize(node)" refX="9" refY="5" markerUnits="userSpaceOnUse" orient="auto-start-reverse" overflow="visible"><path d="M0,0 L10,5 L0,10 Z" :fill="colorWithOpacity(node.polylineColor || '#485563', polylineLineOpacity(node))" :stroke="polylineOutlineWidth(node) > 0 ? (node.stroke || '#485563') : 'none'" :stroke-width="polylineOutlineWidth(node)" stroke-linejoin="round" vector-effect="non-scaling-stroke" paint-order="stroke fill" /></marker>
+          <marker v-if="polylineEndArrowVisible(node)" :id="polylineEndMarkerId" viewBox="0 0 10 10" :markerWidth="polylineArrowSize(node)" :markerHeight="polylineArrowSize(node)" refX="9" refY="5" markerUnits="userSpaceOnUse" orient="auto" overflow="visible"><path d="M0,0 L10,5 L0,10 Z" :fill="colorWithOpacity(node.polylineColor || '#485563', polylineLineOpacity(node))" :stroke="polylineOutlineWidth(node) > 0 ? (node.stroke || '#485563') : 'none'" :stroke-width="polylineOutlineWidth(node)" stroke-linejoin="round" vector-effect="non-scaling-stroke" paint-order="stroke fill" /></marker>
         </defs>
-        <path v-if="polylineOutlineWidth(node) > 0" data-testid="polyline-node-outline" :d="polylinePath(visualNode)" fill="none" :stroke="node.stroke || '#485563'" :stroke-width="polylineLineWidth(node) + polylineOutlineWidth(node) * 2" :stroke-dasharray="polylineDashArray(node)" :stroke-linecap="polylineStrokeLineCap(node)" :stroke-linejoin="node.polylineLineJoin || 'round'" vector-effect="non-scaling-stroke" />
-        <path data-testid="polyline-node-path" :d="polylinePath(visualNode)" fill="none" :stroke="colorWithOpacity(node.polylineColor || '#485563', polylineLineOpacity(node))" :stroke-width="polylineLineWidth(node)" :stroke-dasharray="polylineDashArray(node)" :stroke-linecap="polylineStrokeLineCap(node)" :stroke-linejoin="node.polylineLineJoin || 'round'" :marker-start="node.polylineStartMarker === 'arrow' ? `url(#${polylineStartMarkerId})` : undefined" :marker-end="node.polylineEndMarker === 'arrow' ? `url(#${polylineEndMarkerId})` : undefined" vector-effect="non-scaling-stroke" />
+        <path v-if="polylineOutlineWidth(node) > 0" data-testid="polyline-node-outline" :class="{ 'flow-direction-path': node.type === 'flowDirection' }" :style="node.type === 'flowDirection' ? { '--flow-dash-cycle': `${polylineDashCycle(node)}px` } : undefined" :d="polylinePath(visualNode)" fill="none" :stroke="node.stroke || '#485563'" :stroke-width="polylineLineWidth(node) + polylineOutlineWidth(node) * 2" :stroke-dasharray="polylineDashArray(node)" :stroke-linecap="polylineStrokeLineCap(node)" :stroke-linejoin="node.polylineLineJoin || 'round'" vector-effect="non-scaling-stroke" />
+        <path :data-testid="node.type === 'flowDirection' ? 'flow-direction-path' : 'polyline-node-path'" :class="{ 'flow-direction-path': node.type === 'flowDirection' }" :style="node.type === 'flowDirection' ? { '--flow-dash-cycle': `${polylineDashCycle(node)}px` } : undefined" :d="polylinePath(visualNode)" fill="none" :stroke="colorWithOpacity(node.polylineColor || '#485563', polylineLineOpacity(node))" :stroke-width="polylineLineWidth(node)" :stroke-dasharray="polylineDashArray(node)" :stroke-linecap="polylineStrokeLineCap(node)" :stroke-linejoin="node.polylineLineJoin || 'round'" :marker-start="polylineStartArrowVisible(node) ? `url(#${polylineStartMarkerId})` : undefined" :marker-end="polylineEndArrowVisible(node) ? `url(#${polylineEndMarkerId})` : undefined" vector-effect="non-scaling-stroke" />
       </svg>
     </template>
     <template v-else-if="node.type === 'chart'">
@@ -1066,10 +1078,9 @@ function colorWithOpacity(color, opacity = 1) {
     </template>
     <template v-else-if="node.type === 'rotatingFan'">
       <div class="fan-visual">
-        <svg class="fan-rotor" viewBox="0 0 48 48" aria-hidden="true">
-          <path v-for="index in 4" :key="index" class="fan-blade" d="M24 24 C30 18 32 8 24 4" :transform="`rotate(${(index - 1) * 90} 24 24)`" />
-          <circle class="fan-hub-ring" cx="24" cy="24" r="8" />
-          <circle class="fan-hub" cx="24" cy="24" r="4" />
+        <svg class="fan-rotor" viewBox="0 0 64 64" aria-hidden="true">
+          <rect v-for="index in 4" :key="index" class="fan-blade" x="28" y="2" width="8" height="32" rx="4" :transform="`rotate(${(index - 1) * 90} 32 32)`" />
+          <circle class="fan-hub" cx="32" cy="32" r="4.5" />
         </svg>
       </div>
     </template>
@@ -1080,7 +1091,10 @@ function colorWithOpacity(color, opacity = 1) {
       <div class="tank-visual"><i :style="{ height: `${waterTankPercent}%` }"></i><b>{{ waterTankText }}%</b></div>
     </template>
     <template v-else-if="node.type === 'heartbeat'">
-      <HeartPulse class="heartbeat-visual" :size="48" />
+      <svg class="alarm-visual" viewBox="0 0 64 64" preserveAspectRatio="xMidYMid meet" aria-hidden="true">
+        <path class="alarm-shape" d="M32 7 L58 54 H6 Z" />
+        <path class="alarm-mark" d="M32 22 V38 M32 47 V47.5" />
+      </svg>
     </template>
     <template v-else-if="node.type === 'particles'">
       <div class="particles-visual"><i v-for="index in 8" :key="index" :style="{ '--particle-delay': particleAnimationDelay(index) }"></i></div>
@@ -1114,8 +1128,8 @@ function colorWithOpacity(color, opacity = 1) {
     <Database v-else-if="node.type === 'database'" :size="30" />
     <HardDrive v-else-if="node.type === 'disk'" :size="30" />
     <Router v-else-if="node.type === 'router'" :size="30" />
-    <span v-if="!formVisualTypes.has(node.type) && !['progress','pencil','polyline'].includes(node.type) && !node.type.startsWith('custom') && !visualOnlyTypes.has(node.type) && !(node.type === 'image' && node.imageUrl) && !(node.type === 'video' && node.videoUrl)" class="node-text-content" :class="{ 'text-layout-vertical': node.type === 'text' && node.textLayout === 'vertical' }">{{ node.text }}</span>
-    <RuntimeValueText v-if="node.dataKey && !hasEnabledRuntimeBinding(node, 'text') && !formVisualTypes.has(node.type) && !['gauge','progress','polyline'].includes(node.type)" :key="node.dataKey" :data-key="node.dataKey" :runtime-store="runtimeStore" />
+    <span v-if="!formVisualTypes.has(node.type) && !['progress','pencil','polyline','flowDirection'].includes(node.type) && !node.type.startsWith('custom') && !visualOnlyTypes.has(node.type) && !(node.type === 'image' && node.imageUrl) && !(node.type === 'video' && node.videoUrl)" class="node-text-content" :class="{ 'text-layout-vertical': node.type === 'text' && node.textLayout === 'vertical' }">{{ node.text }}</span>
+    <RuntimeValueText v-if="node.dataKey && !hasEnabledRuntimeBinding(node, 'text') && !formVisualTypes.has(node.type) && !['gauge','progress','polyline','flowDirection'].includes(node.type)" :key="node.dataKey" :data-key="node.dataKey" :runtime-store="runtimeStore" />
   </div>
   </div>
 </template>

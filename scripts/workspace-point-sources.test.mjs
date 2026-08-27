@@ -164,6 +164,7 @@ test('keeps nested credentials, subscription payloads and complete responses mem
   const config = {
     subprotocol: 'tc2d-runtime-v1,subprotocol-token-secret',
     subscribeMessage: '{"action":"subscribe","token":"subscription-token-secret","site":"line1"}',
+    body: '{"deviceId":"line1","token":"request-body-token-secret"}',
     mapping: {
       site: 'line1',
       credentials: {
@@ -194,7 +195,7 @@ test('keeps nested credentials, subscription payloads and complete responses mem
   }])
 
   const persisted = storage.serialized()
-  assert.doesNotMatch(persisted, /subprotocol-token-secret|subscription-token-secret|object-token-secret|object-auth-secret|object-signature-secret|json-authorization-secret|json-password-secret|response-message-secret|response-preview-secret/)
+  assert.doesNotMatch(persisted, /subprotocol-token-secret|subscription-token-secret|request-body-token-secret|object-token-secret|object-auth-secret|object-signature-secret|json-authorization-secret|json-password-secret|response-message-secret|response-preview-secret/)
 
   await store.save('another-nested-workspace', [])
   const [samePageSource] = await store.load('nested-security-workspace')
@@ -204,6 +205,7 @@ test('keeps nested credentials, subscription payloads and complete responses mem
   const [reloadedSource] = await createWorkspacePointSourceStore({ storage }).load('nested-security-workspace')
   assert.equal(Object.hasOwn(reloadedSource.config, 'subprotocol'), false)
   assert.equal(Object.hasOwn(reloadedSource.config, 'subscribeMessage'), false)
+  assert.deepEqual(JSON.parse(reloadedSource.config.body), { deviceId: 'line1' })
   assert.deepEqual(reloadedSource.config.mapping, { site: 'line1' })
   assert.deepEqual(JSON.parse(reloadedSource.config.requestOptions), { route: { site: 'line1' } })
   assert.equal(reloadedSource.config.safeJson, config.safeJson)
@@ -1112,13 +1114,13 @@ test('invalidates disabled, offline and removed points and republishes them only
   assert.equal((await gateway.listPoints()).length, 0)
 })
 
-test('App restores source snapshots while the manager remains connection-lifecycle only', () => {
+test('App owns runtime snapshot delivery while the manager only tests connection lifecycle', () => {
   assert.match(appSource, /import \{ drawingRepository, operationGateway, pointCatalogGateway, runtimeGateway, timeService \} from '\.\/services\/backend'/)
-  assert.match(appSource, /await pointCatalogGateway\.activateWorkspace\(targetWorkspace\)/)
-  assert.match(appSource, /activatePointCatalogWorkspace\(nextWorkspace, \{ replay: false \}\)/)
-  assert.match(appSource, /activatePointCatalogWorkspace\(workspaceId\.value, \{ replay: false \}\)/)
+  assert.match(appSource, /drawingPointSourceScopeId\(normalizedWorkspace, normalizedDrawingId\)/)
+  assert.match(appSource, /await pointCatalogGateway\.activateWorkspace\(targetScopeId, \{[\s\S]*?legacyWorkspaceId:[\s\S]*?publishSnapshots: false/)
+  assert.match(appSource, /await activateCurrentDrawingPointCatalog\(\{ inheritLegacyWorkspace: false \}\)/)
   assert.match(appSource, /invalidatedPointIds\.map\(key => \(\{ key, value: undefined \}\)\)/)
-  assert.match(appSource, /pointCatalogGateway\.subscribeSnapshots\?\.\(snapshot => \{[\s\S]*?sourceBindingRuntime\.ingest\(snapshot\)[\s\S]*?\}, \{ shared: true \}\)/)
+  assert.match(appSource, /pointCatalogGateway\.subscribeSnapshots\?\.\(snapshot => \{[\s\S]*?snapshot\?\.workspaceId !== activePointSourceScopeId\.value[\s\S]*?sourceBindingRuntime\.ingest\(snapshot\)[\s\S]*?\}, \{ shared: true \}\)/)
   assert.match(appSource, /const sourceSnapshotReplayCoordinator = createSourceSnapshotReplayCoordinator\([\s\S]*?getSourceSnapshot\?\.\(sourceId, \{ shared: true \}\)/)
   assert.match(appSource, /function replaySourceSnapshotsForNodes[\s\S]*?bindingSourceIds\(node\)[\s\S]*?sourceSnapshotReplayCoordinator\.replay\(sourceIds, \{ force \}\)/)
   assert.match(appSource, /const pointIds = requiredIds == null[\s\S]*?indexedLegacyPointIds\(\)[\s\S]*?getPointsByIds\(pointIds\)/)
@@ -1129,7 +1131,9 @@ test('App restores source snapshots while the manager remains connection-lifecyc
   assert.equal(sourceProtocolShortName('MySQL'), 'MYSQL')
   assert.match(managerSource, /sourceProtocolShortName as protocolShortName/)
   assert.match(managerSource, /getSource\(id, \{ includePoints: false \}\)/)
-  assert.match(managerSource, /testSource\(operationSourceId, \{ includePoints: false \}\)/)
+  assert.match(managerSource, /gateway\.testSource\(sourceId, \{ includePoints: false \}\)/)
+  assert.match(managerSource, /gateway\.testSourceDraft\(activeConnectionPayload\(\), \{ sharedSnapshot: true \}\)/)
+  assert.doesNotMatch(managerSource, /sourceBindingRuntime|sourceSnapshotReplayCoordinator|replaySourceSnapshotsForNodes|runtimeGateway\.send/)
   assert.match(managerSource, /gateway\.removeSource\(source\.id\)/)
   assert.match(managerSource, /persistence\.durable/)
   assert.match(managerSource, /仅在当前页面生效，未持久保存/)

@@ -1,6 +1,6 @@
 import { allocateLegacyDrawingNodeIds } from './legacyDrawingIds.js'
 import { migrateLegacyLineShapeNode } from './projectMigration.js'
-import { MAX_POLYLINE_NODE_POINTS } from './polylineGeometry.js'
+import { MAX_POLYLINE_NODE_POINTS, isPolylineNodeType } from './polylineGeometry.js'
 import { getBindableParameter } from '../config/componentBindingSchema.js'
 import {
   MAX_BINDING_JSON_PATH_LENGTH,
@@ -76,15 +76,15 @@ function countNodePathPoints(nodes) {
   let polylinePointCount = 0
   for (const node of nodes) {
     if (node?.type === 'pencil' && Array.isArray(node.pencilPoints)) pencilPointCount += node.pencilPoints.length
-    if (node?.type === 'polyline' && Array.isArray(node.polylinePoints)) polylinePointCount += node.polylinePoints.length
+    if (isPolylineNodeType(node?.type) && Array.isArray(node.polylinePoints)) polylinePointCount += node.polylinePoints.length
   }
   return { pencilPointCount, polylinePointCount }
 }
 
 function validatePolylinePointLimits(nodes, maxPoints) {
   for (const node of nodes) {
-    if (node?.type === 'polyline' && Array.isArray(node.polylinePoints) && node.polylinePoints.length > maxPoints) {
-      invalid('PROJECT_TOO_LARGE', `单条线段最多支持 ${maxPoints} 个节点`)
+    if (isPolylineNodeType(node?.type) && Array.isArray(node.polylinePoints) && node.polylinePoints.length > maxPoints) {
+      invalid('PROJECT_TOO_LARGE', `单条线段或流向最多支持 ${maxPoints} 个节点`)
     }
   }
 }

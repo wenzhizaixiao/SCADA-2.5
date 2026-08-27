@@ -22,6 +22,7 @@ import { resolveBindingValue } from '../src/models/dataBindingModel.js'
 
 const panelSource = readFileSync(new URL('../src/components/CommunicationBindingPanel.vue', import.meta.url), 'utf8')
 const jsonTreeSource = readFileSync(new URL('../src/components/JsonPathTree.vue', import.meta.url), 'utf8')
+const enhancementStyleSource = readFileSync(new URL('../src/enhancements.css', import.meta.url), 'utf8')
 
 function compatibility(valueType, type, value) {
   return directBindingCompatibility({ valueType }, { type, value })
@@ -110,6 +111,17 @@ test('every component parameter type exposes a compatible default response forma
 
   const tableGuide = parameterDataFormatGuide({ valueType: 'table' })
   assert.equal(tableGuide.examples.length, 2)
+  assert.deepEqual(
+    tableGuide.examples.map(example => example.id),
+    ['auto-columns', 'custom-columns']
+  )
+  assert.deepEqual(
+    tableGuide.examples.map(example => example.label),
+    ['自动识别列', '指定表头']
+  )
+  assert.equal(tableGuide.examples[0].recommended, true)
+  assert.match(tableGuide.examples[0].description, /字段.*自动.*列.*字段名.*表头/)
+  assert.match(tableGuide.examples[1].description, /columns\.key.*rows.*字段/)
   assert.ok(Array.isArray(JSON.parse(tableGuide.examples[0].json).table))
   assert.ok(Array.isArray(JSON.parse(tableGuide.examples[1].json).table.rows))
   assert.equal(parameterDataFormatGuide({ valueType: 'percent' }).valueType, 'number')
@@ -144,16 +156,23 @@ test('every table value accepted by the picker can be materialized by the runtim
     tableHeaders: ['静态列'],
     tableCells: [['静态值']]
   }
-  const supportedValues = [
-    [{ id: 1 }],
-    { columns: [{ key: 'id', title: '编号' }], rows: [{ id: 1 }] }
-  ]
-
-  for (const value of supportedValues) {
-    const pointType = Array.isArray(value) ? 'array' : 'object'
-    assert.equal(compatibility('table', pointType, value).compatible, true)
-    assert.notDeepEqual(resolveBindingValue(node, 'tableData', value).rows, [{ column1: '静态值' }])
+  const automaticValue = [{ device: '设备 A', value: 42 }]
+  const customValue = {
+    columns: [{ key: 'device', title: '设备名称' }, { key: 'value', title: '实时值' }],
+    rows: [{ device: '设备 A', value: 42 }]
   }
+
+  assert.equal(compatibility('table', 'array', automaticValue).compatible, true)
+  assert.deepEqual(resolveBindingValue(node, 'tableData', automaticValue), {
+    columns: [{ key: 'device', title: 'device' }, { key: 'value', title: 'value' }],
+    rows: [{ device: '设备 A', value: 42 }]
+  })
+
+  assert.equal(compatibility('table', 'object', customValue).compatible, true)
+  assert.deepEqual(resolveBindingValue(node, 'tableData', customValue), {
+    columns: [{ key: 'device', title: '设备名称' }, { key: 'value', title: '实时值' }],
+    rows: [{ device: '设备 A', value: 42 }]
+  })
 
   const unsupportedValue = { data: { id: 1 } }
   const result = compatibility('table', 'object', unsupportedValue)
@@ -206,8 +225,13 @@ test('communication picker validates a bounded JSONPath sample before explicit c
   assert.match(panelSource, /parameterDataFormatGuide\(activeParameter\.value\?\.source\)/)
   assert.match(panelSource, /label\.endsWith\('数据'\)/)
   assert.match(panelSource, /data-testid="communication-data-format-guide"/)
-  assert.match(panelSource, /formatExample\.jsonPath/)
-  assert.match(panelSource, /formatExample\.json/)
+  assert.match(panelSource, /data-testid="communication-format-variants"/)
+  assert.match(panelSource, /activeFormatExample\.jsonPath/)
+  assert.match(panelSource, /activeFormatExample\.json/)
+  assert.match(panelSource, /activeFormatExample\.description/)
+  assert.match(panelSource, /activeFormatExampleId/)
+  assert.match(panelSource, /<article\s+v-if="activeFormatExample"/)
+  assert.doesNotMatch(panelSource, /<article\s+v-for=/)
   assert.match(panelSource, /signal:\s*'信号灯属性'/)
   assert.match(panelSource, /emit\('bind', \{[\s\S]*?sourceId: selectedSourceId\.value,[\s\S]*?jsonPath: normalizedPath\.value/)
   assert.doesNotMatch(panelSource, /querySourcePoints|listPoints|searchPoints|groupedPoints/)
@@ -217,4 +241,20 @@ test('communication picker validates a bounded JSONPath sample before explicit c
   assert.match(jsonTreeSource, /maxDepth:\s*\{ type: Number, default: 12 \}/)
   assert.match(jsonTreeSource, /function childEntries\(value\)[\s\S]*?const limit = childLimit\.value/)
   assert.match(jsonTreeSource, /if \(result\.length >= visibleLimit\.value\)/)
+})
+
+test('all right panel tabs share the remaining height and scroll their own content', () => {
+  assert.match(
+    enhancementStyleSource,
+    /\.right-panel\s*\{[^}]*display:\s*flex[^}]*flex-direction:\s*column[^}]*min-height:\s*0[^}]*\}/
+  )
+  assert.match(enhancementStyleSource, /\.right-tabs\s*\{[^}]*flex:\s*none[^}]*\}/)
+  assert.match(
+    enhancementStyleSource,
+    /\.right-panel\s*>\s*\.properties\s*\{[^}]*height:\s*auto[^}]*min-height:\s*0[^}]*flex:\s*1[^}]*overflow-y:\s*auto[^}]*\}/
+  )
+  assert.doesNotMatch(
+    panelSource,
+    /\.communication-binding-panel\s*\{[^}]*min-height:\s*100%/
+  )
 })

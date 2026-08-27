@@ -21,7 +21,7 @@ function sourceBetween(source, startMarker, endMarker) {
   return source.slice(start, end)
 }
 
-test('opens one workspace-level data source manager from the final toolbar group', () => {
+test('opens the active drawing data source manager from the final toolbar group', () => {
   assert.match(catalogSource, /id:\s*'dataSource'[\s\S]*?label:\s*'数据源'/)
   const editorToolsSource = sourceBetween(catalogSource, 'export const EDITOR_TOOLS', 'export const WORKSPACE_TOOLS')
   const workspaceToolsSource = sourceBetween(catalogSource, 'export const WORKSPACE_TOOLS', 'const COMPONENT_GROUPS')
@@ -30,15 +30,16 @@ test('opens one workspace-level data source manager from the final toolbar group
   assert.match(appSource, /toolbar-group-divider[\s\S]*?v-for="t in workspaceTools"/)
   assert.ok(
     appSource.indexOf('v-for="t in workspaceTools"') > appSource.indexOf('@click="showGrid = !showGrid"'),
-    'workspace-level data source entry should be the final toolbar category'
+    'the active drawing data source entry should be the final toolbar category'
   )
   assert.match(appSource, /import DataSourceManager from '\.\/components\/DataSourceManager\.vue'/)
   assert.match(appSource, /if \(id === 'dataSource'\)[\s\S]*?dataSourceManagerOpen\.value = true[\s\S]*?return/)
   assert.match(appSource, /<DataSourceManager[\s\S]*?v-if="dataSourceManagerOpen"[\s\S]*?:gateway="pointCatalogGateway"/)
 
   assert.match(sourceManagerSource, /数据源管理/)
-  assert.match(sourceManagerSource, /基础信息/)
-  assert.match(sourceManagerSource, /测试连接/)
+  assert.match(sourceManagerSource, /class="source-detail source-api-workbench"/)
+  assert.match(sourceManagerSource, /连接状态与采集结果/)
+  assert.match(sourceManagerSource, /JSON 解析点位/)
   assert.doesNotMatch(sourceManagerSource, /数据点位|查看全部点位|runPointSearch|querySourcePoints/)
 })
 
@@ -46,11 +47,11 @@ test('keeps page navigation and connection management in their expected location
   const managerHeaderSource = sourceBetween(sourceManagerSource, '<header class="manager-header">', '</header>')
   const managerSidebarSource = sourceBetween(sourceManagerSource, '<aside class="source-sidebar">', '</aside>')
 
-  assert.doesNotMatch(managerHeaderSource, /ArrowLeft|openCreateDialog|新建连接/)
+  assert.doesNotMatch(managerHeaderSource, /ArrowLeft|openProtocolPicker|新建连接/)
   assert.match(managerHeaderSource, /class="icon-button manager-close"[\s\S]*?<X \/>/)
   assert.match(managerHeaderSource, /aria-label="关闭数据源管理，返回图纸"[\s\S]*?@click="requestCloseManager"/)
   assert.match(sourceManagerSource, /function requestCloseManager\(\)[\s\S]*?emit\('close'\)/)
-  assert.match(managerSidebarSource, /class="sidebar-create-button"[\s\S]*?openCreateDialog[\s\S]*?新建连接/)
+  assert.match(managerSidebarSource, /class="sidebar-create-button"[\s\S]*?aria-label="新建连接"[\s\S]*?openProtocolPicker/)
   assert.match(managerSidebarSource, /class="source-item-manage"[\s\S]*?编辑连接：[\s\S]*?<Pencil \/>/)
   assert.match(managerSidebarSource, /@click="requestSelectSource\(source\.id\)"/)
 })
@@ -75,20 +76,21 @@ test('data source mutations invalidate the communication source cache immediatel
   assert.match(bindingPanelSource, /sourceRevision:\s*\{ type: Number, default: 0 \}/)
   assert.match(bindingPanelSource, /async function refreshSourcesAfterMutation\(\)[\s\S]*?invalidateSourceCache\(\)[\s\S]*?loadSources\(\{ force: true \}\)[\s\S]*?loadSnapshot\(sourceId, \{ preservePath: true \}\)/)
   assert.match(bindingPanelSource, /watch\(\(\) => props\.sourceRevision,[\s\S]*?refreshSourcesAfterMutation\(\)/)
+  assert.match(bindingPanelSource, /title="刷新数据源与样例"[\s\S]*?@click="refreshSourcesAfterMutation"/)
 })
 
 test('data source lifecycle relies on snapshot delivery without duplicate UI-triggered replays', () => {
   const replaySource = sourceBetween(appSource, 'async function replaySourceSnapshotsForNodes', 'function rebuildRuntimeDataKeyIndex')
   const replayCoordinatorSource = sourceBetween(appSource, 'const sourceSnapshotReplayCoordinator', 'const unsubscribeSourceSnapshots')
-  const activateSource = sourceBetween(appSource, 'async function activatePointCatalogWorkspace', 'const unsubscribePointCatalog')
+  const activateSource = sourceBetween(appSource, 'async function activatePointCatalogDrawing', 'async function activateCurrentDrawingPointCatalog')
   const bindSource = sourceBetween(appSource, 'async function bindSelectedParameter', 'function unbindSelectedParameter')
   const managerSource = sourceBetween(appSource, 'function handleDataSourceChanged', 'function handleLockedBadgePointerDown')
-  const saveSource = sourceBetween(sourceManagerSource, 'async function saveSource', 'async function testConnection')
+  const testSource = sourceBetween(sourceManagerSource, 'async function testConnection', 'async function toggleSourceEnabled')
 
   assert.match(replaySource, /\{ force = false \}/)
   assert.match(replaySource, /sourceSnapshotReplayCoordinator\.replay\(sourceIds, \{ force \}\)/)
   assert.match(replayCoordinatorSource, /sourceBindingRuntime\.ingest\(snapshot, options\)/)
-  assert.match(activateSource, /if \(options\.replay !== false\) await replaySourceSnapshotsForNodes\(\)/)
+  assert.match(activateSource, /if \(options\.replay !== false\) \{\s*await replaySourceSnapshotsForNodes\(\)\s*if \(!activationIsCurrent\(\)\) return false\s*\}/)
   assert.match(bindSource, /JSON\.stringify\(current\) === JSON\.stringify\(nextBindings\)[\s\S]*?sourceBindingRuntime\.ingest\(snapshot, \{ replay: true \}\)/)
   const changeSource = sourceBetween(managerSource, 'function handleDataSourceChanged', 'function closeDataSourceManager')
   const closeSource = sourceBetween(appSource, 'function closeDataSourceManager', 'function handleLockedBadgePointerDown')
@@ -99,14 +101,17 @@ test('data source lifecycle relies on snapshot delivery without duplicate UI-tri
   assert.doesNotMatch(`${changeSource}\n${closeSource}`, /nodes\.value|replaySourceSnapshotsForNodes/)
   assert.match(appSource, /<DataSourceManager[\s\S]*?@close="closeDataSourceManager"/)
   assert.match(appSource, /if \(dataSourceManagerOpen\.value\)[\s\S]*?e\.key === 'Escape'[\s\S]*?closeDataSourceManager\(\)/)
-  assert.ok(saveSource.indexOf('if (invalid)') < saveSource.indexOf('props.gateway.updateSource'))
-  assert.ok(saveSource.indexOf('return', saveSource.indexOf('if (invalid)')) < saveSource.indexOf('props.gateway.updateSource'))
-  assert.ok(saveSource.indexOf("emit('changed'") > saveSource.indexOf('props.gateway.updateSource'))
+  assert.ok(testSource.indexOf('if (invalid)') < testSource.indexOf('const testsSavedConnection'))
+  assert.ok(testSource.indexOf('return', testSource.indexOf('if (invalid)')) < testSource.indexOf('const testsSavedConnection'))
+  assert.match(testSource, /testsSavedConnection[\s\S]*?props\.gateway\.testSource\(sourceId, \{ includePoints: false \}\)/)
+  assert.match(testSource, /props\.gateway\.testSourceDraft\(activeConnectionPayload\(\), \{ sharedSnapshot: true \}\)/)
+  assert.doesNotMatch(testSource, /props\.gateway\.(?:createSource|updateSource)\(/)
+  assert.match(testSource, /emit\('changed', \{ type: 'source-tested'/)
 })
 
 test('source snapshot replay isolates unrelated sources and invalidates stale document work', () => {
   const replaySource = sourceBetween(appSource, 'async function replaySourceSnapshotsForNodes', 'function rebuildRuntimeDataKeyIndex')
-  const activateSource = sourceBetween(appSource, 'async function activatePointCatalogWorkspace', 'const unsubscribePointCatalog')
+  const activateSource = sourceBetween(appSource, 'async function activatePointCatalogDrawing', 'async function activateCurrentDrawingPointCatalog')
   const resetSource = sourceBetween(appSource, 'function resetDocumentSession', 'function applyProject')
   const applySource = sourceBetween(appSource, 'function applyProject', 'function drawingFileName')
   const unmountSource = sourceBetween(appSource, 'onUnmounted(() => {', '</script>')
@@ -154,6 +159,50 @@ test('source and JSON path selection remain pending until the user confirms the 
   assert.match(bindingPanelSource, /旧绑定待重新选择/)
 })
 
+test('communication source picker shows every connection before optional protocol filtering', () => {
+  const resetPickerFiltersSource = sourceBetween(bindingPanelSource, 'function resetSourcePickerFilters', 'function showMoreSources')
+  const showMoreSourcesSource = sourceBetween(bindingPanelSource, 'function showMoreSources', 'function closeSourcePicker')
+  const closeSourcePickerSource = sourceBetween(bindingPanelSource, 'function closeSourcePicker', 'function openSourcePicker')
+  const openSourcePickerSource = sourceBetween(bindingPanelSource, 'function openSourcePicker', 'function toggleSourcePicker')
+  const closeBindingPageSource = sourceBetween(bindingPanelSource, 'function closeBindingPage', 'async function loadSources')
+  const filterPaginationWatchSource = sourceBetween(bindingPanelSource, 'watch([sourceQuery, sourceProtocolFilter]', 'watch(sourceProtocolOptions')
+  const protocolFallbackWatchSource = sourceBetween(bindingPanelSource, 'watch(sourceProtocolOptions', 'watch(activeFormatGuide')
+
+  assert.match(bindingPanelSource, /import \{\s*createSourceConnectionListModel\s*\} from '\.\.\/utils\/sourceConnectionList\.js'/)
+  assert.doesNotMatch(bindingPanelSource, /sourceProtocolGroupId|expandedSourceGroupId|toggleSourceGroup/)
+  assert.match(bindingPanelSource, /const sourceQuery = ref\(''\)/)
+  assert.match(bindingPanelSource, /const sourceProtocolFilter = ref\('all'\)/)
+  assert.match(bindingPanelSource, /const sourcePickerOpen = ref\(false\)/)
+  assert.match(bindingPanelSource, /const sourceListModel = computed\(\(\) => createSourceConnectionListModel\(sources\.value, \{[\s\S]*?query: sourceQuery\.value,[\s\S]*?protocol: sourceProtocolFilter\.value/)
+  assert.match(bindingPanelSource, /const sourceProtocolOptions = computed\([\s\S]*?sourceListModel\.value\.protocolCounts/)
+  assert.match(bindingPanelSource, /const visibleSourceItems = computed\([\s\S]*?sourceListModel\.value\.filtered/)
+  assert.match(bindingPanelSource, /const selectedSourceFilteredOut = computed\([\s\S]*?!sourceListModel\.value\.filteredIds\.has\(selectedSourceId\.value\)/)
+  assert.match(bindingPanelSource, /data-testid="communication-source-select"[\s\S]*?:aria-expanded="sourcePickerOpen"|:aria-expanded="sourcePickerOpen"[\s\S]*?data-testid="communication-source-select"/)
+  assert.match(bindingPanelSource, /v-if="sourcePickerOpen"[\s\S]*?data-testid="communication-source-picker"[\s\S]*?v-model="sourceQuery"[\s\S]*?data-testid="communication-source-search"/)
+  assert.match(bindingPanelSource, /v-model="sourceProtocolFilter"[\s\S]*?data-testid="communication-source-protocol-filter"[\s\S]*?<option value="all">全部类型/)
+  assert.match(bindingPanelSource, /v-if="sourceListModel\.filtered\.length"[\s\S]*?v-for="source in visibleSourceItems"[\s\S]*?chooseSource\(source\.id\)/)
+  assert.match(bindingPanelSource, /v-if="hiddenSourceItemCount"[\s\S]*?showMoreSources/)
+  assert.match(bindingPanelSource, /function chooseSource\(sourceId\)[\s\S]*?changeSource\(\{ target: \{ value: sourceId \} \}\)[\s\S]*?closeSourcePicker\(\{ restoreFocus: true \}\)/)
+  assert.match(bindingPanelSource, /selectedSource\?\.name \|\| '请选择数据源'/)
+  assert.match(bindingPanelSource, /v-if="selectedSourceFilteredOut"[\s\S]*?当前选择不在筛选结果中/)
+  assert.match(bindingPanelSource, /data-testid="communication-source-search-empty"/)
+  assert.match(bindingPanelSource, /function changeSource\(event\)[\s\S]*?selectedSourceId\.value = text\(event\?\.target\?\.value\)[\s\S]*?sourceQuery\.value = ''[\s\S]*?loadSnapshot\(selectedSourceId\.value\)/)
+  assert.match(resetPickerFiltersSource, /sourceQuery\.value = ''[\s\S]*?sourceProtocolFilter\.value = 'all'[\s\S]*?sourcePickerVisibleLimit\.value = SOURCE_PICKER_PAGE_SIZE/)
+  assert.doesNotMatch(resetPickerFiltersSource, /selectedSourceId\.value|snapshot\.value|pathDraft\.value/)
+  assert.match(showMoreSourcesSource, /Math\.min\([\s\S]*?sourceListModel\.value\.filtered\.length[\s\S]*?sourcePickerVisibleLimit\.value \+ SOURCE_PICKER_PAGE_SIZE/)
+  assert.match(showMoreSourcesSource, /previousIds[\s\S]*?await nextTick\(\)[\s\S]*?firstNewOption\?\.focus\(\)/)
+  assert.match(closeSourcePickerSource, /sourcePickerOpen\.value = false[\s\S]*?resetSourcePickerFilters\(\)/)
+  assert.match(openSourcePickerSource, /resetSourcePickerFilters\(\)[\s\S]*?sourcePickerOpen\.value = true/)
+  assert.match(filterPaginationWatchSource, /sourcePickerVisibleLimit\.value = SOURCE_PICKER_PAGE_SIZE/)
+  assert.doesNotMatch(filterPaginationWatchSource, /sourceQuery\.value =|sourceProtocolFilter\.value =|selectedSourceId\.value =/)
+  assert.match(protocolFallbackWatchSource, /options\.some\(option => option\.value === sourceProtocolFilter\.value\)[\s\S]*?sourceProtocolFilter\.value = 'all'/)
+  assert.match(bindingPanelSource, /function handleSourcePickerPointerDown\(event\)[\s\S]*?sourcePickerElement\.value\?\.contains\(event\.target\)[\s\S]*?closeSourcePicker\(\)/)
+  assert.match(bindingPanelSource, /function handleSourcePickerKeydown\(event\)[\s\S]*?event\.key !== 'Escape'[\s\S]*?event\.stopPropagation\(\)[\s\S]*?closeSourcePicker\(\{ restoreFocus: true \}\)/)
+  assert.match(bindingPanelSource, /onMounted\(\(\) => \{[\s\S]*?document\.addEventListener\('pointerdown', handleSourcePickerPointerDown\)[\s\S]*?document\.addEventListener\('keydown', handleSourcePickerKeydown\)/)
+  assert.match(bindingPanelSource, /onUnmounted\(\(\) => \{[\s\S]*?document\.removeEventListener\('pointerdown', handleSourcePickerPointerDown\)[\s\S]*?document\.removeEventListener\('keydown', handleSourcePickerKeydown\)/)
+  assert.match(closeBindingPageSource, /closeSourcePicker\(\)[\s\S]*?selectedSourceId\.value = ''/)
+})
+
 test('communication snapshot reads are bounded and ignore stale asynchronous results', () => {
   assert.match(bindingPanelSource, /import \{ isUsableSourceSnapshot \} from '\.\.\/utils\/sourceSnapshotValidation\.js'/)
   assert.match(bindingPanelSource, /const sourceLoadGeneration =|let sourceLoadGeneration =/)
@@ -161,7 +210,8 @@ test('communication snapshot reads are bounded and ignore stale asynchronous res
   assert.match(bindingPanelSource, /const nextSources = result\.slice\(0, 1000\)[\s\S]*?sources\.value = nextSources/)
   assert.match(bindingPanelSource, /if \(generation !== sourceLoadGeneration\) return/)
   assert.match(bindingPanelSource, /if \(generation !== snapshotLoadGeneration \|\| selectedSourceId\.value !== normalizedSourceId\) return/)
-  assert.match(bindingPanelSource, /if \(!isUsableSourceSnapshot\(result, normalizedSourceId\)\)[\s\S]*?数据样例格式无效/)
+  assert.match(bindingPanelSource, /if \(!isUsableSourceSnapshot\(result, normalizedSourceId\)\)[\s\S]*?SOURCE_SNAPSHOT_UNAVAILABLE_MESSAGE/)
+  assert.match(bindingPanelSource, /当前连接没有可用数据，请先到“数据源”完成正式测试/)
   assert.match(bindingPanelSource, /onUnmounted\(\(\) => \{[\s\S]*?sourceLoadGeneration \+= 1[\s\S]*?snapshotLoadGeneration \+= 1/)
 })
 
@@ -243,6 +293,18 @@ test('delayed binding confirmation cannot mutate a component after selection cha
   assert.match(bindSource, /operationGeneration !== bindingOperationGeneration/)
   assert.match(bindSource, /selectedNodeCount\.value !== 1/)
   assert.match(bindSource, /selected\.value !== node/)
+})
+
+test('right-side editors reset their scroll position when the inspected object changes', () => {
+  assert.match(appSource, /const propertiesPanel = ref\(null\)/)
+  assert.match(appSource, /const propertyInspectionIdentity = computed\(\(\) => \{[\s\S]*?projectId\.value[\s\S]*?paperSelected\.value[\s\S]*?selectedDrawingId\.value[\s\S]*?selectedNodeIds\.value\.join\(','\)[\s\S]*?selectedId\.value/)
+  assert.match(appSource, /watch\(propertyInspectionIdentity,[\s\S]*?propertiesPanel\.value\.scrollTop = 0[\s\S]*?flush: 'post'/)
+  assert.doesNotMatch(appSource, /watch\(\[propertyInspectionIdentity, rightTab, rightOpen\]/)
+  assert.match(appSource, /ref="propertiesPanel" class="properties" v-show="rightTab === '属性'"/)
+
+  assert.match(bindingPanelSource, /const panelElement = ref\(null\)/)
+  assert.match(bindingPanelSource, /watch\(\[\(\) => props\.node\?\.id, activeTarget\], resetPanelScroll, \{ flush: 'post' \}\)/)
+  assert.match(bindingPanelSource, /ref="panelElement" class="communication-binding-panel"/)
 })
 
 test('saved source bindings and legacy point bindings round-trip without mutating static properties', () => {

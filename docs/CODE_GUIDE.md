@@ -1,4 +1,4 @@
-# 苔岑2D绘图代码文档
+﻿# 苔岑2D绘图代码文档
 
 ## 1. 技术栈与启动
 
@@ -523,11 +523,15 @@ enqueueRuntimeData([
 
 “数据源”页面只管理连接生命周期；“通信”面板把组件参数保存为 `{ target, sourceId, jsonPath, enabled }`。`pointCatalogGateway` 提供 `listSources/getSourceSnapshot/subscribeSnapshots` 契约，`sourceBindingRuntime` 对相同 `sourceId + jsonPath` 去重求值，再把稳定派生键交给 `runtimeGateway` 和 `useRuntimeData`。接入真实 WebSocket、MQTT、HTTP、SQL 或 Redis 时，应在 `src/services/backend.js` 替换数据源适配器，不能在组件、属性面板或画布事件中创建协议连接。大响应应在 Worker 解析后通过 `ingestSourceSnapshot(..., { takeOwnership: true })` 移交；共享快照只读，调用方不得修改。
 
+数据源目录按图纸隔离。`drawingPointSourceScopeId(workspaceId, projectId)` 为每张图纸生成稳定存储作用域；普通保存和重命名保留 `projectId`，新建图纸生成新身份。旧工作空间级目录只在旧图纸首次打开时惰性复制一次，之后各图纸独立修改。切图时先关闭旧作用域的数据重放，再激活目标图纸；快照必须携带作用域和代次，迟到的旧图纸数据不得进入当前运行值。
+
+当前纯前端实现没有后台采集器。“激活图纸数据源”只读取 IndexedDB 中的配置和已有本地快照；打开图纸、切换图纸、打开数据源页、进入预览、启用连接和保存配置都不得调用 `testSource/testSourceDraft`，也不得启动 HTTP 轮询、WebSocket、MQTT、Socket 或数据库连接。只有用户点击“测试”时执行一次测试；当前测试是本地配置校验和样例预览，不代表真实接口已访问。未来加入持续采集时必须提供显式的运行/停止操作，共享同一连接，并在停止或离开运行态后释放连接，禁止挂到 `onMounted` 或后台定时器自动启动。
+
 `DataSourceManager.vue` 不再分别用多个 computed 扫描连接数组。唯一的 `sourceListModel` 调用 `createSourceConnectionListModel()`，在一次 `for...of` 中生成未受筛选影响的 `stats`、`protocolCounts`，以及按原顺序保留连接引用的 `filtered/groups`。搜索字段统一包含名称、endpoint、协议全称和 `TCP/WS/SQL/MYSQL` 等显示简称、状态文字及连接类别；状态筛选把离线与错误合并为“异常”，停用优先于来源上报状态，协议筛选可以与搜索和状态叠加。新增筛选条件时必须继续在该模型中一次完成，不能在模板或新的 computed 中重新全表过滤、统计或复制来源记录。
 
 连接行按 `source.id` 保持稳定身份，并分为“连接配置”和“接口 Demo”；Demo 组初始折叠，存在搜索词时组视图强制展开。筛选不得调用 `selectSource()` 或 `fillDraft()`，否则会丢失尚未保存的右侧表单。当前 ID 不在筛选结果时只显示定位提示；`revealSelectedSource()` 清空搜索、状态和协议筛选后展开对应组。状态必须同时显示文字，不能只依赖颜色；七类协议使用固定且可区分的标记配色。`680px` 以下只切换为上方连接清单、下方配置区的单列布局，连接生命周期和草稿状态保持同一套逻辑。
 
-保存、保存并测试、删除和选择详情都是带来源身份的异步边界：操作开始后必须固定发起时的 `source.id` 并锁定冲突操作，不能在等待期间把结果提交到后来选中的连接。保存或测试等待期间，整个可编辑配置 `fieldset` 必须禁用，避免异步回包覆盖期间的新输入。切换连接、新建和关闭管理页前必须确认未保存草稿；筛选和定位不触发该确认。连接变更成功后若列表刷新失败，应分别报告“变更已成功”和“刷新失败”，不能把已成功的变更误报为失败。全局提示区域必须位于加载、空态和详情分支之外；列表或详情加载失败时既要保留具体错误，也要显示对应空态。选择详情只有在加载成功后才能提交，加载失败时继续保留原详情。两个弹窗必须管理初始焦点、Tab 循环、Escape 分层关闭和焦点恢复；极短视口允许工作区纵向滚动，确保配置区和操作按钮仍可访问。
+保存、测试、删除和选择详情都是带来源身份的异步边界：操作开始后必须固定发起时的 `source.id` 并锁定冲突操作，不能在等待期间把结果提交到后来选中的连接。保存或测试等待期间，整个可编辑配置 `fieldset` 必须禁用，避免异步回包覆盖期间的新输入。切换连接、新建和关闭管理页前必须确认未保存草稿；筛选和定位不触发该确认。连接变更成功后若列表刷新失败，应分别报告“变更已成功”和“刷新失败”，不能把已成功的变更误报为失败。全局提示区域必须位于加载、空态和详情分支之外；列表或详情加载失败时既要保留具体错误，也要显示对应空态。选择详情只有在加载成功后才能提交，加载失败时继续保留原详情。两个弹窗必须管理初始焦点、Tab 循环、Escape 分层关闭和焦点恢复；极短视口允许工作区纵向滚动，确保配置区和操作按钮仍可访问。
 
 内置接口 Demo 只属于本地数据源目录：MQTT、HTTP、MySQL、SQL Server、Redis、Socket 和 WebSocket 各有颜色、数值两个 Demo。顶层 `value` 和 `$.value` 是稳定主值契约；公共字段包含 `protocol`、类型字段 `kind`、`status`、`metric`、`label`、`enabled` 和 `updatedAt`。颜色样例另有 `palette/states`，数值样例另有 `unit/metrics/series`，两类都提供标准 `table={ columns, rows }`。每条样例正文必须保持确定性、小于 `4 KiB`，表格只提供少量行，不能把 Demo 变成长时间序列或大响应。旧七条示例连接的 ID、数据结构和 JSONPath 必须保持不变。旧默认工作空间只允许执行一次只增不改的 Demo 目录迁移；迁移版本随来源元数据持久化，后续不得因刷新或重启复活用户已经删除的 Demo。不得为 Demo 在组件中新增专用请求或类型分支。
 
@@ -556,7 +560,7 @@ enqueueRuntimeData([
 
 JSONPath 应优先指向完整数据集，例如 Demo 的 `$.table`，这样可以保留 `columns[].title`。`$.table.rows` 也受支持，但会从行内容推断列名；`columns` 可省略，对象行按键、数组行按最大宽度推断，标量行生成单列“值”。单元格应优先使用 string、number、boolean 或 null 等标量。运行时最多物化 50 行、12 列；复杂值沿用统一格式化预算：最多 4 层、12 个对象键、12 个数组项、48 个总条目和 256 个输出字符。测试必须固定 14 条 Demo 的 `$.value` 兼容性、丰富字段类型、标准 `table` 结构、`$.table` 标题/行物化、`$.table.rows` 推断以及刷新、测试连接和迁移后的样例稳定性。
 
-`workspacePointSourceStore` 默认使用 IndexedDB `tc2d-point-sources/workspace-point-sources`：每个工作空间发布一个 v2 manifest，点位默认按 `256` 条 structured-clone shard 保存。写入顺序必须是“新 revision 全部分块成功 → 发布 manifest → 清理旧 revision”；任一步骤失败都保留上一 durable manifest，并让当前页最新状态进入 memory-only，不能用半套分片替换旧快照。manifest 的 `pointChunkMaxItems` 是持久契约，缺失时只按历史 `256` 读取；chunk key 必须包含 workspace/source、随机 store namespace、单调 revision 和 sequence，恢复时校验归属、顺序、重复引用、块数量、块上限与总点数。默认 `load/save/saveSource/removeSource/remove` 在 `navigator.locks` 可用时全部请求 `tc2d-point-sources:<encodedWorkspaceId>` 独占锁，并在锁内强制刷新 durable manifest 与有效 chunk key 缓存；非 memory-only 路径不得复用锁外缓存，否则另一标签页已回收的 shard 会被旧 manifest 再次引用。锁 API 不可用或请求尚未进入回调即失败时只保留页内队列降级，不能宣称严格跨标签互斥；锁回调已经开始后抛错必须向调用方传播，禁止重复执行操作。旧 localStorage v1/v2 仅在 IndexedDB commit 成功后删除。每 4 次 IDB 操作使用 `scheduler.yield()`，不支持时 `setTimeout(0)`，不得等待 rAF 才继续持久化。
+`workspacePointSourceStore` 默认使用 IndexedDB `tc2d-point-sources/workspace-point-sources`。存储接口中的 `workspaceId` 名称为兼容保留，应用实际传入的是“工作空间 + 图纸”的作用域键，因此每张图纸发布一个独立 v2 manifest。点位默认按 `256` 条 structured-clone shard 保存。写入顺序必须是“新 revision 全部分块成功 → 发布 manifest → 清理旧 revision”；任一步骤失败都保留上一 durable manifest，并让当前页最新状态进入 memory-only，不能用半套分片替换旧快照。manifest 的 `pointChunkMaxItems` 是持久契约，缺失时只按历史 `256` 读取；chunk key 必须包含 scope/source、随机 store namespace、单调 revision 和 sequence，恢复时校验归属、顺序、重复引用、块数量、块上限与总点数。默认 `load/save/saveSource/removeSource/remove` 在 `navigator.locks` 可用时全部请求 `tc2d-point-sources:<encodedScopeId>` 独占锁，并在锁内强制刷新 durable manifest 与有效 chunk key 缓存；非 memory-only 路径不得复用锁外缓存，否则另一标签页已回收的 shard 会被旧 manifest 再次引用。锁 API 不可用或请求尚未进入回调即失败时只保留页内队列降级，不能宣称严格跨标签互斥；锁回调已经开始后抛错必须向调用方传播，禁止重复执行操作。旧 localStorage v1/v2 仅在 IndexedDB commit 成功后删除。每 4 次 IDB 操作使用 `scheduler.yield()`，不支持时 `setTimeout(0)`，不得等待 rAF 才继续持久化。
 
 `pointCatalogGateway` 激活或刷新目录时必须先等待 `pointCatalogPreparation` 在私有集合中完成规范化、来源/点位 ID 查重、`sourceIndex/pointIndex` 和健康/离线统计。默认预算为 `4ms` 且每片最多 `4096` 次操作；新任务用 generation 取消旧任务，完成后 `installPreparedCatalog()` 一次替换全部引用。可见页面使用 rAF，隐藏页面使用 timer，避免挂起。任何重复 ID、异常、supersede 或 dispose 都不得把半成品安装到活动网关。
 
@@ -718,3 +722,18 @@ Worker 返回的是已经校验、迁移和归一化的项目数据，不是可�
 - 多选状态只保存节点 ID，不进入图纸 JSON；持久化组合关系只使用节点 `groupId`。
 - “我的”模板必须随图纸统一序列化；实例化时重新生成全部实体 ID，并只重建模板内部连线。
 - 节点位置约束必须按旋转后的可见边界计算，所有组件四方向均允许部分越界；每轴保留量统一为 `min(24, visualSpan / 2, stageSpan / 2)`。组合、模板实例和保存恢复必须复用集合归一化，禁止逐节点夹取位置。
+
+## 10. 流向组件
+
+- `flowDirection` 属于“动效组件”，但路径模型和交互必须复用线段的 `polylinePoints`、等分节点、节点拖动、弧长重采样、缩放、旋转、锁定、组合、模板和历史链路。类型判断统一使用 `isPolylineNodeType()`，不得在各入口复制 `polyline || flowDirection` 分支。
+- 持久字段包括 `polylineColor/polylineOpacity/polylineWidth/polylineOutlineWidth/polylineLineCap/polylineLineJoin/polylinePoints`、`borderDashLength/borderDashGap`、`flowArrowVisible`、`animation/animationDuration/animationDirection/animationPaused`。流向始终规范为虚线；正向箭头位于终点，反向箭头位于起点。通信绑定可覆盖 `polylineColor`、`animationPlaying` 和 `animationDuration`，运行值不得回写图纸 JSON。
+- 编辑 DOM 由 `NodeVisual.vue` 使用 SVG `stroke-dashoffset` 动画，普通预览、自适应预览、全屏预览、鹰眼和大图 LOD 由 `MiniMapPreview.vue` 复用 `flowDirectionDashOffset()`。`previewRenderPolicy.js` 必须把 `flowDirection: flow` 判定为 `ANIMATED_CANVAS`，否则正式预览会退回逐组件 DOM 动画。Canvas 动画只使用现有共享视觉时钟和自适应帧率，不得为每个流向创建 `requestAnimationFrame` 或定时器。
+- 同一视口内活跃流向达到 `EDITOR_LOD_ANIMATED_FLOW_DIRECTION_THRESHOLD`（当前为 96）时，编辑器必须切换到现有 Canvas LOD；暂停、关闭或完全透明的流向不计入阈值。预览的小图纸策略使用同一阈值，防止 512 节点门槛以内仍挂载数百个 SVG 动画。少量组件继续保留 SVG 路径和节点编辑层，选中节点在 LOD 中仍由有界 DOM overlay 保持交互。
+- 回归至少覆盖目录归属、默认值与旧图恢复、虚线长度和间隔、正反方向箭头、周期、启用和暂停、节点编辑、通信绑定、项目容量、DOM/Canvas 相位一致性、预览策略以及活跃流向 LOD 阈值。浏览器需分别验证画布、普通预览、自适应预览和全屏预览，并使用两个时间点的 Canvas 像素差确认动画真实更新；大量实例还要检查 `visualAnimationFrameMs` 低于共享时钟的 `visualAnimationIntervalMs`。
+
+## 11. 内置动效视觉契约
+
+- 流动管道、旋转风机和告警的 DOM 与 Canvas 必须使用同一套几何比例、颜色字段和动画相位。编辑画布、普通预览、自适应预览、全屏预览、鹰眼及大图 LOD 不得分别维护不同造型；修改视觉时应同步更新 `NodeVisual.vue`、`MiniMapPreview.vue` 和像素回归。
+- 流动管道使用浅色圆角轨道与绿色流动块，新建默认主色为 `#16b89a`。轨道属于组件内容而非可配置外边框，不得再添加固定描边；用户设置的通用外边框仍由节点边框字段独立绘制。
+- 旋转风机使用浅色圆形底盘、四个绿色圆头长方形叶片和深色中心轴点。中心点是叶片转轴的必要视觉结构，低倍率 Canvas 下应保持至少 `1.5` 个屏幕像素半径；旋转仍复用共享视觉时钟，不得增加逐组件定时器。
+- 对外名称统一为“告警”，内部类型继续保留 `heartbeat` 以兼容旧图纸、旧模板和已有绑定。视觉使用简洁三角告警符号，动画继续读取现有 `pulse`、周期、方向和暂停字段，不能把类型重命名造成历史数据失效。

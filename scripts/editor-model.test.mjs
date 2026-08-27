@@ -17,6 +17,8 @@ import {
 import { splitTextGraphemes, verticalTextColumns } from '../src/utils/textLayout.js'
 
 const appSource = readFileSync(new URL('../src/App.vue', import.meta.url), 'utf8')
+const styleSource = readFileSync(new URL('../src/style.css', import.meta.url), 'utf8')
+const enhancementsSource = readFileSync(new URL('../src/enhancements.css', import.meta.url), 'utf8')
 
 test('builds unique component indexes from the catalog', () => {
   const groups = createComponentGroups()
@@ -25,6 +27,8 @@ test('builds unique component indexes from the catalog', () => {
 
   assert.equal(new Set(types).size, types.length)
   assert.deepEqual(new Set(types), new Set(Object.keys(SHAPE_DEFAULTS).filter(type => type !== 'pencil')))
+  assert.equal(COMPONENT_NAME_BY_TYPE.get('heartbeat'), '告警')
+  assert.equal(SHAPE_DEFAULTS.heartbeat[0], '告警')
   for (const item of items) {
     assert.equal(COMPONENT_CATEGORY_BY_TYPE.get(item.type), item.category)
     assert.equal(COMPONENT_NAME_BY_TYPE.get(item.type), item.name)
@@ -47,6 +51,13 @@ test('returns independent catalog and node default state', () => {
   assert.equal(secondNode.signalColors[0], '#21c58e')
   assert.deepEqual(secondNode.pencilPoints, [])
   assert.deepEqual(secondNode.tableMerges, [])
+})
+
+test('code components keep their dark defaults without overriding edited fill and text colors', () => {
+  const codeRule = styleSource.match(/\.node-body\.code\{[^}]*\}/)?.[0] || ''
+  assert.match(codeRule, /font-family:Consolas,monospace/)
+  assert.match(enhancementsSource, /\.node-body\.code\s*\{\s*background:\s*var\(--shape-fill\)\s*!important;\s*color:\s*var\(--form-color\)\s*!important;/)
+  assert.match(appSource, /if \(type === 'code'\) \{ n\.fill = '#25323b'; n\.color = '#d8f5ee' \}/)
 })
 
 test('node normalization bounds imported signal palettes to the supported eight colors', () => {
@@ -115,6 +126,7 @@ test('normalizes built-in visual colors and water level without changing legacy 
   assert.equal(normalizeNode({ type: 'heartbeat' }).visualPrimaryColor, '#ef5350')
   assert.equal(normalizeNode({ type: 'particles', visualPrimaryColor: ' #123456 ' }).visualPrimaryColor, '#123456')
   assert.equal(builtInVisualPrimaryColor('flowPipe'), '#16b89a')
+  assert.equal(builtInVisualPrimaryColor('flowDirection'), '#16b89a')
 })
 
 test('built-in visual property controls expose only settings that render', () => {

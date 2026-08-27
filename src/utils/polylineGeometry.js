@@ -4,6 +4,11 @@ export const MAX_POLYLINE_NODE_POINTS = 10000
 export const MAX_POLYLINE_SEGMENT_COUNT = MAX_POLYLINE_NODE_POINTS - 1
 export const DEFAULT_POLYLINE_SEGMENT_COUNT = 4
 const POLYLINE_LINE_STYLES = new Set(['solid', 'dashed', 'dotted'])
+const POLYLINE_NODE_TYPES = new Set(['polyline', 'flowDirection'])
+
+export function isPolylineNodeType(type) {
+  return POLYLINE_NODE_TYPES.has(String(type || ''))
+}
 
 export function clampPolylineSegmentCount(value, fallback = DEFAULT_POLYLINE_SEGMENT_COUNT) {
   const fallbackNumber = Number(fallback)
@@ -294,6 +299,10 @@ export function polylineDashSegments(node = {}) {
 export function polylineDashArray(node = {}) {
   const segments = polylineDashSegments(node)
   return segments.length ? segments.join(' ') : 'none'
+}
+
+export function polylineDashCycle(node = {}) {
+  return polylineDashSegments(node).reduce((total, segment) => total + segment, 0)
 }
 
 export function polylineStrokeLineCap(node = {}) {

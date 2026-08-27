@@ -13,6 +13,7 @@ export const PREVIEW_RENDER_CAPABILITIES = Object.freeze({
 })
 
 const ANIMATED_CANVAS_ANIMATION_BY_TYPE = Object.freeze({
+  flowDirection: 'flow',
   flowPipe: 'flow',
   rotatingFan: 'flow',
   signalLight: 'blink',

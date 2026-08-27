@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises'
 import { performance } from 'node:perf_hooks'
 import test from 'node:test'
 import {
+  EDITOR_LOD_ANIMATED_FLOW_DIRECTION_THRESHOLD,
   EDITOR_LOD_MAX_REMOVAL_COVER_REGIONS,
   EDITOR_LOD_MAX_OVERLAY_EDGES,
   EDITOR_LOD_MAX_OVERLAY_NODES,
@@ -15,6 +16,7 @@ import {
   pointHitsDrawing,
   pointHitsRotatedNode,
   shouldHideEditorLodGeometryDom,
+  shouldUseAnimatedFlowDirectionLod,
   shouldUseEditorLodDetailFallback,
   shouldUseEditorLod
 } from '../src/utils/editorLod.js'
@@ -935,6 +937,25 @@ test('editor LOD activates from document size and zoom without a visible-node sc
   assert.equal(shouldUseEditorLod(6000, 0.31), false)
 })
 
+test('editor LOD moves dense active flow-direction animations onto the shared Canvas clock', () => {
+  const active = Array.from({ length: EDITOR_LOD_ANIMATED_FLOW_DIRECTION_THRESHOLD }, (_, index) => ({
+    id: `flow-${index}`,
+    type: 'flowDirection',
+    animation: 'flow',
+    opacity: 1
+  }))
+
+  assert.equal(shouldUseAnimatedFlowDirectionLod(active.slice(1)), false)
+  assert.equal(shouldUseAnimatedFlowDirectionLod(active), true)
+  assert.equal(shouldUseAnimatedFlowDirectionLod([
+    ...active.slice(0, EDITOR_LOD_ANIMATED_FLOW_DIRECTION_THRESHOLD - 1),
+    { type: 'flowDirection', animation: 'flow', animationPaused: true },
+    { type: 'flowDirection', animation: 'none' },
+    { type: 'flowDirection', animation: 'flow', opacity: 0 },
+    { type: 'rotatingFan', animation: 'flow' }
+  ]), false)
+})
+
 test('rotated node hit testing matches the DOM shell footprint', () => {
   const node = { x: 100, y: 100, w: 100, h: 20, rotate: 90 }
   assert.equal(pointHitsRotatedNode(node, { x: 150, y: 60 }), true)
@@ -1153,7 +1174,7 @@ test('LOD geometry applies the total segment budget to node and edge-only batche
 test('App routes low-zoom Canvas pointer actions through existing editor handlers', async () => {
   const source = await readFile(new URL('../src/App.vue', import.meta.url), 'utf8')
   const styles = await readFile(new URL('../src/enhancements.css', import.meta.url), 'utf8')
-  assert.match(source, /const editorDenseLodActive = computed\(\(\) => \{[\s\S]*?nodeSpatialIndex\.query\(bounds, \{ sort: false, limit: EDITOR_DOM_NODE_LIMIT \+ 1 \}\)\.length > EDITOR_DOM_NODE_LIMIT/)
+  assert.match(source, /const editorDenseLodActive = computed\(\(\) => \{[\s\S]*?nodeSpatialIndex\.query\(bounds, \{ sort: false, limit: EDITOR_DOM_NODE_LIMIT \+ 1 \}\)[\s\S]*?visible\.length > EDITOR_DOM_NODE_LIMIT \|\| shouldUseAnimatedFlowDirectionLod\(visible\)/)
   assert.match(source, /const editorFullLodActive = computed\(\(\) => shouldUseEditorLod\(nodes\.value\.length, zoom\.value\) \|\| editorDenseLodActive\.value\)/)
   assert.match(source, /const editorDenseEdgeLodActive = computed\(\(\) => \{[\s\S]*?edges\.value\.length <= EDITOR_DOM_EDGE_LIMIT[\s\S]*?edgeSpatialIndex\.query\(bounds, \{ sort: false, limit: EDITOR_DOM_EDGE_LIMIT \+ 1 \}\)\.length > EDITOR_DOM_EDGE_LIMIT/)
   assert.match(source, /const editorEdgeOnlyLodActive = computed\(\(\) => !editorFullLodActive\.value && editorDenseEdgeLodActive\.value\)/)

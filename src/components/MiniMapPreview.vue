@@ -84,6 +84,7 @@ import {
   canvasVisualAnimationFramePlan,
   canvasVisualDetailSize,
   createCanvasVisualAnimationTimeline,
+  flowDirectionDashOffset,
   flowPipeDashOffset,
   heartbeatAnimationScale,
   isCanvasVisualAnimationCandidate,
@@ -673,9 +674,18 @@ const shapePoints = {
 
 const runtimeBadgeExcludedTypes = new Set([
   'table', 'checkbox', 'radio', 'switch', 'formProgress', 'button', 'input', 'select', 'time',
-  'gauge', 'progress', 'polyline'
+  'gauge', 'progress', 'polyline', 'flowDirection'
 ])
 const canvasVisualAnimationTypes = new Set([
+  'flowDirection',
+  'flowPipe',
+  'rotatingFan',
+  'signalLight',
+  'waterTank',
+  'heartbeat',
+  'particles'
+])
+const canvasVisualSpriteTypes = new Set([
   'flowPipe',
   'rotatingFan',
   'signalLight',
@@ -1110,7 +1120,7 @@ function drawPolylineArrow(ctx, point, neighbor, size, color) {
   }
 }
 
-function drawPolyline(ctx, node, width, height, worldPixel) {
+function drawPolyline(ctx, node, width, height, worldPixel, animationTimestamp = 0) {
   const sourcePoints = Array.isArray(node.polylinePoints) ? node.polylinePoints : []
   if (sourcePoints.length < 2) return
   const points = sourcePoints.map(point => ({ x: number(point?.x) * width, y: number(point?.y) * height }))
@@ -1121,6 +1131,7 @@ function drawPolyline(ctx, node, width, height, worldPixel) {
   const styleScale = lineWidth / sourceLineWidth
   const outlineWidth = polylineOutlineWidth(node) * styleScale
   const dashSegments = polylineDashSegments(node).map(segment => segment * styleScale)
+  const dashOffset = flowDirectionDashOffset(node, animationTimestamp) * styleScale
   const color = node.polylineColor || '#485563'
   ctx.save()
   try {
@@ -1133,6 +1144,7 @@ function drawPolyline(ctx, node, width, height, worldPixel) {
         ctx.lineCap = polylineStrokeLineCap(node)
         ctx.lineJoin = node.polylineLineJoin || 'round'
         ctx.setLineDash(dashSegments)
+        ctx.lineDashOffset = dashOffset
         ctx.beginPath()
         ctx.moveTo(points[0].x, points[0].y)
         points.slice(1).forEach(point => ctx.lineTo(point.x, point.y))
@@ -1154,8 +1166,15 @@ function drawPolyline(ctx, node, width, height, worldPixel) {
         ctx.restore()
       }
     }
-    if (node.polylineStartMarker === 'arrow') drawArrowPair(points[0], points[1])
-    if (node.polylineEndMarker === 'arrow') drawArrowPair(points.at(-1), points.at(-2))
+    const flowDirection = node.type === 'flowDirection'
+    const startArrow = flowDirection
+      ? node.flowArrowVisible !== false && node.animationDirection === 'reverse'
+      : node.polylineStartMarker === 'arrow'
+    const endArrow = flowDirection
+      ? node.flowArrowVisible !== false && node.animationDirection !== 'reverse'
+      : node.polylineEndMarker === 'arrow'
+    if (startArrow) drawArrowPair(points[0], points[1])
+    if (endArrow) drawArrowPair(points.at(-1), points.at(-2))
   } finally {
     ctx.restore()
   }
@@ -1224,49 +1243,34 @@ function drawGauge(ctx, node, width, height, lineWidth, value, renderPass = 'ful
 
 function drawFlowPipe(ctx, node, width, height, worldPixel, animationTimestamp) {
   fillAndStroke(ctx, node, width, height, worldPixel, '#fff')
-  const trackWidth = Math.max(.1, width * .75)
-  const trackHeight = Math.max(.1, Math.min(16, height * .64))
+  const trackWidth = Math.max(.1, width * .9)
+  const trackHeight = Math.max(.1, Math.min(18, height * .42))
   const trackX = (width - trackWidth) / 2
   const trackY = (height - trackHeight) / 2
-  const trackBorderWidth = canvasVisualDetailSize(2, worldPixel, trackHeight * .28, .8)
-  const innerX = trackX + trackBorderWidth
-  const innerY = trackY + trackBorderWidth
-  const innerRight = trackX + trackWidth - trackBorderWidth
-  const innerBottom = trackY + trackHeight - trackBorderWidth
+  const inset = Math.min(3, trackHeight / 6)
+  const flowX = trackX + inset
+  const flowY = trackY + inset
+  const flowWidth = Math.max(.1, trackWidth - inset * 2)
+  const flowHeight = Math.max(.1, trackHeight - inset * 2)
+  const segmentCycle = 40
+  const segmentWidth = 24
+  const segmentOffset = flowPipeDashOffset(node, segmentCycle / 7, animationTimestamp)
   ctx.save()
   try {
-    ctx.fillStyle = '#e4f7fa'
-    ctx.fillRect(trackX, trackY, trackWidth, trackHeight)
-    ctx.strokeStyle = '#3c8fa0'
-    ctx.lineWidth = trackBorderWidth
-    ctx.strokeRect(
-      trackX + trackBorderWidth / 2,
-      trackY + trackBorderWidth / 2,
-      Math.max(.1, trackWidth - trackBorderWidth),
-      Math.max(.1, trackHeight - trackBorderWidth)
-    )
-    if (innerRight <= innerX || innerBottom <= innerY) return
-
+    ctx.fillStyle = '#edf3f2'
+    roundedRect(ctx, trackX, trackY, trackWidth, trackHeight, trackHeight / 2)
+    ctx.fill()
     ctx.beginPath()
-    ctx.rect(innerX, innerY, innerRight - innerX, innerBottom - innerY)
+    roundedRect(ctx, flowX, flowY, flowWidth, flowHeight, flowHeight / 2)
     ctx.clip()
-    const stripeSpacing = Math.max(20, worldPixel * 5, trackWidth / 96)
-    const stripeWidth = canvasVisualDetailSize(3, worldPixel, trackHeight * .35, .9)
-    const stripeSlant = Math.min(trackHeight * .72, stripeSpacing * .65)
-    const stripeOffset = flowPipeDashOffset(node, stripeSpacing / 7, animationTimestamp)
-    ctx.strokeStyle = node.visualPrimaryColor || VISUAL_ACCENT_COLOR
-    ctx.lineWidth = stripeWidth
-    ctx.lineCap = 'butt'
-    ctx.beginPath()
+    ctx.fillStyle = node.visualPrimaryColor || VISUAL_ACCENT_COLOR
     for (
-      let stripeX = innerX - stripeSpacing + stripeOffset;
-      stripeX < innerRight + stripeSpacing;
-      stripeX += stripeSpacing
+      let segmentX = flowX - segmentCycle + segmentOffset;
+      segmentX < flowX + flowWidth + segmentCycle;
+      segmentX += segmentCycle
     ) {
-      ctx.moveTo(stripeX + stripeSlant / 2, innerY)
-      ctx.lineTo(stripeX - stripeSlant / 2, innerBottom)
+      ctx.fillRect(segmentX, flowY, segmentWidth, flowHeight)
     }
-    ctx.stroke()
   } finally {
     ctx.restore()
   }
@@ -1274,47 +1278,24 @@ function drawFlowPipe(ctx, node, width, height, worldPixel, animationTimestamp) 
 
 function drawFan(ctx, node, width, height, worldPixel, animationTimestamp) {
   fillAndStroke(ctx, node, width, height, worldPixel, '#fff')
-  const radius = Math.min(32, width / 2, height / 2)
-  const visualScale = radius / 32
-  const visualBorderWidth = canvasVisualDetailSize(2 * visualScale, worldPixel, radius * .18, .75)
-  const insetWidth = canvasVisualDetailSize(5 * visualScale, worldPixel, radius * .3, .8)
-  // Mirror the 64px DOM fan: the 8px round-capped blade reaches 24px from the hub.
-  const bladeLength = 20 * visualScale
-  ctx.fillStyle = '#f2f7f7'
-  ctx.strokeStyle = '#8ea5aa'
-  ctx.lineWidth = visualBorderWidth
+  const radius = Math.max(.1, Math.min(43, width * .39, height * .39))
+  const visualScale = radius * 35 / 43 / 32
+  ctx.fillStyle = '#edf3f2'
   ctx.beginPath()
-  ctx.arc(width / 2, height / 2, Math.max(.1, radius - visualBorderWidth / 2), 0, Math.PI * 2)
+  ctx.arc(width / 2, height / 2, radius, 0, Math.PI * 2)
   ctx.fill()
-  ctx.stroke()
-  ctx.strokeStyle = '#dfeaea'
-  ctx.lineWidth = insetWidth
-  ctx.beginPath()
-  ctx.arc(width / 2, height / 2, Math.max(.1, radius - visualBorderWidth - insetWidth / 2), 0, Math.PI * 2)
-  ctx.stroke()
   const rotorAngle = rotatingFanAngle(node, animationTimestamp)
-  const bladeWidth = canvasVisualDetailSize(8 * visualScale, worldPixel, radius * .3, 1)
   ctx.save()
   try {
-    ctx.strokeStyle = node.visualPrimaryColor || VISUAL_ACCENT_COLOR
-    ctx.lineWidth = bladeWidth
-    ctx.lineCap = 'round'
+    ctx.fillStyle = node.visualPrimaryColor || VISUAL_ACCENT_COLOR
     for (let index = 0; index < 4; index += 1) {
       ctx.save()
       try {
         ctx.translate(width / 2, height / 2)
         ctx.rotate(rotorAngle + index * Math.PI / 2)
-        ctx.beginPath()
-        ctx.moveTo(0, 0)
-        ctx.bezierCurveTo(
-          bladeLength * .3,
-          -bladeLength * .3,
-          bladeLength * .4,
-          -bladeLength * .8,
-          0,
-          -bladeLength
-        )
-        ctx.stroke()
+        ctx.scale(visualScale, visualScale)
+        roundedRect(ctx, -4, -30, 8, 32, 4)
+        ctx.fill()
       } finally {
         ctx.restore()
       }
@@ -1322,15 +1303,9 @@ function drawFan(ctx, node, width, height, worldPixel, animationTimestamp) {
   } finally {
     ctx.restore()
   }
-  const outerHubRadius = canvasVisualDetailSize(8 * visualScale, worldPixel, radius * .4, 1.25)
-  const innerHubRadius = canvasVisualDetailSize(4 * visualScale, worldPixel, radius * .24, .7)
-  ctx.fillStyle = '#e7f7f4'
+  ctx.fillStyle = '#26323d'
   ctx.beginPath()
-  ctx.arc(width / 2, height / 2, outerHubRadius, 0, Math.PI * 2)
-  ctx.fill()
-  ctx.fillStyle = '#176e69'
-  ctx.beginPath()
-  ctx.arc(width / 2, height / 2, innerHubRadius, 0, Math.PI * 2)
+  ctx.arc(width / 2, height / 2, canvasVisualDetailSize(4.5 * visualScale, worldPixel, radius * .18, 1.5), 0, Math.PI * 2)
   ctx.fill()
 }
 
@@ -1409,32 +1384,46 @@ function clearImageCache() {
   deferredImageUrls.clear()
 }
 
-function drawMediaPlaceholder(ctx, node, width, height, lineWidth, imageMode = false) {
-  ctx.fillStyle = node.fill || '#e8edf0'
-  ctx.fillRect(0, 0, width, height)
-  ctx.strokeStyle = node.stroke || '#64727d'
-  ctx.lineWidth = lineWidth
-  ctx.strokeRect(lineWidth / 2, lineWidth / 2, Math.max(0, width - lineWidth), Math.max(0, height - lineWidth))
-  ctx.beginPath()
-  if (imageMode) {
-    ctx.moveTo(width * .12, height * .8)
-    ctx.lineTo(width * .4, height * .46)
-    ctx.lineTo(width * .58, height * .65)
-    ctx.lineTo(width * .75, height * .35)
-    ctx.lineTo(width * .9, height * .8)
-    ctx.stroke()
+function drawMediaPlaceholder(ctx, node, width, height, worldPixel, imageMode = false) {
+  const lineWidth = visibleStroke(node, width, height, worldPixel)
+  ctx.save()
+  try {
+    nodePath(ctx, node, width, height)
+    ctx.clip()
+    ctx.save()
+    try {
+      ctx.globalAlpha *= alpha(node.backgroundOpacity)
+      ctx.fillStyle = node.fill || '#e8edf0'
+      ctx.fillRect(0, 0, width, height)
+    } finally {
+      ctx.restore()
+    }
+    ctx.strokeStyle = node.color || '#64727d'
+    ctx.lineWidth = lineWidth
     ctx.beginPath()
-    ctx.arc(width * .72, height * .25, Math.min(width, height) * .08, 0, Math.PI * 2)
-    ctx.fillStyle = node.color || '#64727d'
-    ctx.fill()
-  } else {
-    ctx.moveTo(width * .4, height * .25)
-    ctx.lineTo(width * .72, height * .5)
-    ctx.lineTo(width * .4, height * .75)
-    ctx.closePath()
-    ctx.fillStyle = node.color || '#64727d'
-    ctx.fill()
+    if (imageMode) {
+      ctx.moveTo(width * .12, height * .8)
+      ctx.lineTo(width * .4, height * .46)
+      ctx.lineTo(width * .58, height * .65)
+      ctx.lineTo(width * .75, height * .35)
+      ctx.lineTo(width * .9, height * .8)
+      ctx.stroke()
+      ctx.beginPath()
+      ctx.arc(width * .72, height * .25, Math.min(width, height) * .08, 0, Math.PI * 2)
+      ctx.fillStyle = node.color || '#64727d'
+      ctx.fill()
+    } else {
+      ctx.moveTo(width * .4, height * .25)
+      ctx.lineTo(width * .72, height * .5)
+      ctx.lineTo(width * .4, height * .75)
+      ctx.closePath()
+      ctx.fillStyle = node.color || '#64727d'
+      ctx.fill()
+    }
+  } finally {
+    ctx.restore()
   }
+  strokeNodeOutline(ctx, node, width, height, worldPixel)
 }
 
 function drawFormControl(ctx, node, width, height, lineWidth) {
@@ -1513,13 +1502,53 @@ function drawFormControl(ctx, node, width, height, lineWidth) {
   }
 }
 
+function progressTrackFrame(node, width, height) {
+  const trackWidth = Math.max(.1, width * Math.max(10, Math.min(100, number(node.progressLength, 84))) / 100)
+  const trackHeight = Math.max(.1, Math.min(height, Math.max(2, number(node.progressThickness, 12))))
+  const radius = Math.min(trackWidth / 2, trackHeight / 2)
+  return {
+    x: (width - trackWidth) / 2,
+    y: (height - trackHeight) / 2,
+    width: trackWidth,
+    height: trackHeight,
+    startRadius: node.progressStartShape === 'square' ? 0 : radius,
+    endRadius: node.progressEndShape === 'square' ? 0 : radius
+  }
+}
+
+function progressTrackPath(ctx, x, y, width, height, startRadius, endRadius) {
+  const left = Math.max(0, Math.min(startRadius, width / 2, height / 2))
+  const right = Math.max(0, Math.min(endRadius, width / 2, height / 2))
+  ctx.beginPath()
+  ctx.moveTo(x + left, y)
+  ctx.lineTo(x + width - right, y)
+  if (right) ctx.quadraticCurveTo(x + width, y, x + width, y + right)
+  else ctx.lineTo(x + width, y)
+  ctx.lineTo(x + width, y + height - right)
+  if (right) ctx.quadraticCurveTo(x + width, y + height, x + width - right, y + height)
+  else ctx.lineTo(x + width, y + height)
+  ctx.lineTo(x + left, y + height)
+  if (left) ctx.quadraticCurveTo(x, y + height, x, y + height - left)
+  else ctx.lineTo(x, y + height)
+  ctx.lineTo(x, y + left)
+  if (left) ctx.quadraticCurveTo(x, y, x + left, y)
+  else ctx.lineTo(x, y)
+  ctx.closePath()
+}
+
 function drawSpecialNode(ctx, node, width, height, lineWidth, value, renderPass = 'full', worldPixel = lineWidth, animationTimestamp = 0) {
   const accent = ['customMotion', 'customIndicator'].includes(node.type)
     ? node.motionColor || VISUAL_ACCENT_COLOR
     : VISUAL_ACCENT_COLOR
   const dark = node.stroke || '#485563'
-  if (node.type === 'chart') return drawChart(ctx, node, width, height)
-  if (node.type === 'gauge') return drawGauge(ctx, node, width, height, lineWidth, value, renderPass)
+  if (node.type === 'chart') {
+    fillAndStroke(ctx, node, width, height, worldPixel, '#fff')
+    return drawChart(ctx, node, width, height)
+  }
+  if (node.type === 'gauge') {
+    if (renderPass !== 'runtime') fillAndStroke(ctx, node, width, height, worldPixel, '#fff')
+    return drawGauge(ctx, node, width, height, lineWidth, value, renderPass)
+  }
   if (node.type === 'flowPipe') return drawFlowPipe(ctx, node, width, height, worldPixel, animationTimestamp)
   if (node.type === 'rotatingFan') return drawFan(ctx, node, width, height, worldPixel, animationTimestamp)
   if (node.type === 'signalLight') {
@@ -1537,9 +1566,6 @@ function drawSpecialNode(ctx, node, width, height, lineWidth, value, renderPass 
       ctx.beginPath()
       ctx.arc(width / 2, height / 2, signalRadius, 0, Math.PI * 2)
       ctx.fill()
-      ctx.strokeStyle = 'rgba(38, 50, 61, .15)'
-      ctx.lineWidth = canvasVisualDetailSize(lineWidth, worldPixel, signalRadius * .18, .6)
-      ctx.stroke()
     } finally {
       ctx.restore()
     }
@@ -1552,37 +1578,29 @@ function drawSpecialNode(ctx, node, width, height, lineWidth, value, renderPass 
     const tankHeight = Math.max(.1, 95 * tankScale)
     const tankX = (width - tankWidth) / 2
     const tankY = (height - tankHeight) / 2
-    const tankBorderWidth = canvasVisualDetailSize(3 * tankScale, worldPixel, Math.min(tankWidth, tankHeight) * .12, .75)
     const tankRadius = 10 * tankScale
     ctx.beginPath()
     roundedRect(ctx, tankX, tankY, tankWidth, tankHeight, tankRadius)
     ctx.fillStyle = '#f6fbfc'
     ctx.fill()
-    ctx.strokeStyle = '#3c6f7a'
-    ctx.lineWidth = tankBorderWidth
-    ctx.stroke()
     const percent = Math.max(0, Math.min(100, number(node.progressValue))) / 100
-    const innerX = tankX + tankBorderWidth
-    const innerY = tankY + tankBorderWidth
-    const innerWidth = Math.max(.1, tankWidth - tankBorderWidth * 2)
-    const innerHeight = Math.max(.1, tankHeight - tankBorderWidth * 2)
-    const liquidHeight = innerHeight * percent
+    const liquidHeight = tankHeight * percent
     ctx.save()
     try {
       ctx.beginPath()
-      roundedRect(ctx, innerX, innerY, innerWidth, innerHeight, Math.max(0, tankRadius - tankBorderWidth))
+      roundedRect(ctx, tankX, tankY, tankWidth, tankHeight, tankRadius)
       ctx.clip()
-      const liquidY = innerY + innerHeight - liquidHeight
+      const liquidY = tankY + tankHeight - liquidHeight
       ctx.fillStyle = node.visualPrimaryColor || '#3bb9df'
-      ctx.fillRect(innerX, liquidY, innerWidth, liquidHeight)
+      ctx.fillRect(tankX, liquidY, tankWidth, liquidHeight)
       if (liquidHeight > 0) {
         const wave = waterTankAnimationState(node, animationTimestamp)
         ctx.fillStyle = waterTankWaveColor(node)
         ctx.beginPath()
         ctx.ellipse(
-          innerX + innerWidth / 2 + wave.waveOffset * innerWidth * .112,
+          tankX + tankWidth / 2 + wave.waveOffset * tankWidth * .112,
           liquidY,
-          innerWidth * .7 * wave.waveScale,
+          tankWidth * .7 * wave.waveScale,
           6 * tankScale,
           0,
           0,
@@ -1602,32 +1620,26 @@ function drawSpecialNode(ctx, node, width, height, lineWidth, value, renderPass 
   }
   if (node.type === 'heartbeat') {
     fillAndStroke(ctx, node, width, height, worldPixel, '#fff')
-    const iconSize = Math.max(.1, Math.min(48, width * .8, height * .8))
-      * heartbeatAnimationScale(node, animationTimestamp)
-    const scale = iconSize / 24
-    const iconX = (width - iconSize) / 2
-    const iconY = (height - iconSize) / 2
+    const pulseScale = heartbeatAnimationScale(node, animationTimestamp)
+    const alarmSize = Math.max(.1, Math.min(58, width * .62, height * .7) * pulseScale)
+    const alarmX = (width - alarmSize) / 2
+    const alarmY = (height - alarmSize) / 2
     ctx.strokeStyle = node.visualPrimaryColor || VISUAL_HEARTBEAT_COLOR
-    ctx.lineWidth = canvasVisualDetailSize(2 * scale, worldPixel, iconSize * .12, .8)
+    ctx.lineWidth = canvasVisualDetailSize(4 * alarmSize / 64, worldPixel, alarmSize * .1, .9)
     ctx.lineCap = 'round'
     ctx.lineJoin = 'round'
     ctx.beginPath()
-    ctx.moveTo(iconX + 12 * scale, iconY + 21 * scale)
-    ctx.bezierCurveTo(iconX + 10.8 * scale, iconY + 19.8 * scale, iconX + 2 * scale, iconY + 14.3 * scale, iconX + 2 * scale, iconY + 8.5 * scale)
-    ctx.bezierCurveTo(iconX + 2 * scale, iconY + 5.5 * scale, iconX + 4.5 * scale, iconY + 3 * scale, iconX + 7.5 * scale, iconY + 3 * scale)
-    ctx.bezierCurveTo(iconX + 9.3 * scale, iconY + 3 * scale, iconX + 10.8 * scale, iconY + 3.8 * scale, iconX + 12 * scale, iconY + 5.1 * scale)
-    ctx.bezierCurveTo(iconX + 13.2 * scale, iconY + 3.8 * scale, iconX + 14.7 * scale, iconY + 3 * scale, iconX + 16.5 * scale, iconY + 3 * scale)
-    ctx.bezierCurveTo(iconX + 19.5 * scale, iconY + 3 * scale, iconX + 22 * scale, iconY + 5.5 * scale, iconX + 22 * scale, iconY + 8.5 * scale)
-    ctx.bezierCurveTo(iconX + 22 * scale, iconY + 14.3 * scale, iconX + 13.2 * scale, iconY + 19.8 * scale, iconX + 12 * scale, iconY + 21 * scale)
+    ctx.moveTo(alarmX + alarmSize / 2, alarmY + alarmSize * 7 / 64)
+    ctx.lineTo(alarmX + alarmSize * 58 / 64, alarmY + alarmSize * 54 / 64)
+    ctx.lineTo(alarmX + alarmSize * 6 / 64, alarmY + alarmSize * 54 / 64)
+    ctx.closePath()
     ctx.stroke()
+    ctx.lineWidth = canvasVisualDetailSize(5 * alarmSize / 64, worldPixel, alarmSize * .12, 1)
     ctx.beginPath()
-    ctx.moveTo(iconX + 3.2 * scale, iconY + 12 * scale)
-    ctx.lineTo(iconX + 9.5 * scale, iconY + 12 * scale)
-    ctx.lineTo(iconX + 10 * scale, iconY + 11 * scale)
-    ctx.lineTo(iconX + 12 * scale, iconY + 15.5 * scale)
-    ctx.lineTo(iconX + 14 * scale, iconY + 8.5 * scale)
-    ctx.lineTo(iconX + 15.5 * scale, iconY + 12 * scale)
-    ctx.lineTo(iconX + 20.8 * scale, iconY + 12 * scale)
+    ctx.moveTo(alarmX + alarmSize / 2, alarmY + alarmSize * 22 / 64)
+    ctx.lineTo(alarmX + alarmSize / 2, alarmY + alarmSize * 38 / 64)
+    ctx.moveTo(alarmX + alarmSize / 2, alarmY + alarmSize * 47 / 64)
+    ctx.lineTo(alarmX + alarmSize / 2, alarmY + alarmSize * 47.5 / 64)
     ctx.stroke()
     return
   }
@@ -1668,17 +1680,24 @@ function drawSpecialNode(ctx, node, width, height, lineWidth, value, renderPass 
     return
   }
   if (node.type === 'progress') {
+    const track = progressTrackFrame(node, width, height)
     if (renderPass !== 'runtime') {
+      fillAndStroke(ctx, node, width, height, worldPixel, '#fff')
       ctx.fillStyle = '#dce3e6'
-      ctx.fillRect(width * .06, height * .38, width * .88, height * .24)
+      progressTrackPath(ctx, track.x, track.y, track.width, track.height, track.startRadius, track.endRadius)
+      ctx.fill()
     }
     if (renderPass === 'static') return
     const effectiveValue = hasEnabledRuntimeBinding(node, 'progressValue')
       ? node.progressValue
       : value ?? node.progressValue ?? 68
     const percent = Math.max(0, Math.min(1, number(effectiveValue, 68) / 100))
-    ctx.fillStyle = accent
-    ctx.fillRect(width * .06, height * .38, width * .88 * percent, height * .24)
+    if (percent > 0) {
+      ctx.fillStyle = accent
+      const progressWidth = track.width * percent
+      progressTrackPath(ctx, track.x, track.y, progressWidth, track.height, track.startRadius, track.endRadius)
+      ctx.fill()
+    }
     ctx.fillStyle = dark
     ctx.font = `600 ${Math.max(1, Math.min(number(node.fontSize, 14), height * .2))}px "Microsoft YaHei", sans-serif`
     ctx.textAlign = 'center'
@@ -1687,38 +1706,52 @@ function drawSpecialNode(ctx, node, width, height, lineWidth, value, renderPass 
     return
   }
   if (node.type === 'server') {
-    ctx.fillStyle = node.fill || '#edf2f4'
-    ctx.strokeStyle = dark
-    ctx.lineWidth = lineWidth
-    roundedRect(ctx, 0, 0, width, height, lineWidth * 2)
-    ctx.fill()
+    fillAndStroke(ctx, node, width, height, worldPixel, '#edf2f4')
+    const iconSize = Math.max(.1, Math.min(30, width * .55, height * .7))
+    const statusRadius = Math.max(.75, Math.min(2.5, iconSize * .08))
+    const statusGap = Math.max(3, statusRadius * 1.8)
+    const iconX = (width - iconSize - statusGap - statusRadius * 2) / 2
+    const iconY = (height - iconSize) / 2
+    const iconLineWidth = canvasVisualDetailSize(2 * iconSize / 30, worldPixel, iconSize * .12, .7)
+    ctx.strokeStyle = node.color || '#26323d'
+    ctx.lineWidth = iconLineWidth
+    roundedRect(ctx, iconX, iconY, iconSize, iconSize, iconSize * .08)
     ctx.stroke()
     ctx.beginPath()
-    ctx.moveTo(width * .1, height * .35)
-    ctx.lineTo(width * .9, height * .35)
-    ctx.moveTo(width * .1, height * .65)
-    ctx.lineTo(width * .9, height * .65)
+    ctx.moveTo(iconX, iconY + iconSize * .34)
+    ctx.lineTo(iconX + iconSize, iconY + iconSize * .34)
+    ctx.moveTo(iconX, iconY + iconSize * .66)
+    ctx.lineTo(iconX + iconSize, iconY + iconSize * .66)
     ctx.stroke()
     ctx.fillStyle = '#21c58e'
-    ;[.2, .5, .8].forEach(y => {
+    ;[.2, .5, .8].forEach(position => {
       ctx.beginPath()
-      ctx.arc(width * .82, height * y, Math.max(lineWidth, Math.min(width, height) * .035), 0, Math.PI * 2)
+      ctx.arc(iconX + iconSize + statusGap + statusRadius, iconY + iconSize * position, statusRadius, 0, Math.PI * 2)
       ctx.fill()
     })
     return
   }
   if (node.type === 'database') {
-    ctx.fillStyle = node.fill || '#edf2f4'
-    ctx.strokeStyle = dark
-    ctx.lineWidth = lineWidth
+    fillAndStroke(ctx, node, width, height, worldPixel, '#edf2f4')
+    const iconWidth = Math.max(.1, Math.min(30, width * .55))
+    const iconHeight = Math.max(.1, Math.min(30, height * .65))
+    const iconX = (width - iconWidth) / 2
+    const iconY = (height - iconHeight) / 2
+    const ellipseHeight = iconHeight * .22
+    const iconLineWidth = canvasVisualDetailSize(2 * Math.min(iconWidth, iconHeight) / 30, worldPixel, Math.min(iconWidth, iconHeight) * .12, .7)
+    ctx.strokeStyle = node.color || '#26323d'
+    ctx.lineWidth = iconLineWidth
     ctx.beginPath()
-    ctx.ellipse(width / 2, height * .18, width * .42, height * .15, 0, 0, Math.PI * 2)
-    ctx.fill()
+    ctx.ellipse(width / 2, iconY + ellipseHeight / 2, iconWidth / 2, ellipseHeight / 2, 0, 0, Math.PI * 2)
     ctx.stroke()
-    ctx.fillRect(width * .08, height * .18, width * .84, height * .64)
-    ctx.strokeRect(width * .08, height * .18, width * .84, height * .64)
     ctx.beginPath()
-    ctx.ellipse(width / 2, height * .82, width * .42, height * .15, 0, 0, Math.PI)
+    ctx.moveTo(iconX, iconY + ellipseHeight / 2)
+    ctx.lineTo(iconX, iconY + iconHeight - ellipseHeight / 2)
+    ctx.moveTo(iconX + iconWidth, iconY + ellipseHeight / 2)
+    ctx.lineTo(iconX + iconWidth, iconY + iconHeight - ellipseHeight / 2)
+    ctx.stroke()
+    ctx.beginPath()
+    ctx.ellipse(width / 2, iconY + iconHeight - ellipseHeight / 2, iconWidth / 2, ellipseHeight / 2, 0, 0, Math.PI)
     ctx.stroke()
     return
   }
@@ -1814,7 +1847,7 @@ function drawNode(ctx, sourceNode, scaleX, scaleY, worldPixel, renderPass = 'ful
     }
 
     if (node.type === 'pencil') drawPencil(ctx, node, layoutWidth, layoutHeight, visualWorldPixel)
-    else if (node.type === 'polyline') drawPolyline(ctx, node, layoutWidth, layoutHeight, visualWorldPixel)
+    else if (node.type === 'polyline' || node.type === 'flowDirection') drawPolyline(ctx, node, layoutWidth, layoutHeight, visualWorldPixel, animationTimestamp)
     else if (node.type === 'lineShape') {
       const visualLineNode = { ...node, w: layoutWidth, h: layoutHeight }
       const sourceBorderWidth = lineShapeBorderWidth(visualLineNode)
@@ -1873,15 +1906,23 @@ function drawNode(ctx, sourceNode, scaleX, scaleY, worldPixel, renderPass = 'ful
       if (cachedImageReady(image)) {
         ctx.save()
         try {
-          ctx.globalAlpha *= alpha(node.backgroundOpacity)
-          ctx.fillStyle = node.fill || '#eef2f4'
-          ctx.fillRect(0, 0, layoutWidth, layoutHeight)
+          nodePath(ctx, node, layoutWidth, layoutHeight)
+          ctx.clip()
+          ctx.save()
+          try {
+            ctx.globalAlpha *= alpha(node.backgroundOpacity)
+            ctx.fillStyle = node.fill || '#eef2f4'
+            ctx.fillRect(0, 0, layoutWidth, layoutHeight)
+          } finally {
+            ctx.restore()
+          }
+          drawImageFit(ctx, image, layoutWidth, layoutHeight, node.imageFit || 'contain')
         } finally {
           ctx.restore()
         }
-        drawImageFit(ctx, image, layoutWidth, layoutHeight, node.imageFit || 'contain')
-      } else drawMediaPlaceholder(ctx, node, layoutWidth, layoutHeight, lineWidth, true)
-    } else if (node.type === 'video') drawMediaPlaceholder(ctx, node, layoutWidth, layoutHeight, lineWidth, false)
+        strokeNodeOutline(ctx, node, layoutWidth, layoutHeight, visualWorldPixel)
+      } else drawMediaPlaceholder(ctx, node, layoutWidth, layoutHeight, visualWorldPixel, true)
+    } else if (node.type === 'video') drawMediaPlaceholder(ctx, node, layoutWidth, layoutHeight, visualWorldPixel, false)
     else {
       drawSpecialNode(ctx, node, layoutWidth, layoutHeight, lineWidth, value, renderPass, visualWorldPixel, animationTimestamp)
       const visualOnly = ['flowPipe', 'rotatingFan', 'signalLight', 'waterTank', 'heartbeat', 'particles', 'progress']
@@ -2304,7 +2345,7 @@ function prepareCanvasVisualSpriteCommand(
   worldPixel,
   opacityMultiplier
 ) {
-  if (!canvasVisualAnimationTypes.has(sourceNode?.type)) return null
+  if (!canvasVisualSpriteTypes.has(sourceNode?.type)) return null
   const descriptorOwner = sourceNode && typeof sourceNode === 'object'
   const sourceKey = canvasVisualDescriptorSourceKey(sourceNode)
   let descriptor = descriptorOwner ? canvasVisualSpriteDescriptorCache.get(sourceNode) : null
@@ -2432,7 +2473,7 @@ function tryDrawCanvasVisualSprite(
   if (
     renderPass !== 'full'
     || !task.visualSpriteCache
-    || !canvasVisualAnimationTypes.has(sourceNode?.type)
+    || !canvasVisualSpriteTypes.has(sourceNode?.type)
   ) return false
 
   const command = prepareCanvasVisualSpriteCommand(
@@ -5846,7 +5887,7 @@ function visualAnimationDirectAtlasFrame(visibleNodes = refreshVisibleVisualAnim
       if (
         key == null
         || committedVisualAnimationNodeMap.get(key) !== sourceNode
-        || !canvasVisualAnimationTypes.has(sourceNode?.type)
+        || !canvasVisualSpriteTypes.has(sourceNode?.type)
         || !isCanvasVisualAnimationNode(node)
         || number(node?.rotate) !== 0
         || alpha(node?.opacity) <= 0
@@ -5867,7 +5908,7 @@ function visualAnimationDirectAtlasFrame(visibleNodes = refreshVisibleVisualAnim
       if (
         key == null
         || committedVisualAnimationNodeMap.get(key) !== sourceNode
-        || !canvasVisualAnimationTypes.has(sourceNode?.type)
+        || !canvasVisualSpriteTypes.has(sourceNode?.type)
         || !isCanvasVisualAnimationNode(node)
         || number(node?.rotate) !== 0
         || alpha(node?.opacity) !== 1

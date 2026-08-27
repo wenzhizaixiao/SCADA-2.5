@@ -12,6 +12,7 @@ const INDEXED_DB_POINT_CHUNK_MAX_ITEMS = 256
 const INDEXED_DB_OPERATIONS_PER_YIELD = 4
 
 const SENSITIVE_CONFIG_KEY = /(?:password|passwd|pwd|secret|token|auth(?:entication|orization)?|signature|api[_-]?key|access[_-]?key|credential|headers?)/i
+// 订阅报文可能是任意文本，无法按字段清理，只在当前会话中保留。
 const VOLATILE_CONFIG_KEY = /^(?:subprotocol|subscribeMessage)$/i
 const SAFE_URL_QUERY_KEYS = new Set(['site', 'format'])
 

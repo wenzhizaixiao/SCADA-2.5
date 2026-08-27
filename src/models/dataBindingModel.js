@@ -28,7 +28,9 @@ const ADAPTER_TYPES_BY_VALUE_TYPE = Object.freeze({
   number: new Set(['direct', 'first']),
   boolean: new Set(['direct', 'first']),
   text: new Set(['direct', 'first', 'join', 'template']),
-  table: new Set(['direct'])
+  table: new Set(['direct']),
+  'text-list': new Set(['direct']),
+  'table-rows': new Set(['direct'])
 })
 
 const UNSAFE_RECORD_KEYS = new Set(['__proto__', 'prototype', 'constructor'])
@@ -519,6 +521,70 @@ function normalizeTableColumns(sourceColumns, sourceRows) {
   })
 }
 
+function tableHeadersFromValue(value) {
+  try {
+    if (!Array.isArray(value)) return null
+    const sourceHeaders = Array.prototype.slice.call(value, 0, MAX_RUNTIME_TABLE_COLUMNS)
+    const usedKeys = new Set()
+    const headers = []
+    for (let index = 0; index < sourceHeaders.length; index += 1) {
+      const source = sourceHeaders[index]
+      if (plainObject(source)) {
+        const rawKey = normalizedText(source.key, 128)
+        const title = scalarText(source.title ?? source.label ?? source.name ?? rawKey)
+        if (title == null) return null
+        headers.push({
+          ...(rawKey ? { key: uniqueColumnKey(rawKey, index, usedKeys) } : {}),
+          title: title.slice(0, MAX_RUNTIME_TABLE_CELL_TEXT_LENGTH)
+        })
+        continue
+      }
+      const title = scalarText(source)
+      if (title == null) return null
+      headers.push(title.slice(0, MAX_RUNTIME_TABLE_CELL_TEXT_LENGTH))
+    }
+    return headers
+  } catch {
+    return null
+  }
+}
+
+function tableRowsFromValue(value) {
+  try {
+    if (!Array.isArray(value)) return null
+    const sourceRows = Array.prototype.slice.call(value, 0, MAX_RUNTIME_TABLE_ROWS)
+    const rows = []
+    let rowShape = ''
+    for (const sourceRow of sourceRows) {
+      if (Array.isArray(sourceRow)) {
+        if (rowShape && rowShape !== 'array') return null
+        rowShape = 'array'
+        const boundedRow = Array.prototype.slice.call(sourceRow, 0, MAX_RUNTIME_TABLE_COLUMNS)
+        rows.push(boundedRow.map(cell => cloneRuntimeTableCellValue(cell)))
+        continue
+      }
+      if (plainObject(sourceRow)) {
+        if (rowShape && rowShape !== 'object') return null
+        rowShape = 'object'
+        const row = {}
+        for (const key of boundedRecordKeys(sourceRow)) {
+          try {
+            row[key] = cloneRuntimeTableCellValue(sourceRow[key])
+          } catch {
+            row[key] = RUNTIME_TABLE_CELL_THROWN
+          }
+        }
+        rows.push(row)
+        continue
+      }
+      return null
+    }
+    return rows
+  } catch {
+    return null
+  }
+}
+
 function tableFromValue(value) {
   try {
     const dataset = plainObject(value) && Array.isArray(value.rows) ? value : null
@@ -552,6 +618,8 @@ function fallbackValue(node, target) {
   const value = bindingStaticValue(node, target)
   const definition = getBindableParameter(node, target)
   if (definition?.valueType === 'table') return tableFromValue(value) ?? cloneStructuredValue(value)
+  if (definition?.valueType === 'text-list') return tableHeadersFromValue(value) ?? cloneStructuredValue(value)
+  if (definition?.valueType === 'table-rows') return tableRowsFromValue(value) ?? cloneStructuredValue(value)
   return cloneStructuredValue(value)
 }
 
@@ -566,6 +634,8 @@ export function resolveBindingValue(node, target, runtimeValue, adapter) {
   if (adapter != null && !normalizedAdapter) return fallback
   if (definition.valueType === 'text') return textFromValue(runtimeValue, normalizedAdapter) ?? fallback
   if (definition.valueType === 'table') return tableFromValue(runtimeValue) ?? fallback
+  if (definition.valueType === 'text-list') return tableHeadersFromValue(runtimeValue) ?? fallback
+  if (definition.valueType === 'table-rows') return tableRowsFromValue(runtimeValue) ?? fallback
 
   const selected = firstAdaptedValue(runtimeValue, normalizedAdapter)
   if (!selected.valid) return fallback

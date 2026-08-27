@@ -113,7 +113,7 @@ function signalPaletteColor(node, index) {
 
 export function isCanvasVisualAnimationCandidate(node) {
   if (!node) return false
-  if (['flowPipe', 'rotatingFan', 'waterTank', 'particles'].includes(node.type)) return node.animation === 'flow'
+  if (['flowDirection', 'flowPipe', 'rotatingFan', 'waterTank', 'particles'].includes(node.type)) return node.animation === 'flow'
   if (node.type === 'heartbeat') return node.animation === 'pulse'
   return node.type === 'signalLight'
     && node.animation === 'blink'
@@ -140,6 +140,13 @@ export function flowPipeDashOffset(node, lineWidth, timestamp) {
   const width = finiteNumber(lineWidth, 1)
   const dashCycle = (width > 0 ? width : 1) * FLOW_PIPE_DASH_UNITS
   return -canvasVisualAnimationPhase(node, timestamp) * dashCycle
+}
+
+export function flowDirectionDashOffset(node, timestamp) {
+  if (node?.type !== 'flowDirection' || !isCanvasVisualAnimationCandidate(node)) return 0
+  const dashLength = Math.max(.1, finiteNumber(node.borderDashLength, 8))
+  const dashGap = Math.max(.1, finiteNumber(node.borderDashGap, 6))
+  return -canvasVisualAnimationPhase(node, timestamp) * (dashLength + dashGap)
 }
 
 export function rotatingFanAngle(node, timestamp) {

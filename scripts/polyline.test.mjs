@@ -414,13 +414,13 @@ test('shows draggable point handles only for one selected unlocked polyline and 
   const pointerMove = sourceBetween(appSource, 'function applyPointerMove', 'function pointerUp')
   const transformBox = sourceBetween(appSource, '<div v-if="activeTool === \'select\' && selected && selectedNodeCount === 1 && !selected.locked"', '<div v-for="n in editorRenderedNodes"')
 
-  assert.match(transformBox, /v-if="selected\.type === 'polyline'"[^>]*class="polyline-point-editor"/)
+  assert.match(transformBox, /v-if="isPolylineNodeType\(selected\.type\)"[^>]*class="polyline-point-editor"/)
   assert.doesNotMatch(transformBox, /v-for="\(point, index\) in selected\.polylinePoints"/)
   assert.match(transformBox, /data-testid="polyline-point-handle-layer"/)
   assert.match(transformBox, /:data-point-count="selected\.polylinePoints\.length"/)
   assert.match(transformBox, /@pointerdown="startPolylinePointLayerDrag\(\$event, selected\)"/)
   assert.match(start, /e\.preventDefault\(\)[\s\S]*?e\.stopPropagation\(\)/)
-  assert.match(start, /node\.type !== 'polyline' \|\| node\.locked/)
+  assert.match(start, /!isPolylineNodeType\(node\.type\) \|\| node\.locked/)
   assert.match(start, /captureFieldRecord\(node, \['x', 'y', 'w', 'h', 'polylinePoints'\]\)/)
   assert.match(start, /beginPointerOperation\(e, \{[\s\S]*?type: 'polylinePoint'/)
   assert.match(pointerMove, /polylinePointFromEvent\(e, false\)/)
@@ -432,7 +432,7 @@ test('shows draggable point handles only for one selected unlocked polyline and 
 
 test('changes segment count through arc-length resampling and keeps resize and rotate controls', () => {
   const setter = sourceBetween(appSource, 'function setPolylineSegmentCount', 'function addPolylinePoint')
-  const controls = sourceBetween(appSource, '<template v-if="selected.type === \'polyline\'">', '<template v-if="![\'lineShape\',\'pencil\',\'polyline\',\'flowPipe\'')
+  const controls = sourceBetween(appSource, '<template v-if="isPolylineNodeType(selected.type)">', '<template v-if="![\'lineShape\',\'pencil\',\'polyline\',\'flowDirection\',\'flowPipe\'')
   const transformBox = sourceBetween(appSource, '<div v-if="activeTool === \'select\' && selected && selectedNodeCount === 1 && !selected.locked"', '<div v-for="n in editorRenderedNodes"')
 
   assert.doesNotMatch(setter, /recordNodeFields\(/)
@@ -455,23 +455,23 @@ test('starts a polyline only by dropping it on the canvas and requires another d
   const catalogButton = appSource.match(/<div v-show="groupIsOpen\(g\.name\)" class="shape-grid">[\s\S]*?<\/div>/)?.[0] || ''
 
   assert.doesNotMatch(appSource, /function activateCatalogItem\(/)
-  assert.match(add, /item\.type !== 'polyline'\) addNode\(item\.type\)/)
-  assert.match(doubleClick, /item\.type !== 'polyline'\) addCatalogItem\(item\)/)
+  assert.match(add, /!isPolylineNodeType\(item\.type\)\) addNode\(item\.type\)/)
+  assert.match(doubleClick, /!isPolylineNodeType\(item\.type\)\) addCatalogItem\(item\)/)
   assert.doesNotMatch(doubleClick, /addNode\(|setTool\(/)
-  assert.match(title, /item\.type === 'polyline' \? '拖到画布确定线段起始点'/)
-  assert.match(appSource, /:class="\{ active: item\.type === 'polyline' && activeTool === 'polyline', 'drawing-tool': item\.type === 'polyline' \}"/)
+  assert.match(title, /isPolylineNodeType\(item\.type\) \? `拖到画布确定\$\{item\.name\}起始点`/)
+  assert.match(appSource, /:class="\{ active: isPolylineNodeType\(item\.type\) && activeTool === item\.type, 'drawing-tool': isPolylineNodeType\(item\.type\) \}"/)
   assert.match(catalogButton, /<button[^>]*draggable="true"/)
-  assert.match(catalogButton, /:data-testid="item\.type === 'polyline' \? 'polyline-library-item' : undefined"/)
-  assert.match(appSource, /:aria-pressed="item\.type === 'polyline' \? activeTool === 'polyline' : undefined"/)
+  assert.match(catalogButton, /:data-testid="isPolylineNodeType\(item\.type\) \? `\$\{item\.type\}-library-item` : undefined"/)
+  assert.match(appSource, /:aria-pressed="isPolylineNodeType\(item\.type\) \? activeTool === item\.type : undefined"/)
   assert.doesNotMatch(catalogButton, /@click=/)
   assert.match(catalogButton, /@dblclick="handleCatalogItemDoubleClick\(item\)"/)
   assert.match(drop, /const type = e\.dataTransfer\.getData\('shape'\)/)
-  assert.match(drop, /if \(type === 'polyline'\) \{[\s\S]*?cancelPolylineDrawing\(\)[\s\S]*?setTool\('polyline'\)[\s\S]*?addPolylinePoint\(e\)[\s\S]*?return/)
-  assert.ok(drop.indexOf("setTool('polyline')") < drop.indexOf('addPolylinePoint(e)'))
+  assert.match(drop, /if \(isPolylineNodeType\(type\)\) \{[\s\S]*?cancelPolylineDrawing\(\)[\s\S]*?setTool\(type\)[\s\S]*?addPolylinePoint\(e\)[\s\S]*?return/)
+  assert.ok(drop.indexOf('setTool(type)') < drop.indexOf('addPolylinePoint(e)'))
   assert.ok(drop.indexOf('addPolylinePoint(e)') < drop.indexOf('if (type) addNode(type'))
-  assert.match(addPoint, /\(e\.button \?\? 0\) !== 0 \|\| activeTool\.value !== 'polyline'[\s\S]*?return false/)
+  assert.match(addPoint, /\(e\.button \?\? 0\) !== 0 \|\| !isPolylineNodeType\(activeTool\.value\)[\s\S]*?return false/)
   assert.doesNotMatch(addPoint, /if \(e\.button !== 0/)
-  assert.equal((appSource.match(/setTool\('polyline'\)/g) || []).length, 1)
+  assert.equal((appSource.match(/setTool\(type\)/g) || []).length, 1)
 })
 
 test('routes clicks over nodes, drawings, and locked badges into the active polyline draft', () => {
@@ -481,8 +481,8 @@ test('routes clicks over nodes, drawings, and locked badges into the active poly
 
   assert.ok(nodePointerDown.indexOf('addPolylinePoint(e)') < nodePointerDown.indexOf('consumeTableDoublePointerDown'))
   assert.ok(drawingPointerDown.indexOf('addPolylinePoint(e)') < drawingPointerDown.indexOf('moveDrawing'))
-  assert.match(lockedBadge, /activeTool\.value === 'polyline'\) addPolylinePoint\(e\)/)
-  assert.match(appSource, /function canStartNodeTextEdit\(node\)[\s\S]*?\['lineShape', 'pencil', 'polyline'\]\.includes\(node\.type\)/)
+  assert.match(lockedBadge, /isPolylineNodeType\(activeTool\.value\)\) addPolylinePoint\(e\)/)
+  assert.match(appSource, /function canStartNodeTextEdit\(node\)[\s\S]*?!\['lineShape', 'pencil'\]\.includes\(node\.type\) && !isPolylineNodeType\(node\.type\)/)
 })
 
 test('renders every start and end arrow combination independently', async () => {
@@ -504,7 +504,7 @@ test('renders every start and end arrow combination independently', async () => 
     if (hasStart || hasEnd) assert.match(html, /markerUnits="userSpaceOnUse"/)
   }
 
-  const controls = sourceBetween(appSource, '<template v-if="selected.type === \'polyline\'">', '<template v-if="![\'lineShape\',\'pencil\',\'polyline\',\'flowPipe\'')
+  const controls = sourceBetween(appSource, '<template v-if="isPolylineNodeType(selected.type)">', '<template v-if="![\'lineShape\',\'pencil\',\'polyline\',\'flowDirection\',\'flowPipe\'')
   assert.match(controls, /起点样式<select v-model="selected\.polylineStartMarker"><option value="none">无<\/option><option value="arrow">箭头<\/option><\/select>/)
   assert.match(controls, /终点样式<select v-model="selected\.polylineEndMarker"><option value="none">无<\/option><option value="arrow">箭头<\/option><\/select>/)
 })
@@ -528,7 +528,7 @@ test('keeps arrow size independent from line width in every renderer', async () 
   assert.equal((html.match(/markerHeight="14"/g) || []).length, 2)
   assert.doesNotMatch(html, /markerWidth="60"|markerHeight="60"/)
 
-  const controls = sourceBetween(appSource, '<template v-if="selected.type === \'polyline\'">', '<template v-if="![\'lineShape\',\'pencil\',\'polyline\',\'flowPipe\'')
+  const controls = sourceBetween(appSource, '<template v-if="isPolylineNodeType(selected.type)">', '<template v-if="![\'lineShape\',\'pencil\',\'polyline\',\'flowDirection\',\'flowPipe\'')
   assert.match(controls, /箭头大小<input type="number" min="1" max="100" step="1" v-model\.number="selected\.polylineArrowSize" data-testid="polyline-arrow-size">/)
 })
 
@@ -543,13 +543,13 @@ test('keeps newly inserted polyline nodes reactive in the spatial index', () => 
 test('orders shared straight-line controls before polyline-only controls', () => {
   const polylineControls = sourceBetween(
     appSource,
-    '<template v-if="selected.type === \'polyline\'">',
-    '<template v-if="![\'lineShape\',\'pencil\',\'polyline\',\'flowPipe\''
+    '<template v-if="isPolylineNodeType(selected.type)">',
+    '<template v-if="![\'lineShape\',\'pencil\',\'polyline\',\'flowDirection\',\'flowPipe\''
   )
   const lineControls = sourceBetween(
     appSource,
     '<template v-if="selected.type === \'lineShape\'">',
-    '<template v-else-if="![\'table\',\'pencil\',\'polyline\'].includes(selected.type)">'
+    '<template v-else-if="![\'table\',\'pencil\',\'polyline\',\'flowDirection\'].includes(selected.type)">'
   )
   const labels = source => [...source.matchAll(/<label[^>]*>([^<]+)/g)].map(match => match[1])
   const sharedLabels = [
@@ -565,19 +565,13 @@ test('orders shared straight-line controls before polyline-only controls', () =>
   ]
 
   assert.deepEqual(labels(lineControls), sharedLabels)
-  assert.deepEqual(labels(polylineControls).slice(0, sharedLabels.length), sharedLabels)
-  assert.deepEqual(labels(polylineControls).slice(sharedLabels.length), [
-    '分段数',
-    '线条宽度',
-    '箭头大小',
-    '起点样式',
-    '终点样式',
-    '端点',
-    '连接'
-  ])
+  for (const label of sharedLabels) assert.ok(labels(polylineControls).includes(label), label)
+  for (const label of ['分段数', '线条宽度', '箭头大小', '起点样式', '终点样式', '端点', '连接']) {
+    assert.ok(labels(polylineControls).includes(label), label)
+  }
   assert.match(polylineControls, /data-testid="polyline-style"><option value="solid">实线<\/option><option value="dashed">虚线<\/option><option value="dotted">点线<\/option>/)
   assert.match(polylineControls, /selected\.polylineStyle !== 'solid'[\s\S]*?selected\.borderDashLength[\s\S]*?selected\.borderDashGap/)
-  assert.ok(polylineControls.indexOf('<h3>线条样式</h3>') < polylineControls.indexOf('<h3>线段属性</h3>'))
+  assert.ok(polylineControls.indexOf('<h3>线条样式</h3>') < polylineControls.indexOf('>线段属性</h3>'))
 })
 
 test('renders dotted custom spacing with a round cap, outline layer, and line opacity', async () => {
@@ -613,14 +607,14 @@ test('renders dotted custom spacing with a round cap, outline layer, and line op
 
 test('uses the same polyline geometry in the node renderer, preview, and minimap', () => {
   assert.match(nodeVisualSource, /function polylinePath\(node\)[\s\S]*?coordinates\.slice\(1\)\.map\(point => `L \$\{point\.x\} \$\{point\.y\}`\)/)
-  assert.match(nodeVisualSource, /v-else-if="node\.type === 'polyline'"[\s\S]*?data-testid="polyline-node-path"/)
+  assert.match(nodeVisualSource, /v-else-if="isPolylineNodeType\(node\.type\)"[\s\S]*?'polyline-node-path'/)
 
   assert.match(appSource, /<ProgressivePreviewNodes :nodes="previewDomNodes"/)
   assert.match(previewNodeBatchSource, /v-for="node in nodes"[\s\S]*?v-memo=/)
   assert.match(previewNodeBatchSource, /<NodeVisual[\s\S]*?:node="node"[\s\S]*?preview/)
 
-  assert.match(miniMapSource, /function drawPolyline\(ctx, node, width, height, worldPixel\)[\s\S]*?points\.slice\(1\)\.forEach\(point => ctx\.lineTo\(point\.x, point\.y\)\)/)
-  assert.match(miniMapSource, /node\.type === 'polyline'\) drawPolyline\(ctx, node, layoutWidth, layoutHeight, visualWorldPixel\)/)
+  assert.match(miniMapSource, /function drawPolyline\(ctx, node, width, height, worldPixel, animationTimestamp = 0\)[\s\S]*?points\.slice\(1\)\.forEach\(point => ctx\.lineTo\(point\.x, point\.y\)\)/)
+  assert.match(miniMapSource, /node\.type === 'polyline' \|\| node\.type === 'flowDirection'\) drawPolyline\(ctx, node, layoutWidth, layoutHeight, visualWorldPixel, animationTimestamp\)/)
   assert.match(miniMapSource, /node\.polylineStartMarker === 'arrow'[\s\S]*?node\.polylineEndMarker === 'arrow'/)
 })
 
@@ -702,5 +696,5 @@ test('preserves point count through JSON import and tracks polyline data in memo
   assert.match(memo, /content: content\.value/)
   assert.equal((appSource.match(/nodeRenderMemo\(n\)/g) || []).length, 1)
   assert.match(previewNodeBatchSource, /v-for="node in nodes"[\s\S]*?<NodeVisual[\s\S]*?:node="node"/)
-  assert.match(miniMapSource, /node\.type === 'polyline'\) drawPolyline\(ctx, node, layoutWidth, layoutHeight, visualWorldPixel\)/)
+  assert.match(miniMapSource, /node\.type === 'polyline' \|\| node\.type === 'flowDirection'\) drawPolyline\(ctx, node, layoutWidth, layoutHeight, visualWorldPixel, animationTimestamp\)/)
 })

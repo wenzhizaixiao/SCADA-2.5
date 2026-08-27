@@ -3,9 +3,15 @@ import test from 'node:test'
 
 import { isUsableSourceSnapshot } from '../src/utils/sourceSnapshotValidation.js'
 
-test('accepts only an object snapshot with matching source id and its own data field', () => {
-  assert.equal(isUsableSourceSnapshot({ sourceId: 'source-a', data: { value: 1 } }, ' source-a '), true)
-  assert.equal(isUsableSourceSnapshot({ sourceId: 'source-a', data: undefined }, 'source-a'), true)
+test('accepts only a matching formal snapshot with usable data and normal quality', () => {
+  assert.equal(isUsableSourceSnapshot({ sourceId: 'source-a', quality: 'good', data: { value: 1 } }, ' source-a '), true)
+  assert.equal(isUsableSourceSnapshot({ sourceId: 'source-a', data: { value: 1 } }, 'source-a'), true)
+  assert.equal(isUsableSourceSnapshot({ sourceId: 'source-a', quality: ' GOOD ', data: null }, 'source-a'), true)
+  assert.equal(isUsableSourceSnapshot({ sourceId: 'source-a', quality: 'offline', data: { value: 1 } }, 'source-a'), false)
+  assert.equal(isUsableSourceSnapshot({ sourceId: 'source-a', quality: 'stale', data: { value: 1 } }, 'source-a'), false)
+  assert.equal(isUsableSourceSnapshot({ sourceId: 'source-a', quality: 'error', data: { value: 1 } }, 'source-a'), false)
+  assert.equal(isUsableSourceSnapshot({ sourceId: 'source-a', quality: 'unknown', data: { value: 1 } }, 'source-a'), false)
+  assert.equal(isUsableSourceSnapshot({ sourceId: 'source-a', quality: 'good', data: undefined }, 'source-a'), false)
   assert.equal(isUsableSourceSnapshot({ sourceId: 'source-b', data: {} }, 'source-a'), false)
   assert.equal(isUsableSourceSnapshot({ sourceId: 'source-a' }, 'source-a'), false)
   assert.equal(isUsableSourceSnapshot([], 'source-a'), false)
@@ -21,4 +27,9 @@ test('rejects inherited data and hostile snapshot objects without throwing', () 
   revoke()
   assert.doesNotThrow(() => isUsableSourceSnapshot(proxy, 'source-a'))
   assert.equal(isUsableSourceSnapshot(proxy, 'source-a'), false)
+
+  const hostileQuality = { sourceId: 'source-a', data: {} }
+  Object.defineProperty(hostileQuality, 'quality', { get() { throw new Error('blocked') } })
+  assert.doesNotThrow(() => isUsableSourceSnapshot(hostileQuality, 'source-a'))
+  assert.equal(isUsableSourceSnapshot(hostileQuality, 'source-a'), false)
 })
