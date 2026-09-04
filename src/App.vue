@@ -20,6 +20,7 @@ import {
   COMPONENT_CATEGORY_BY_TYPE as typeCategory,
   COMPONENT_NAME_BY_TYPE as typeDisplayName,
   createComponentGroups,
+  DEFAULT_RUNTIME_DATA_TYPES as defaultRuntimeDataTypes,
   EDITOR_TOOLS as tools,
   FORM_NODE_DEFAULTS as formNodeDefaults,
   FORM_TYPE_IDS as formTypeIds,
@@ -30,13 +31,18 @@ import {
   baseNodeOptions,
   builtInVisualPrimaryColor,
   clampTableColumnWidth,
+  echartsCodeSourceHash,
+  hasTableMergeSelectionConflict,
+  migrateTableMergesForDeletion,
+  migrateTableMergesForInsertion,
   normalizeDrawing,
   normalizeEdge,
   normalizeNode,
   normalizeNodesTogether,
   normalizeSelectOptions,
   normalizeTableMerges,
-  normalizeTableModel
+  normalizeTableModel,
+  tableMergesIntersectingSelection
 } from './models/editorModel'
 import { drawingRepository, operationGateway, pointCatalogGateway, runtimeGateway, timeService } from './services/backend'
 import {
@@ -46,9 +52,13 @@ import {
   getBindableParameters,
   MAX_SIGNAL_COLORS
 } from './config/componentBindingSchema'
+import { getPropertyEditorContract } from './config/componentPropertyContracts'
 import {
   bindingSourceIds,
   bindingPointIds,
+  MAX_RUNTIME_TABLE_COLUMNS,
+  MAX_RUNTIME_TABLE_ROWS,
+  removeChartSeriesBindings,
   removeDataBinding,
   upsertDataBinding
 } from './models/dataBindingModel'
@@ -66,6 +76,7 @@ import { createDataKeyIndex, createEdgeAdjacencyIndex, createLayerAllocator } fr
 import { createDataBindingIndex } from './utils/dataBindingIndex'
 import { createRuntimeCanvasDirtyQueue, DEFAULT_RUNTIME_CANVAS_DIRTY_BATCH_SIZE } from './utils/runtimeCanvasDirtyQueue'
 import { directBindingCompatibility } from './utils/dataBindingCompatibility'
+import { hasConfiguredTableContentBinding, hasResolvedTableContentBinding, materializeRuntimeNode } from './utils/runtimeNodeMaterializer'
 import { diffPointCatalog } from './utils/pointCatalogDiff'
 import { canonicalizeJsonPath, evaluateJsonPath, jsonValueType } from './utils/jsonPathBinding'
 import { isSourceBindingRuntimeKey } from './utils/runtimeKey'
@@ -144,14 +155,16 @@ import {
 } from './utils/previewFrameFreshness'
 import { createPreviewMediaReadinessGate } from './utils/previewMediaReadiness'
 import {
+  buildPreviewHybridPlan,
   PREVIEW_HYBRID_MAX_DOM_COST,
-  PREVIEW_HYBRID_MAX_DOM_NODES,
-  previewHybridLayerTail,
-  previewHybridTailDomSafe,
-  previewNodeNeedsLiveDom
+  PREVIEW_HYBRID_MAX_DOM_NODES
 } from './utils/previewRenderPolicy'
 import { previewMountBatchEnd } from './utils/previewMountBudget'
 import { createPreviewViewportScheduler } from './utils/previewViewportScheduler'
+import {
+  fullscreenPreviewScrollAxes,
+  resolveFullscreenViewportSize
+} from './utils/fullscreenViewportSize'
 import { PROJECT_VERSION } from './utils/projectMigration'
 import { createChunkedRenderScheduler } from './utils/chunkedRenderScheduler'
 import { createInteractionCommitBarrier } from './utils/interactionCommitBarrier'
@@ -184,6 +197,16 @@ import { createSourceSnapshotReplayCoordinator } from './utils/sourceSnapshotRep
 import { createLegacyPointReplayCoordinator } from './utils/legacyPointReplayCoordinator'
 import { isUsableSourceSnapshot } from './utils/sourceSnapshotValidation'
 import { resolveTableCellViewDetail } from './utils/tableCellViewer.js'
+import { parseEChartsCode, prepareEChartsCodeForSandbox } from './utils/echartsCodeParser.js'
+import {
+  MAX_EDITABLE_CHART_SERIES,
+  chartColorPalette,
+  chartRowsForSeries,
+  chartRowsFromNode,
+  chartSliceColor,
+  chartSeriesFromNode
+} from './utils/chartOptions.js'
+import { addChartRow, MAX_EDITABLE_CHART_ITEMS, removeChartRow, setChartRowLabel, setChartRowValue } from './utils/chartDataEditor.js'
 
 // 顶部品牌名称只在这里定义，修改后会同步更新显示文字和图标的无障碍名称。
 const BRAND_NAME = '苔岑2D绘图'
@@ -374,7 +397,6 @@ const previewFullscreenPending = ref(false)
 const previewAutoFit = ref(false)
 const previewAutoFitPending = ref(false)
 const previewModeTransitionPending = computed(() => previewAutoFitPending.value || previewFullscreenPending.value)
-const previewScale = ref(1)
 const previewDisplayMode = ref('dom')
 const previewRenderTarget = ref('dom')
 const previewFitMounted = ref(false)
@@ -739,6 +761,8 @@ const unsubscribePointCatalog = pointCatalogGateway.subscribe(event => {
 // 画布、视口及临时编辑器状态
 const stageWidth = ref(DEFAULT_STAGE_WIDTH)
 const stageHeight = ref(DEFAULT_STAGE_HEIGHT)
+// screen 只记录尺寸来自“使用当前屏幕尺寸”按钮；预览生命周期不得回写图纸宽高。
+const canvasSizeMode = ref('fixed')
 const miniMapWidth = 240
 const miniMapHeight = 150
 const miniMapViewportMinSize = 12
@@ -748,6 +772,13 @@ const transientCanvasRenderBounds = shallowRef(null)
 const previewViewport = ref({ left: 0, top: 0, width: 1200, height: 800 })
 const previewOverlay = ref(null)
 const previewCanvas = ref(null)
+const previewFullscreenViewportSize = shallowRef({ width: 0, height: 0 })
+const previewFullscreenScrollAxes = computed(() => fullscreenPreviewScrollAxes({
+  stageWidth: stageWidth.value,
+  stageHeight: stageHeight.value,
+  viewportWidth: previewFullscreenViewportSize.value.width,
+  viewportHeight: previewFullscreenViewportSize.value.height
+}))
 const previewFitCanvas = ref(null)
 const previewEdgeCanvas = ref(null)
 const previewDomStage = ref(null)
@@ -756,11 +787,13 @@ const textEditor = ref(null)
 const inlineTextComposing = ref(false)
 const editingText = ref(null)
 const editingFormId = ref(null)
-const tableDataEditor = ref({ show: false, nodeId: null, tab: 'data', mode: 'edit' })
+const tableDataEditor = ref({ show: false, nodeId: null, tab: 'data', mode: 'edit', view: 'static' })
 const tableDataSelection = ref({ nodeId: null, start: null, end: null, awaitingEnd: false })
 const tableSelectionDragging = ref(false)
 const tableCellViewer = ref({ show: false, nodeId: null, row: -1, column: -1 })
 const buttonMessageDialog = ref({ show: false, nodeId: null, title: '', message: '' })
+const echartsCodeEditor = ref({ show: false, nodeId: null, draft: '', error: '' })
+const echartsCodeEditorInput = ref(null)
 const customComponentDialog = ref({ show: false, name: '', bundle: null })
 const customComponentNameInput = ref(null)
 const customComponentNameComposing = ref(false)
@@ -775,22 +808,17 @@ const EMPTY_PREVIEW_FIT_PLAN = Object.freeze({
   overlayNodeIds: Object.freeze([]),
   overlayDrawingIds: Object.freeze([]),
   liveNodeIds: Object.freeze([]),
+  canvasFallbackNodeIds: Object.freeze([]),
   key: '',
   layerSafe: true,
   domSafe: true,
-  canUseCanvas: true
+  canUseCanvas: true,
+  preservesAllLiveDom: true
 })
 const previewFitPlan = computed(() => {
   if (!showPreview.value) return EMPTY_PREVIEW_FIT_PLAN
-  const liveNodeIds = []
-  for (const node of nodes.value) {
-    if (previewNodeNeedsLiveDom(node)) liveNodeIds.push(node.id)
-  }
-  const tail = previewHybridLayerTail(layerEntries.value, liveNodeIds)
-  const layerSafe = tail.safe
-  const domSafe = layerSafe && previewHybridTailDomSafe(tail.entries)
-  // 混合层级不安全时，兜底 Canvas 绘制完整图纸；最终交互仍由完整 DOM 接管。
-  const overlayEntries = liveNodeIds.length && layerSafe && domSafe ? tail.entries : []
+  const hybridPlan = buildPreviewHybridPlan(layerEntries.value, nodes.value)
+  const overlayEntries = hybridPlan.overlayEntries
   const overlayNodes = overlayEntries
     .filter(entry => entry?.kind === 'node' && entry.entity)
     .map(entry => entry.entity)
@@ -804,20 +832,29 @@ const previewFitPlan = computed(() => {
     overlayDrawings,
     overlayNodeIds,
     overlayDrawingIds,
-    liveNodeIds,
-    key: JSON.stringify([layerSafe, domSafe, overlayNodeIds, overlayDrawingIds]),
-    layerSafe,
-    domSafe,
-    canUseCanvas: !liveNodeIds.length || (layerSafe && domSafe)
+    liveNodeIds: hybridPlan.liveNodeIds,
+    canvasFallbackNodeIds: hybridPlan.canvasFallbackNodeIds,
+    key: JSON.stringify([
+      hybridPlan.layerSafe,
+      hybridPlan.domSafe,
+      hybridPlan.preservesAllLiveDom,
+      overlayNodeIds,
+      overlayDrawingIds
+    ]),
+    layerSafe: hybridPlan.layerSafe,
+    domSafe: hybridPlan.domSafe,
+    canUseCanvas: hybridPlan.canUseCanvas,
+    preservesAllLiveDom: hybridPlan.preservesAllLiveDom
   }
 })
 const previewFitOverlayNodes = computed(() => previewFitPlan.value.overlayNodes)
 const previewFitOverlayDrawings = computed(() => previewFitPlan.value.overlayDrawings)
 const previewFitExcludedNodeIds = computed(() => previewFitPlan.value.overlayNodeIds)
 const previewFitExcludedDrawingIds = computed(() => previewFitPlan.value.overlayDrawingIds)
-const previewFitHybridLayerSafe = computed(() => previewFitPlan.value.layerSafe)
-const previewFitHybridDomSafe = computed(() => previewFitPlan.value.domSafe)
-const previewFitUsesDomOverlay = computed(() => previewFitPlan.value.liveNodeIds.length > 0 && previewFitHybridLayerSafe.value && previewFitHybridDomSafe.value)
+const previewFitUsesDomOverlay = computed(() => (
+  previewFitPlan.value.overlayNodeIds.length > 0
+  || previewFitPlan.value.overlayDrawingIds.length > 0
+))
 function previewFitCanvasQualityAvailable() {
   return previewFitBootstrapCanRenderSharp.value
 }
@@ -876,6 +913,7 @@ const previewViewportCanvasPlanned = computed(() => (
   && previewRenderTarget.value === 'dom'
   && !previewFitLayoutRequested.value
   && previewFitPlan.value.canUseCanvas
+  && previewFitPlan.value.preservesAllLiveDom
 ))
 // 大图保留一张完整 Canvas 帧；滚动换代期间显示旧完整帧，不暴露半挂载 DOM。
 const previewFallbackRequired = computed(() => showPreview.value && !previewSmallDocument.value)
@@ -912,8 +950,13 @@ const previewFitPresentationOffset = computed(() => (
     ? previewFitCommittedOffset.value
     : previewFitOffset.value
 ))
-const previewRenderScale = computed(() => previewFittedVisible.value ? previewFitPresentationScale.value : 1)
-const previewFitCanvasScale = computed(() => (previewFitLayoutRequested.value || previewFittedVisible.value) ? previewFitScale.value : 1)
+// 全屏只扩大可视区域，图纸和组件仍按保存的 CSS 像素一比一渲染。
+const previewRenderScale = computed(() => previewFullscreen.value
+  ? 1
+  : (previewFittedVisible.value ? previewFitPresentationScale.value : 1))
+const previewFitCanvasScale = computed(() => previewFullscreen.value
+  ? 1
+  : ((previewFitLayoutRequested.value || previewFittedVisible.value) ? previewFitScale.value : 1))
 const previewFitCanvasWidth = computed(() => Math.max(1, stageWidth.value * previewFitCanvasScale.value))
 const previewFitCanvasHeight = computed(() => Math.max(1, stageHeight.value * previewFitCanvasScale.value))
 const previewFitPixelRatio = computed(() => previewBitmapPixelRatio(previewDevicePixelRatio.value))
@@ -1356,16 +1399,34 @@ const activeTableDataNode = computed(() => {
   const node = nodeIndex.value.get(tableDataEditor.value.nodeId)
   return node?.type === 'table' && !node.locked ? node : null
 })
+const tableEditorRuntimeRevision = ref(0)
+let tableEditorRuntimeUnsubscribers = []
+const activeTableDisplayNode = computed(() => {
+  tableEditorRuntimeRevision.value
+  const node = activeTableDataNode.value
+  return node ? materializeRuntimeNode(node, pointId => runtimeData.getValue(pointId)) : null
+})
+const activeTableHasRuntimeConfiguration = computed(() => hasConfiguredTableContentBinding(activeTableDataNode.value))
+const activeTableUsesRuntimeData = computed(() => {
+  tableEditorRuntimeRevision.value
+  const node = activeTableDataNode.value
+  return node ? hasResolvedTableContentBinding(node, pointId => runtimeData.getValue(pointId)) : false
+})
+const tableEditorShowsRuntimeData = computed(() => tableDataEditor.value.view === 'runtime')
+const activeTableEditorNode = computed(() => (
+  tableEditorShowsRuntimeData.value && activeTableUsesRuntimeData.value ? activeTableDisplayNode.value : activeTableDataNode.value
+))
 const activeTableSelection = computed(() => {
   const selection = tableDataSelection.value
   const node = activeTableDataNode.value
-  if (!node || selection.nodeId !== node.id || !selection.start) return null
+  const viewNode = activeTableEditorNode.value
+  if (!node || !viewNode || selection.nodeId !== node.id || !selection.start) return null
   const end = selection.end || selection.start
   const row = Math.min(selection.start.row, end.row)
   const column = Math.min(selection.start.column, end.column)
   const rowEnd = Math.max(selection.start.row, end.row)
   const columnEnd = Math.max(selection.start.column, end.column)
-  if (row < 0 || column < 0 || rowEnd >= node.tableRows || columnEnd >= node.tableColumns) return null
+  if (row < 0 || column < 0 || rowEnd >= viewNode.tableRows || columnEnd >= viewNode.tableColumns) return null
   return {
     row, column, rowEnd, columnEnd,
     rowSpan: rowEnd - row + 1,
@@ -1375,17 +1436,26 @@ const activeTableSelection = computed(() => {
     columnLabel: column === columnEnd ? `第 ${column + 1} 列` : `第 ${column + 1}-${columnEnd + 1} 列`
   }
 })
-const selectedTableMerges = computed(() => {
+const activeTableViewMerges = computed(() => {
+  const node = activeTableDataNode.value
+  const viewNode = activeTableEditorNode.value
+  if (!node || !viewNode) return []
+  return normalizeTableMerges(node.tableMerges, viewNode.tableRows, viewNode.tableColumns)
+})
+const selectedTableViewMerges = computed(() => tableMergesIntersectingSelection(activeTableViewMerges.value, activeTableSelection.value))
+const selectedTableMerges = computed(() => tableMergesIntersectingSelection(activeTableDataNode.value?.tableMerges, activeTableSelection.value))
+const tableSelectionMergeConflict = computed(() => hasTableMergeSelectionConflict(activeTableDataNode.value?.tableMerges, activeTableSelection.value))
+const tableSelectionMergeReady = computed(() => {
   const selection = activeTableSelection.value
-  if (!selection) return []
-  return (activeTableDataNode.value?.tableMerges || []).filter(merge => (
-    merge.row <= selection.rowEnd && merge.row + merge.rowSpan - 1 >= selection.row &&
-    merge.column <= selection.columnEnd && merge.column + merge.columnSpan - 1 >= selection.column
+  if (!selection || selection.cellCount < 2 || tableSelectionMergeConflict.value) return false
+  return !selectedTableViewMerges.value.some(merge => (
+    merge.row === selection.row && merge.column === selection.column &&
+    merge.rowSpan === selection.rowSpan && merge.columnSpan === selection.columnSpan
   ))
 })
 const activeTableMergeLookup = computed(() => {
   const lookup = new globalThis.Map()
-  for (const merge of activeTableDataNode.value?.tableMerges || []) {
+  for (const merge of activeTableViewMerges.value) {
     for (let row = merge.row; row < merge.row + merge.rowSpan; row += 1) {
       for (let column = merge.column; column < merge.column + merge.columnSpan; column += 1) lookup.set(`${row}:${column}`, merge)
     }
@@ -1518,27 +1588,6 @@ const BUILT_IN_ANIMATION_OPTIONS = Object.freeze({
 function builtInAnimationOptions(node) {
   return BUILT_IN_ANIMATION_OPTIONS[node?.type] || BUILT_IN_ANIMATION_OPTIONS.flowPipe
 }
-const INTERACTION_ANIMATION_OPTIONS = Object.freeze({
-  none: Object.freeze({ value: 'none', label: '无' }),
-  pulse: Object.freeze({ value: 'pulse', label: '呼吸' }),
-  float: Object.freeze({ value: 'float', label: '浮动' }),
-  flow: Object.freeze({ value: 'flow', label: '数据流动' }),
-  blink: Object.freeze({ value: 'blink', label: '状态闪烁' })
-})
-const INTERACTION_ANIMATION_BASE_VALUES = Object.freeze(['none', 'pulse', 'float'])
-const INTERACTION_ANIMATION_VALUES_BY_TYPE = Object.freeze({
-  chart: Object.freeze([...INTERACTION_ANIMATION_BASE_VALUES, 'flow']),
-  gauge: Object.freeze([...INTERACTION_ANIMATION_BASE_VALUES, 'flow']),
-  server: Object.freeze([...INTERACTION_ANIMATION_BASE_VALUES, 'blink'])
-})
-function interactionAnimationOptions(node) {
-  const values = INTERACTION_ANIMATION_VALUES_BY_TYPE[node?.type] || INTERACTION_ANIMATION_BASE_VALUES
-  return values.map(value => INTERACTION_ANIMATION_OPTIONS[value])
-}
-function supportsInteractionAnimation(node) {
-  if (!node || node.type === 'pencil' || formTypeIds.has(node.type)) return false
-  return !BUILT_IN_ANIMATION_OPTIONS[node.type] && !String(node.type || '').startsWith('custom')
-}
 function normalizeBuiltInAnimationDuration(node = selected.value) {
   if (!node || node.locked) return
   const duration = Number(node.animationDuration)
@@ -1559,15 +1608,10 @@ function refreshBuiltInAnimation(node = selected.value) {
   }
   if (showMiniMap.value) miniMapPreview.value?.requestRuntimeRender?.(request)
 }
-function setInteractionAnimation(node, value) {
-  if (!node || node.locked || !supportsInteractionAnimation(node)) return
-  const options = interactionAnimationOptions(node)
-  const next = options.some(option => option.value === value) ? value : 'none'
-  if (node.animation === next && node.animationPaused !== true) return
-  node.animation = next
-  node.animationPaused = false
-  // 大图纸会把组件交给 Canvas 绘制，属性修改后需主动刷新其缓存画面。
-  refreshBuiltInAnimation(node)
+function setAnimationPlaying(node, playing) {
+  if (!node || node.locked) return
+  node.animationPaused = !Boolean(playing)
+  if (typeCategory.get(node.type) === '动效组件') refreshBuiltInAnimation(node)
 }
 function setFlowDirectionAnimationEnabled(node, enabled) {
   if (!node || node.type !== 'flowDirection' || node.locked) return
@@ -1580,11 +1624,66 @@ function normalizeWaterTankProgress(node = selected.value) {
   const progress = Number(node.progressValue)
   node.progressValue = Math.max(0, Math.min(100, Number.isFinite(progress) ? progress : 0))
 }
+function normalizeBindableProgressValue(node = selected.value) {
+  if (!node || !['gauge', 'progress'].includes(node.type) || node.locked) return
+  const progress = Number(node.progressValue)
+  node.progressValue = Math.max(0, Math.min(100, Number.isFinite(progress) ? progress : 0))
+}
 const selectedBindingParameters = computed(() => (
   selectedNodeCount.value === 1 && selected.value
     ? getBindableParameters(selected.value)
+      .filter(parameter => getPropertyEditorContract(selected.value, parameter.target))
     : []
 ))
+const selectedSignalColorParameters = computed(() => (
+  selectedBindingParameters.value.filter(parameter => Number.isInteger(parameter.signalColorIndex))
+))
+const STANDARD_CHART_TYPES = new Set(['lineChart', 'barChart', 'pieChart', 'scatterChart', 'radarChart'])
+const ECHARTS_COMPONENT_TYPES = new Set(['chart', ...STANDARD_CHART_TYPES, 'echartsCode'])
+const CHART_EDITOR_META = Object.freeze({
+  lineChart: Object.freeze({ title: '当前系列数据', relation: '每行对应当前系列在横轴上的 1 个点', countUnit: '个点', itemLabel: '折线点', labelField: '横轴分类', valueField: '折线点值（Y）', addLabel: '添加折线点' }),
+  barChart: Object.freeze({ title: '当前系列数据', relation: '每行对应当前系列在横轴上的 1 根柱', countUnit: '根柱', itemLabel: '柱', labelField: '横轴分类', valueField: '柱值（Y）', addLabel: '添加柱状项' }),
+  pieChart: Object.freeze({ title: '饼图数据', relation: '每行对应 1 个扇区，颜色与图例一致', countUnit: '个扇区', itemLabel: '扇区', labelField: '扇区名称', valueField: '扇区数值', addLabel: '添加扇区' }),
+  scatterChart: Object.freeze({ title: '当前系列数据', relation: '每行对应当前系列的 1 个坐标点（X, Y）', countUnit: '个点', itemLabel: '散点', labelField: '点名称', xField: 'X 坐标', yField: 'Y 坐标', addLabel: '添加散点' }),
+  radarChart: Object.freeze({ title: '当前系列数据', relation: '每行对应当前系列的 1 个雷达维度', countUnit: '个指标', itemLabel: '维度', labelField: '指标名称', valueField: '指标值', addLabel: '添加指标' })
+})
+const selectedChartSeriesIndex = ref(0)
+const selectedChartSeries = computed(() => (
+  STANDARD_CHART_TYPES.has(selected.value?.type) && selected.value.type !== 'pieChart'
+    ? chartSeriesFromNode(selected.value)
+    : []
+))
+const selectedChartActiveSeries = computed(() => (
+  selectedChartSeries.value[Math.min(selectedChartSeriesIndex.value, Math.max(0, selectedChartSeries.value.length - 1))] || null
+))
+watch([
+  () => selected.value?.id,
+  () => selected.value?.type,
+  () => selected.value?.chartSeries?.length
+], ([nodeId, type, seriesCount], previous = []) => {
+  if (nodeId !== previous[0] || type !== previous[1]) selectedChartSeriesIndex.value = 0
+  const maximumIndex = Math.max(0, (Number(seriesCount) || 1) - 1)
+  if (selectedChartSeriesIndex.value > maximumIndex) selectedChartSeriesIndex.value = maximumIndex
+})
+const selectedChartDataRows = computed(() => (
+  STANDARD_CHART_TYPES.has(selected.value?.type)
+    ? selected.value.type === 'pieChart'
+      ? chartRowsFromNode(selected.value)
+      : chartRowsForSeries(selected.value, selectedChartSeriesIndex.value)
+    : []
+))
+const selectedChartRows = computed(() => selectedChartDataRows.value.slice(0, MAX_EDITABLE_CHART_ITEMS))
+const selectedChartTotal = computed(() => selectedChartDataRows.value.length)
+const selectedChartMeta = computed(() => CHART_EDITOR_META[selected.value?.type] || CHART_EDITOR_META.barChart)
+const selectedChartLimitMessage = computed(() => {
+  const hiddenCount = selectedChartTotal.value - selectedChartRows.value.length
+  if (hiddenCount > 0) return `当前编辑前 ${selectedChartRows.value.length} 项，后面 ${hiddenCount} 项保持原样`
+  if (selectedChartTotal.value >= MAX_EDITABLE_CHART_ITEMS) return `手动编辑最多支持 ${MAX_EDITABLE_CHART_ITEMS} 项`
+  return ''
+})
+const echartsCodeStatus = ref({ nodeId: null, type: '', message: '' })
+let echartsCodeApplyTimer = 0
+let pendingEChartsCodeNode = null
 const miniMapRenderTransform = computed(() => miniMapTransform({
   stageWidth: stageWidth.value,
   stageHeight: stageHeight.value,
@@ -1611,6 +1710,7 @@ const miniMapCanvasStyle = computed(() => {
   }
 })
 const canvasSizePreset = computed(() => {
+  if (canvasSizeMode.value !== 'fixed') return 'custom'
   const value = `${stageWidth.value}x${stageHeight.value}`
   return canvasPresetValues.has(value) ? value : 'custom'
 })
@@ -1750,37 +1850,41 @@ function normalizeCanvasStyle() {
   canvasBorderWidth.value = Math.round(Math.max(0, Math.min(10, Number(canvasBorderWidth.value) || 0)))
   gridSize.value = Math.round(Math.max(5, Math.min(100, Number(gridSize.value) || 20)))
 }
-async function normalizeCanvasSize() {
+async function normalizeCanvasSize(dimension = null) {
   if (operation.value) pointerUp()
-  stageWidth.value = clampCanvasDimension(stageWidth.value, DEFAULT_STAGE_WIDTH)
-  stageHeight.value = clampCanvasDimension(stageHeight.value, DEFAULT_STAGE_HEIGHT)
-  const lockedGroupIds = new Set(nodes.value.filter(node => node.locked && node.groupId).map(node => node.groupId))
-  const editableNodes = nodes.value.filter(node => !node.locked && (!node.groupId || !lockedGroupIds.has(node.groupId)))
-  normalizeNodesTogether(editableNodes, stageWidth.value, stageHeight.value)
-  drawings.value.forEach(drawing => {
-    if (drawing.locked || !drawing.points.length) return
-    const bounds = drawingBounds(drawing)
-    const { dx, dy } = constrainTranslation([bounds], 0, 0, stageWidth.value, stageHeight.value)
-    if (dx || dy) drawing.points = drawing.points.map(point => ({ x: point.x + dx, y: point.y + dy }))
-  })
-  rebuildNodeSpatialIndex()
+  // 单轴输入只归一化当前字段，避免修改宽度时重新写入高度，反之亦然。
+  if (!dimension || dimension === 'width') stageWidth.value = clampCanvasDimension(stageWidth.value, DEFAULT_STAGE_WIDTH)
+  if (!dimension || dimension === 'height') stageHeight.value = clampCanvasDimension(stageHeight.value, DEFAULT_STAGE_HEIGHT)
+  // 改变画布只调整可视边界；保留超界对象的原坐标，重新放大画布后仍能回到原位置。
   await nextTick()
   updateViewport()
 }
 async function setCanvasPreset(value) {
   if (!canvasPresetValues.has(value)) return
+  canvasSizeMode.value = 'fixed'
   const [width, height] = value.split('x').map(Number)
   stageWidth.value = width
   stageHeight.value = height
   await normalizeCanvasSize()
 }
 async function useCurrentScreenSize() {
-  const width = globalThis.screen?.width || globalThis.innerWidth
-  const height = globalThis.screen?.height || globalThis.innerHeight
+  const { width, height } = resolveFullscreenViewportSize({
+    screenWidth: globalThis.screen?.width,
+    screenHeight: globalThis.screen?.height,
+    innerWidth: globalThis.innerWidth,
+    innerHeight: globalThis.innerHeight,
+    outerWidth: globalThis.outerWidth
+  })
   stageWidth.value = clampCanvasDimension(width, DEFAULT_STAGE_WIDTH)
   stageHeight.value = clampCanvasDimension(height, DEFAULT_STAGE_HEIGHT)
+  canvasSizeMode.value = 'screen'
   await normalizeCanvasSize()
-  notify(`画布已设为当前屏幕尺寸 ${stageWidth.value} × ${stageHeight.value}`)
+  markDocumentInput()
+  notify(`已获取全屏分辨率：${stageWidth.value} × ${stageHeight.value}`)
+}
+async function normalizeFixedCanvasSize(dimension) {
+  canvasSizeMode.value = 'fixed'
+  await normalizeCanvasSize(dimension)
 }
 const edgeAdjacency = shallowRef(createEdgeAdjacencyIndex())
 const edgeSpatialRevision = ref(0)
@@ -3233,6 +3337,7 @@ function flushPendingDocumentEdits() {
   flushDocumentInputRender()
   finishActiveFieldEdit()
   flushPendingVideoUrlEdit()
+  flushPendingEChartsCode()
 }
 function beginFieldEdit(collection, target) {
   if (!target?.id) return
@@ -3841,10 +3946,19 @@ function addNode(type, x = 350, y = 220) {
   if (nodes.value.length + drawings.value.length >= MAX_PROJECT_NODES) return notify(`图纸最多支持 ${MAX_PROJECT_NODES} 个组件和线稿`)
   const spec = shapeDefaults[type] || shapeDefaults.rect
   const id = createEntityId('node')
-  let n = { ...baseNodeOptions(), id, layer: reserveEntityLayers(), type, x, y, w: spec[1], h: spec[2], text: spec[0], fill: '#ffffff', stroke: '#16b89a', color: '#28323c', visualPrimaryColor: builtInVisualPrimaryColor(type), radius: type === 'circle' ? 50 : 6, animation: animationDefaults[type] || 'none', dataKey: animationDefaults[type] ? `demo.${type}.${id}` : '', ...(formNodeDefaults[type] || {}) }
+  let n = { ...baseNodeOptions(), id, layer: reserveEntityLayers(), type, x, y, w: spec[1], h: spec[2], text: spec[0], fill: '#ffffff', stroke: '#16b89a', color: '#28323c', visualPrimaryColor: builtInVisualPrimaryColor(type), radius: type === 'circle' ? 50 : 6, animation: animationDefaults[type] || 'none', dataKey: defaultRuntimeDataTypes.has(type) ? `demo.${type}.${id}` : '', ...(formNodeDefaults[type] || {}) }
   if (type === 'lineShape') { n.fill = '#16b89a'; n.stroke = '#485563'; n.borderWidth = 2 }
   if (type === 'flowDirection') n.polylineColor = builtInVisualPrimaryColor(type)
   if (type === 'code') { n.fill = '#25323b'; n.color = '#d8f5ee' }
+  if (type === 'echartsCode') {
+    try {
+      n.chartOption = parsedEChartsOption(n.echartsCode)
+      n.chartOptionSourceHash = echartsCodeSourceHash(n.echartsCode)
+    } catch {
+      n.chartOption = {}
+      n.chartOptionSourceHash = ''
+    }
+  }
   if (type === 'table') n = normalizeTableModel(n)
   if (type === 'select') n.selectOptions = normalizeSelectOptions(n)
   Object.assign(n, normalizeNodeGeometry(n, stageWidth.value, stageHeight.value))
@@ -3859,38 +3973,11 @@ function ensureSelectedTable() {
   return node
 }
 function normalizeNodeTableMerges(node) {
-  node.tableMerges = normalizeTableMerges(node.tableMerges, node.tableCells.length, node.tableHeaders.length)
+  node.tableMerges = normalizeTableMerges(node.tableMerges, MAX_RUNTIME_TABLE_ROWS, MAX_RUNTIME_TABLE_COLUMNS)
 }
 function clearTableDataSelection() {
   tableSelectionDragging.value = false
   tableDataSelection.value = { nodeId: null, start: null, end: null, awaitingEnd: false }
-}
-function migrateTableMergesForInsertion(merges, axis, index) {
-  const startKey = axis === 'row' ? 'row' : 'column'
-  const spanKey = axis === 'row' ? 'rowSpan' : 'columnSpan'
-  return (merges || []).map(merge => {
-    const next = { ...merge }
-    const start = next[startKey]
-    const end = start + next[spanKey]
-    if (index <= start) next[startKey] += 1
-    else if (index < end) next[spanKey] += 1
-    return next
-  })
-}
-function migrateTableMergesForDeletion(merges, axis, index) {
-  const startKey = axis === 'row' ? 'row' : 'column'
-  const spanKey = axis === 'row' ? 'rowSpan' : 'columnSpan'
-  return (merges || []).flatMap(merge => {
-    const next = { ...merge }
-    const start = next[startKey]
-    const end = start + next[spanKey]
-    if (index < start) next[startKey] -= 1
-    else if (index < end) {
-      if (next[spanKey] <= 1) return []
-      next[spanKey] -= 1
-    }
-    return [next]
-  })
 }
 function defaultTableColumnWidth(node, index) {
   const widths = node.tableColumnWidthsPx || []
@@ -3904,7 +3991,7 @@ function insertTableRow(index) {
   const node = ensureSelectedTable(); if (!node || node.tableCells.length >= 50) return
   const insertAt = Math.max(0, Math.min(node.tableCells.length, Math.round(Number(index))))
   recordNodeFields(node, TABLE_MODEL_HISTORY_FIELDS)
-  node.tableMerges = migrateTableMergesForInsertion(node.tableMerges, 'row', insertAt)
+  node.tableMerges = migrateTableMergesForInsertion(node.tableMerges, 'row', insertAt, node.tableCells.length)
   node.tableCells.splice(insertAt, 0, Array.from({ length: node.tableHeaders.length }, () => ''))
   node.tableRowHeights.splice(insertAt, 0, Math.max(18, Math.min(120, Number(node.tableRowHeights[insertAt - 1] ?? node.tableRowHeights[insertAt] ?? node.tableRowHeight) || 28)))
   node.tableRows = node.tableCells.length
@@ -3915,7 +4002,7 @@ function deleteTableRow(index) {
   const node = ensureSelectedTable(); if (!node || node.tableCells.length <= 1) return
   const removeAt = Math.max(0, Math.min(node.tableCells.length - 1, Math.round(Number(index))))
   recordNodeFields(node, TABLE_MODEL_HISTORY_FIELDS)
-  node.tableMerges = migrateTableMergesForDeletion(node.tableMerges, 'row', removeAt)
+  node.tableMerges = migrateTableMergesForDeletion(node.tableMerges, 'row', removeAt, node.tableCells.length)
   node.tableCells.splice(removeAt, 1)
   node.tableRowHeights.splice(removeAt, 1)
   node.tableRows = node.tableCells.length
@@ -3926,7 +4013,7 @@ function insertTableColumn(index) {
   const node = ensureSelectedTable(); if (!node || node.tableHeaders.length >= 12) return
   const insertAt = Math.max(0, Math.min(node.tableHeaders.length, Math.round(Number(index))))
   recordNodeFields(node, TABLE_MODEL_HISTORY_FIELDS)
-  node.tableMerges = migrateTableMergesForInsertion(node.tableMerges, 'column', insertAt)
+  node.tableMerges = migrateTableMergesForInsertion(node.tableMerges, 'column', insertAt, node.tableHeaders.length)
   node.tableHeaders.splice(insertAt, 0, `列 ${insertAt + 1}`)
   node.tableColumnWidths.splice(insertAt, 0, 1)
   node.tableColumnWidthsPx.splice(insertAt, 0, defaultTableColumnWidth(node, insertAt))
@@ -3939,7 +4026,7 @@ function deleteTableColumn(index) {
   const node = ensureSelectedTable(); if (!node || node.tableHeaders.length <= 1) return
   const removeAt = Math.max(0, Math.min(node.tableHeaders.length - 1, Math.round(Number(index))))
   recordNodeFields(node, TABLE_MODEL_HISTORY_FIELDS)
-  node.tableMerges = migrateTableMergesForDeletion(node.tableMerges, 'column', removeAt)
+  node.tableMerges = migrateTableMergesForDeletion(node.tableMerges, 'column', removeAt, node.tableHeaders.length)
   node.tableHeaders.splice(removeAt, 1)
   node.tableColumnWidths.splice(removeAt, 1)
   node.tableColumnWidthsPx.splice(removeAt, 1)
@@ -3974,6 +4061,20 @@ function tableDataGridColumns(node) {
   const widths = node?.tableColumnWidthsPx || []
   return `104px ${Array.from({ length: node?.tableHeaders?.length || 0 }, (_, index) => `${Math.max(160, clampTableColumnWidth(widths[index]))}px`).join(' ')}`
 }
+function stopTableEditorRuntimeSubscriptions() {
+  for (const unsubscribe of tableEditorRuntimeUnsubscribers) unsubscribe()
+  tableEditorRuntimeUnsubscribers = []
+}
+function startTableEditorRuntimeSubscriptions(node) {
+  stopTableEditorRuntimeSubscriptions()
+  if (!node) return
+  const refreshRuntimeTable = () => {
+    if (tableDataEditor.value.nodeId !== node.id) return
+    tableEditorRuntimeRevision.value += 1
+  }
+  tableEditorRuntimeUnsubscribers = bindingPointIds(node, { includeLegacy: true })
+    .map(pointId => runtimeData.subscribe(pointId, refreshRuntimeTable))
+}
 function openTableDataEditor(node = selected.value) {
   if (!node || node.type !== 'table') return
   if (node.locked) {
@@ -3984,12 +4085,14 @@ function openTableDataEditor(node = selected.value) {
   if (!Array.isArray(node.tableHeaders) || !Array.isArray(node.tableCells) || !Array.isArray(node.tableColumnWidthsPx) || !Array.isArray(node.tableRowHeights) || !Array.isArray(node.tableMerges)) Object.assign(node, normalizeTableModel(node))
   selectSingleNode(node)
   editingFormId.value = null
-  tableDataEditor.value = { show: true, nodeId: node.id, tab: 'data', mode: 'edit' }
+  tableDataEditor.value = { show: true, nodeId: node.id, tab: 'data', mode: 'edit', view: 'static' }
   clearTableDataSelection()
+  startTableEditorRuntimeSubscriptions(node)
 }
 function closeTableDataEditor() {
   finishActiveFieldEdit()
-  tableDataEditor.value = { show: false, nodeId: null, tab: 'data', mode: 'edit' }
+  stopTableEditorRuntimeSubscriptions()
+  tableDataEditor.value = { show: false, nodeId: null, tab: 'data', mode: 'edit', view: 'static' }
   clearTableDataSelection()
 }
 function setTableDataEditorTab(tab) {
@@ -3997,10 +4100,35 @@ function setTableDataEditorTab(tab) {
   tableDataEditor.value = { ...tableDataEditor.value, tab }
   clearTableDataSelection()
 }
+function setTableDataEditorView(view) {
+  const nextView = view === 'runtime' ? 'runtime' : 'static'
+  tableDataEditor.value = { ...tableDataEditor.value, view: nextView }
+  clearTableDataSelection()
+}
+function openTableCommunicationSettings() {
+  const node = activeTableDataNode.value
+  closeTableDataEditor()
+  if (!node) return
+  selectSingleNode(node)
+  rightOpen.value = true
+  rightTab.value = '通信'
+}
 function setTableDataEditorMode(mode) {
   if (!['edit', 'merge'].includes(mode)) return
   tableDataEditor.value = { ...tableDataEditor.value, mode }
   clearTableDataSelection()
+}
+function tableDataEditorUpdateTitle(value) {
+  if (!activeTableDataNode.value || tableEditorShowsRuntimeData.value) return
+  activeTableDataNode.value.tableTitle = String(value ?? '')
+}
+function tableDataEditorUpdateHeader(column, value) {
+  if (!activeTableDataNode.value || tableEditorShowsRuntimeData.value) return
+  activeTableDataNode.value.tableHeaders[column] = String(value ?? '')
+}
+function tableDataEditorUpdateCell(row, column, value) {
+  if (!activeTableDataNode.value || tableEditorShowsRuntimeData.value) return
+  activeTableDataNode.value.tableCells[row][column] = String(value ?? '')
 }
 function selectTableDataCell(row, column) {
   const node = activeTableDataNode.value
@@ -4040,13 +4168,15 @@ function finishTableDataSelectionDrag() {
 }
 function selectTableDataRow(row) {
   const node = activeTableDataNode.value
-  if (!node) return
-  tableDataSelection.value = { nodeId: node.id, start: { row, column: 0 }, end: { row, column: node.tableColumns - 1 }, awaitingEnd: false }
+  const viewNode = activeTableEditorNode.value
+  if (!node || !viewNode) return
+  tableDataSelection.value = { nodeId: node.id, start: { row, column: 0 }, end: { row, column: viewNode.tableColumns - 1 }, awaitingEnd: false }
 }
 function selectTableDataColumn(column) {
   const node = activeTableDataNode.value
-  if (!node) return
-  tableDataSelection.value = { nodeId: node.id, start: { row: 0, column }, end: { row: node.tableRows - 1, column }, awaitingEnd: false }
+  const viewNode = activeTableEditorNode.value
+  if (!node || !viewNode) return
+  tableDataSelection.value = { nodeId: node.id, start: { row: 0, column }, end: { row: viewNode.tableRows - 1, column }, awaitingEnd: false }
 }
 function tableDataCellSelected(row, column) {
   const selection = activeTableSelection.value
@@ -4075,28 +4205,31 @@ function tableDataEditorCellStyle(row, column) {
 function mergeSelectedTableCells() {
   const node = activeTableDataNode.value
   const selection = activeTableSelection.value
-  if (!node || !selection || selection.cellCount < 2) return
-  const partialOverlap = selectedTableMerges.value.some(merge => (
-    merge.row < selection.row || merge.column < selection.column ||
-    merge.row + merge.rowSpan - 1 > selection.rowEnd || merge.column + merge.columnSpan - 1 > selection.columnEnd
-  ))
-  if (partialOverlap) return notify('选区与已有合并区域部分重叠，请先拆分对应区域')
+  if (!node || !selection || selection.cellCount < 2) return false
+  if (tableSelectionMergeConflict.value) {
+    notify('选区与已有合并区域部分重叠，请先拆分对应区域')
+    return false
+  }
   recordNodeFields(node, ['tableMerges'])
-  const contained = new Set(selectedTableMerges.value)
+  const containedOrigins = new Set(selectedTableMerges.value.map(merge => `${merge.row}:${merge.column}`))
   node.tableMerges = normalizeTableMerges([
-    ...(node.tableMerges || []).filter(merge => !contained.has(merge)),
+    ...(node.tableMerges || []).filter(merge => !containedOrigins.has(`${merge.row}:${merge.column}`)),
     { row: selection.row, column: selection.column, rowSpan: selection.rowSpan, columnSpan: selection.columnSpan }
-  ], node.tableRows, node.tableColumns)
+  ], MAX_RUNTIME_TABLE_ROWS, MAX_RUNTIME_TABLE_COLUMNS)
   tableDataSelection.value = { ...tableDataSelection.value, awaitingEnd: false }
   notify(`已合并 ${selection.rowSpan} 行 × ${selection.columnSpan} 列`)
+  return true
+}
+function mergeSelectedTableCellsAndClose() {
+  if (mergeSelectedTableCells()) closeTableDataEditor()
 }
 function splitSelectedTableCells() {
   const node = activeTableDataNode.value
   const merges = selectedTableMerges.value
   if (!node || !merges.length) return
   recordNodeFields(node, ['tableMerges'])
-  const removed = new Set(merges)
-  node.tableMerges = (node.tableMerges || []).filter(merge => !removed.has(merge))
+  const removedOrigins = new Set(merges.map(merge => `${merge.row}:${merge.column}`))
+  node.tableMerges = (node.tableMerges || []).filter(merge => !removedOrigins.has(`${merge.row}:${merge.column}`))
   tableDataSelection.value = { ...tableDataSelection.value, awaitingEnd: false }
   notify(`已拆分 ${merges.length} 个合并区域`)
 }
@@ -4150,6 +4283,336 @@ function normalizeProgress(node = selected.value) {
   else { node.progressMin = 0; node.progressMax = Math.max(1, Number(node.progressMax) || 100) }
   node.progressValue = Math.max(node.progressMin, Math.min(node.progressMax, Number(node.progressValue) || 0))
 }
+
+function cloneEditableChartData(value) {
+  if (Array.isArray(value)) return value.map(item => {
+    if (Array.isArray(item)) return item.slice()
+    if (item && typeof item === 'object') return { ...item }
+    return item
+  })
+  if (value && typeof value === 'object' && Array.isArray(value.rows)) {
+    return { ...value, rows: cloneEditableChartData(value.rows) }
+  }
+  return []
+}
+
+function editableChartSeries(node) {
+  return chartSeriesFromNode(node).map(series => ({
+    name: series.name,
+    color: series.color,
+    data: series.data
+  }))
+}
+
+function commitChartSeries(node, series) {
+  const nextSeries = series.map((item, index) => ({
+    name: String(item.name ?? '').trim() || `系列 ${index + 1}`,
+    color: String(item.color ?? '').trim() || chartColorPalette(node)[index % chartColorPalette(node).length],
+    data: item.data
+  }))
+  if (!nextSeries.length) return
+  node.chartSeries = nextSeries
+  node.chartSeriesName = nextSeries[0].name
+  node.chartColor = nextSeries[0].color
+  node.chartData = nextSeries[0].data
+}
+
+function selectedChartEditNode(node) {
+  if (node.type === 'pieChart') return node
+  const series = editableChartSeries(node)
+  const index = Math.min(selectedChartSeriesIndex.value, Math.max(0, series.length - 1))
+  return { ...node, chartData: series[index]?.data ?? [] }
+}
+
+function applySelectedSeriesDataPatch(node, patch) {
+  if (!patch) return
+  if (patch.chartLabels) node.chartLabels = patch.chartLabels
+  if (!Object.hasOwn(patch, 'chartData') || node.type === 'pieChart') {
+    if (node.type === 'pieChart') Object.assign(node, patch)
+    return
+  }
+  const series = editableChartSeries(node)
+  const index = Math.min(selectedChartSeriesIndex.value, Math.max(0, series.length - 1))
+  series[index] = { ...series[index], data: patch.chartData }
+  commitChartSeries(node, series)
+}
+
+function setSelectedChartSeriesIndex(index) {
+  const count = selectedChartSeries.value.length
+  selectedChartSeriesIndex.value = Math.max(0, Math.min(count - 1, Math.trunc(Number(index)) || 0))
+}
+
+function setSelectedChartSeriesName(index, value) {
+  const node = selected.value
+  if (!node || node.type === 'pieChart' || node.locked) return
+  const series = editableChartSeries(node)
+  if (!series[index]) return
+  series[index] = { ...series[index], name: String(value ?? '').slice(0, 120) }
+  commitChartSeries(node, series)
+}
+
+function setSelectedChartSeriesColor(index, value) {
+  const node = selected.value
+  const color = String(value ?? '').trim()
+  if (!node || node.type === 'pieChart' || node.locked || !color) return
+  const series = editableChartSeries(node)
+  if (!series[index]) return
+  series[index] = { ...series[index], color }
+  commitChartSeries(node, series)
+}
+
+function addSelectedChartSeries() {
+  const node = selected.value
+  if (!node || node.type === 'pieChart' || node.locked) return
+  const series = editableChartSeries(node)
+  if (series.length >= MAX_EDITABLE_CHART_SERIES) return
+  const palette = chartColorPalette(node)
+  const sourceData = series[0]?.data ?? node.chartData
+  recordNodeFields(node, ['chartSeries', 'chartSeriesName', 'chartColor', 'chartData'])
+  series.push({
+    name: `系列 ${series.length + 1}`,
+    color: palette[series.length % palette.length],
+    data: cloneEditableChartData(sourceData)
+  })
+  commitChartSeries(node, series)
+  selectedChartSeriesIndex.value = series.length - 1
+}
+
+function removeSelectedChartSeries(index) {
+  const node = selected.value
+  if (!node || node.type === 'pieChart' || node.locked) return
+  const series = editableChartSeries(node)
+  if (series.length <= 1 || !series[index]) return
+  recordNodeFields(node, ['chartSeries', 'chartSeriesName', 'chartColor', 'chartData', 'dataBindings'])
+  node.dataBindings = removeChartSeriesBindings(node, index)
+  series.splice(index, 1)
+  commitChartSeries(node, series)
+  if (selectedChartSeriesIndex.value >= series.length) selectedChartSeriesIndex.value = series.length - 1
+}
+
+function chartSeriesRowCount(index) {
+  const node = selected.value
+  return node && node.type !== 'pieChart' ? chartRowsForSeries(node, index).length : 0
+}
+
+function setSelectedChartLabel(row, value) {
+  const node = selected.value
+  if (!node || !STANDARD_CHART_TYPES.has(node.type) || node.locked) return
+  const patch = setChartRowLabel(selectedChartEditNode(node), row, value)
+  if (patch) Object.assign(node, patch)
+}
+function setSelectedChartValue(row, value, coordinate = null) {
+  const node = selected.value
+  if (!node || !STANDARD_CHART_TYPES.has(node.type) || node.locked) return
+  const editNode = selectedChartEditNode(node)
+  const rows = node.type === 'pieChart' ? chartRowsFromNode(node) : chartRowsForSeries(node, selectedChartSeriesIndex.value)
+  const field = node.type === 'scatterChart' ? (coordinate === 'y' ? 'y' : 'x') : 'value'
+  const patch = setChartRowValue(editNode, row, value, { field, rows })
+  applySelectedSeriesDataPatch(node, patch)
+}
+function restoreSelectedChartNumber(event, row, coordinate = null) {
+  const input = event?.currentTarget
+  const node = selected.value
+  if (!input || !node || !row) return
+  const source = String(input.value ?? '').trim()
+  const numeric = Number(source)
+  const invalid = !source || !Number.isFinite(numeric) || (node.type === 'pieChart' && numeric < 0)
+  if (!invalid) return
+  const currentRow = selectedChartDataRows.value.find(item => item.sourceIndex === row.sourceIndex) || row
+  const fallback = node.type === 'scatterChart'
+    ? currentRow[coordinate === 'y' ? 'y' : 'x']
+    : currentRow.value
+  input.value = String(fallback)
+}
+function addSelectedChartValue() {
+  const node = selected.value
+  if (!node || !STANDARD_CHART_TYPES.has(node.type) || node.locked) return
+  const rows = node.type === 'pieChart' ? chartRowsFromNode(node) : chartRowsForSeries(node, selectedChartSeriesIndex.value)
+  if (rows.length >= MAX_EDITABLE_CHART_ITEMS) return
+  recordNodeFields(node, ['chartSeries', 'chartData', 'chartLabels', 'chartSliceColors'])
+  if (node.type === 'pieChart') {
+    const patch = addChartRow(node, rows)
+    if (!patch) return
+    const insertionIndex = Math.min(2000, (rows.at(-1)?.sourceIndex ?? -1) + 1)
+    const colors = Array.isArray(node.chartSliceColors) ? node.chartSliceColors.slice() : []
+    const palette = chartColorPalette(node)
+    colors.splice(insertionIndex, 0, palette[insertionIndex % palette.length])
+    Object.assign(node, patch, { chartSliceColors: colors })
+    return
+  }
+  const series = editableChartSeries(node)
+  const originalLabels = node.chartLabels
+  let labels = originalLabels
+  const nextSeries = series.map((item, index) => {
+    const seriesNode = { ...node, chartData: item.data, chartLabels: originalLabels }
+    const seriesRows = chartRowsForSeries(node, index)
+    const patch = addChartRow(seriesNode, seriesRows)
+    if (!patch) return item
+    if (index === 0) labels = patch.chartLabels
+    return { ...item, data: patch.chartData }
+  })
+  node.chartLabels = labels
+  commitChartSeries(node, nextSeries)
+}
+function removeSelectedChartValue(row) {
+  const node = selected.value
+  if (!node || !STANDARD_CHART_TYPES.has(node.type) || node.locked) return
+  const rows = node.type === 'pieChart' ? chartRowsFromNode(node) : chartRowsForSeries(node, selectedChartSeriesIndex.value)
+  if (rows.length <= 1) return
+  recordNodeFields(node, ['chartSeries', 'chartData', 'chartLabels', 'chartSliceColors'])
+  if (node.type === 'pieChart') {
+    const patch = removeChartRow(node, row, { rows })
+    if (!patch) return
+    const colors = Array.isArray(node.chartSliceColors) ? node.chartSliceColors.slice() : []
+    colors.splice(row.sourceIndex, 1)
+    Object.assign(node, patch, { chartSliceColors: colors })
+    return
+  }
+  const series = editableChartSeries(node)
+  const originalLabels = node.chartLabels
+  let labels = originalLabels
+  const nextSeries = series.map((item, index) => {
+    const seriesRows = chartRowsForSeries(node, index)
+    const targetRow = seriesRows.find(current => current.sourceIndex === row.sourceIndex)
+    if (!targetRow) return item
+    const patch = removeChartRow({ ...node, chartData: item.data, chartLabels: originalLabels }, targetRow, { rows: seriesRows })
+    if (!patch) return item
+    if (index === 0) labels = patch.chartLabels
+    return { ...item, data: patch.chartData }
+  })
+  node.chartLabels = labels
+  commitChartSeries(node, nextSeries)
+}
+function selectedPieSliceColor(index) {
+  return chartSliceColor(selected.value, index)
+}
+function setSelectedPieSliceColor(index, value) {
+  const node = selected.value
+  const color = String(value ?? '').trim()
+  if (!node || node.type !== 'pieChart' || node.locked || !color) return
+  const colors = Array.isArray(node.chartSliceColors) ? node.chartSliceColors.slice() : []
+  const palette = chartColorPalette({ chartColor: node.chartColor })
+  while (colors.length <= index) colors.push(palette[colors.length % palette.length])
+  colors[index] = color
+  node.chartSliceColors = colors
+  if (index === 0) node.chartColor = color
+}
+function chartDataMarkerStyle(index) {
+  const palette = chartColorPalette(selected.value)
+  const color = selected.value?.type === 'pieChart'
+    ? selectedPieSliceColor(index)
+    : selectedChartActiveSeries.value?.color || palette[0]
+  return { backgroundColor: color }
+}
+function parsedEChartsOption(source) {
+  const result = parseEChartsCode(source)
+  if (result?.ok === false) throw new Error(result.error || '无法解析 ECharts option')
+  const option = result?.option ?? result
+  if (!option || typeof option !== 'object' || Array.isArray(option)) throw new Error('代码中没有找到可用的 ECharts option')
+  return option
+}
+function applySelectedEChartsCode(node = selected.value) {
+  if (!node || node.type !== 'echartsCode' || node.locked) return false
+  if (pendingEChartsCodeNode === node) {
+    clearTimeout(echartsCodeApplyTimer)
+    echartsCodeApplyTimer = 0
+    pendingEChartsCodeNode = null
+  }
+  try {
+    prepareEChartsCodeForSandbox(node.echartsCode)
+    let option = null
+    try {
+      option = parsedEChartsOption(node.echartsCode)
+    } catch {
+      // 动态完整示例无法静态提取，但会在隔离的图表运行环境中执行。
+    }
+    recordNodeFields(node, ['chartOption', 'chartOptionSourceHash'])
+    node.chartOption = option || {}
+    node.chartOptionSourceHash = option ? echartsCodeSourceHash(node.echartsCode) : ''
+    echartsCodeStatus.value = {
+      nodeId: node.id,
+      type: 'success',
+      message: option ? '代码已应用' : '完整代码已应用，将在隔离环境中运行'
+    }
+    return true
+  } catch (error) {
+    node.chartOption = {}
+    node.chartOptionSourceHash = ''
+    echartsCodeStatus.value = {
+      nodeId: node.id,
+      type: 'error',
+      message: error instanceof Error ? error.message : String(error)
+    }
+    return false
+  }
+}
+function flushPendingEChartsCode() {
+  const node = pendingEChartsCodeNode
+  if (!node) return true
+  clearTimeout(echartsCodeApplyTimer)
+  echartsCodeApplyTimer = 0
+  pendingEChartsCodeNode = null
+  const applied = applySelectedEChartsCode(node)
+  if (!applied) {
+    node.chartOption = {}
+    node.chartOptionSourceHash = ''
+  }
+  return applied
+}
+function scheduleSelectedEChartsCode(node = selected.value) {
+  if (!node || node.type !== 'echartsCode' || node.locked) return
+  if (pendingEChartsCodeNode && pendingEChartsCodeNode !== node) flushPendingEChartsCode()
+  else clearTimeout(echartsCodeApplyTimer)
+  node.chartOptionSourceHash = ''
+  pendingEChartsCodeNode = node
+  echartsCodeStatus.value = { nodeId: node.id, type: 'pending', message: '正在解析...' }
+  echartsCodeApplyTimer = setTimeout(() => {
+    echartsCodeApplyTimer = 0
+    pendingEChartsCodeNode = null
+    applySelectedEChartsCode(node)
+  }, 280)
+}
+function openEChartsCodeEditor(node = selected.value) {
+  if (!node || node.type !== 'echartsCode' || node.locked) return
+  flushPendingEChartsCode()
+  echartsCodeEditor.value = {
+    show: true,
+    nodeId: node.id,
+    draft: String(node.echartsCode ?? ''),
+    error: ''
+  }
+  nextTick(() => echartsCodeEditorInput.value?.focus())
+}
+function closeEChartsCodeEditor() {
+  echartsCodeEditor.value = { show: false, nodeId: null, draft: '', error: '' }
+}
+function applyEChartsCodeEditor() {
+  const node = nodeIndex.value.get(echartsCodeEditor.value.nodeId)
+  if (!node || node.type !== 'echartsCode' || node.locked) {
+    closeEChartsCodeEditor()
+    return false
+  }
+  try {
+    prepareEChartsCodeForSandbox(echartsCodeEditor.value.draft)
+  } catch (error) {
+    echartsCodeEditor.value = {
+      ...echartsCodeEditor.value,
+      error: error instanceof Error ? error.message : String(error)
+    }
+    return false
+  }
+  if (node.echartsCode !== echartsCodeEditor.value.draft) {
+    recordNodeFields(node, ['echartsCode'])
+    node.echartsCode = echartsCodeEditor.value.draft
+  }
+  const applied = applySelectedEChartsCode(node)
+  if (applied) closeEChartsCodeEditor()
+  return applied
+}
+onUnmounted(() => {
+  clearTimeout(echartsCodeApplyTimer)
+  pendingEChartsCodeNode = null
+})
 function resetButtonData() {
   if (!selected.value || selected.value.type !== 'button' || selected.value.locked) return
   selected.value.clickCount = 0; selected.value.checked = false; selected.value.buttonFeedback = ''
@@ -4226,6 +4689,13 @@ function setTimeMode(mode) {
   node.defaultValue = displayed
   node.value = displayed
 }
+function setTimeStaticValue(value) {
+  const node = selected.value
+  if (!node || node.type !== 'time' || node.locked) return
+  const text = String(value ?? '')
+  node.defaultValue = text
+  if (!node.timeUseServer && !node.timeRunning) node.value = text
+}
 function setTimeFormat(format) {
   const node = selected.value
   if (!node || node.type !== 'time' || node.locked) return
@@ -4291,7 +4761,7 @@ function nodeRenderMemo(node) {
   if (!memo) {
     const geometry = computed(() => [node.x, node.y, node.w, node.h, node.rotate, node.visualScaleX, node.visualScaleY, node.layer])
     const common = computed(() => [
-      node.type, node.locked, node.text, node.fill, node.stroke, node.color, node.radius, node.backgroundOpacity, node.opacity, node.dataKey,
+      node.type, node.locked, node.visible, node.text, node.fill, node.stroke, node.color, node.radius, node.backgroundOpacity, node.opacity, node.dataKey,
       node.fontSize, node.fontWeight, node.fontWeightScale, node.fontStyle, node.textAlign, node.textLayout,
       node.borderVisible, node.borderWidth, node.borderStyle, node.borderDashLength, node.borderDashGap,
       node.animation, node.animationPaused, node.animationDuration, node.animationDirection, node.animationDelay, node.animationEasing, node.animationIterations,
@@ -5053,6 +5523,13 @@ function setSignalColorCount(value) {
   if (!Array.isArray(selected.value.signalColors)) selected.value.signalColors = []
   while (selected.value.signalColors.length < count) selected.value.signalColors.push(signalColorDefaults[selected.value.signalColors.length])
 }
+function setSignalColor(index, value) {
+  const node = selected.value
+  if (!node || node.type !== 'signalLight' || node.locked || !Number.isInteger(index) || index < 0 || index >= MAX_SIGNAL_COLORS) return
+  if (!Array.isArray(node.signalColors)) node.signalColors = []
+  while (node.signalColors.length <= index) node.signalColors.push(signalColorDefaults[node.signalColors.length])
+  node.signalColors[index] = String(value || signalColorDefaults[index])
+}
 function dropItem(e) {
   // 拖放发生在滚轮停顿窗口内时先提交投影比例，确保落点和随后的组件渲染使用同一坐标系。
   cancelPendingCanvasZoom()
@@ -5101,7 +5578,11 @@ const TABLE_DOUBLE_POINTER_DISTANCE = 12
 const NODE_DRAG_START_DISTANCE = 4
 let lastTablePointerDown = null
 function canStartNodeTextEdit(node) {
-  return activeTool.value === 'select' && !node.locked && !['lineShape', 'pencil'].includes(node.type) && !isPolylineNodeType(node.type)
+  return activeTool.value === 'select'
+    && !node.locked
+    && !ECHARTS_COMPONENT_TYPES.has(node.type)
+    && !['lineShape', 'pencil'].includes(node.type)
+    && !isPolylineNodeType(node.type)
 }
 function consumeTableDoublePointerDown(e, node) {
   if (node.type !== 'table' || !canStartNodeTextEdit(node) || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) {
@@ -5277,6 +5758,28 @@ async function startTextEdit(e, node) {
   const editor = Array.isArray(textEditor.value) ? textEditor.value[0] : textEditor.value
   editor?.focus({ preventScroll: true })
   if (editor) editor.setSelectionRange(0, editor.value.length)
+}
+function inlineTextEditorStyle(node) {
+  const scaleX = normalizedVisualScale(node.visualScaleX, node.w)
+  const scaleY = normalizedVisualScale(node.visualScaleY, node.h)
+  const explicitWeight = Number(node.fontWeight)
+  const legacyWeight = Number(node.fontWeightScale) * 400
+  const weight = explicitWeight > 0 ? explicitWeight : legacyWeight > 0 ? legacyWeight : 400
+  const alignment = ['left', 'right'].includes(node.textAlign) ? node.textAlign : 'center'
+  const vertical = node.type === 'text' && node.textLayout === 'vertical'
+  return {
+    width: `${100 / scaleX}%`,
+    height: `${100 / scaleY}%`,
+    transform: `scale(${scaleX}, ${scaleY})`,
+    color: node.color || '#26323d',
+    fontSize: `${node.fontSize || 14}px`,
+    fontWeight: weight < 500 ? 400 : weight < 650 ? 600 : 700,
+    fontStyle: node.fontStyle || 'normal',
+    textAlign: vertical ? (alignment === 'left' ? 'start' : alignment === 'right' ? 'end' : 'center') : alignment,
+    writingMode: vertical ? 'vertical-rl' : 'horizontal-tb',
+    textOrientation: vertical ? 'upright' : undefined,
+    opacity: node.opacity ?? 1
+  }
 }
 function handleNodeDoubleClick(e, node) {
   if (isPolylineNodeType(activeTool.value)) {
@@ -7527,20 +8030,31 @@ function fullscreenElement() {
 function previewFullscreenTarget() {
   return document.documentElement
 }
+function syncPreviewFullscreenViewportSize() {
+  if (!previewFullscreen.value) {
+    previewFullscreenViewportSize.value = { width: 0, height: 0 }
+    return
+  }
+  const width = Math.max(1, Math.floor(Number(previewOverlay.value?.clientWidth) || Number(globalThis.innerWidth) || 1))
+  const height = Math.max(1, Math.floor(Number(previewOverlay.value?.clientHeight) || Number(globalThis.innerHeight) || 1))
+  const current = previewFullscreenViewportSize.value
+  if (current.width !== width || current.height !== height) previewFullscreenViewportSize.value = { width, height }
+}
 function handleFullscreenChange() {
   const wasFullscreen = previewFullscreen.value
   const isFullscreen = fullscreenElement() === previewFullscreenTarget()
   if (wasFullscreen === isFullscreen) return
   invalidatePreviewViewportSchedule()
   if (isFullscreen) {
-    previewScale.value = 1
     previewFullscreen.value = true
+    syncPreviewFullscreenViewportSize()
     ensurePreviewDomHandoff()
     updatePreviewViewport({ scroll: { left: 0, top: 0 }, waitForContentRect: true })
     return
   }
   if (previewAutoFit.value && previewFitCanUseCanvas.value) previewRenderTarget.value = 'fit'
   previewFullscreen.value = isFullscreen
+  syncPreviewFullscreenViewportSize()
   if (previewAutoFit.value) {
     previewScrollBeforeFullscreen = null
     if (previewFitCanUseCanvas.value) {
@@ -7563,6 +8077,7 @@ function reconcilePreviewFullscreenState() {
 }
 function handlePreviewWindowResize(event) {
   reconcilePreviewFullscreenState()
+  syncPreviewFullscreenViewportSize()
   updatePreviewViewport(event)
 }
 async function togglePreviewAutoFit() {
@@ -7585,7 +8100,6 @@ async function togglePreviewAutoFit() {
     previewFitOffset.value = { left: 0, top: 0 }
     resetPreviewDomHandoff()
     commitPreviewViewport(position.left, position.top)
-    previewScale.value = 1
     await nextTick()
   } finally {
     previewAutoFitPending.value = false
@@ -7647,6 +8161,7 @@ async function closePreview() {
   previewPresentationReady.value = false
   previewViewportTransitioning.value = false
   previewFullscreen.value = false
+  previewFullscreenViewportSize.value = { width: 0, height: 0 }
   previewDisplayMode.value = 'dom'
   previewDomMounted.value = false
   previewDomGeneration.value += 1
@@ -7679,7 +8194,6 @@ async function openPreview() {
   resetPreviewFitCanvasState()
   resetPreviewDomQueryBounds()
   resetPreviewDomHandoff()
-  previewScale.value = 1
   previewScrollBeforeFit = null
   previewScrollBeforeFullscreen = null
   showPreview.value = true
@@ -8054,6 +8568,7 @@ function projectData(overrides = {}) {
     customComponents: customComponents.value,
     stageWidth: stageWidth.value,
     stageHeight: stageHeight.value,
+    canvasSizeMode: canvasSizeMode.value,
     canvasBg: canvasBg.value,
     canvasBorderColor: canvasBorderColor.value,
     canvasBorderWidth: canvasBorderWidth.value,
@@ -8146,6 +8661,7 @@ async function applyProject(data, isCurrent = () => true) {
   fileName.value = project.fileName
   stageWidth.value = project.stageWidth
   stageHeight.value = project.stageHeight
+  canvasSizeMode.value = project.canvasSizeMode
   canvasBg.value = project.canvasBg || '#f7f8fa'
   canvasBorderColor.value = project.canvasBorderColor
   canvasBorderWidth.value = project.canvasBorderWidth
@@ -9030,6 +9546,7 @@ function resetToBlankProject() {
   fileName.value = '未命名图纸'
   stageWidth.value = DEFAULT_STAGE_WIDTH
   stageHeight.value = DEFAULT_STAGE_HEIGHT
+  canvasSizeMode.value = 'fixed'
   canvasBg.value = '#f7f8fa'
   canvasBorderColor.value = '#cbd3d9'
   canvasBorderWidth.value = 1
@@ -9382,6 +9899,13 @@ function keydown(e) {
     if (overlayBlocksEditorShortcut(e, typing)) e.preventDefault()
     return
   }
+  if (echartsCodeEditor.value.show) {
+    if (e.key === 'Escape') {
+      e.preventDefault()
+      closeEChartsCodeEditor()
+    } else if (overlayBlocksEditorShortcut(e, typing)) e.preventDefault()
+    return
+  }
   if (e.key === 'Escape') {
     if (buttonMessageDialog.value.show) {
       e.preventDefault()
@@ -9404,7 +9928,13 @@ function keydown(e) {
       return
     }
     if (showPreview.value) {
-      if (previewFullscreenPending.value || previewFullscreen.value || fullscreenElement() === previewFullscreenTarget()) return
+      const fullscreenActive = fullscreenElement() === previewFullscreenTarget()
+      if (previewFullscreen.value && !fullscreenActive) {
+        e.preventDefault()
+        handleFullscreenChange()
+        return
+      }
+      if (previewFullscreenPending.value || fullscreenActive) return
       e.preventDefault()
       closePreview()
       return
@@ -9563,6 +10093,7 @@ onUnmounted(() => {
   pointCatalogGateway.dispose?.()
   unsubscribeRuntimeGateway()
   unsubscribeRuntimeStore()
+  stopTableEditorRuntimeSubscriptions()
   operationGateway.dispose()
   clearInterval(clockTimer)
   stopRuntimeData()
@@ -9723,10 +10254,10 @@ onUnmounted(() => {
             <button class="rotate-handle" @pointerdown="startRotate($event, selected)" title="拖动旋转"><RotateCcw /></button>
           </div>
 
-          <div v-for="n in editorRenderedNodes" :key="n.id" :data-node-id="n.id" v-memo="[nodeRenderMemo(n),isNodeSelected(n.id),selectedId === n.id,selectedId === n.id && selectedNodeCount === 1,connectFrom === n.id,editingText?.id === n.id,editingFormId === n.id,editorProgressiveDomNodeHidden(n.id),editorLodSignalAnimationTimestamp(n)]" class="node-shell" :class="{ selected: isNodeSelected(n.id), 'selection-primary': selectedId === n.id, 'single-transform-source': selectedId === n.id && selectedNodeCount === 1 && !n.locked, 'multi-selected': selectedNodeCount > 1 && isNodeSelected(n.id), connecting: connectFrom === n.id, locked: n.locked, 'line-node': n.type === 'lineShape' || isPolylineNodeType(n.type), 'form-interacting': editingFormId === n.id && !n.locked, 'progressive-dom-hidden': editorProgressiveDomNodeHidden(n.id) }" :style="{ left: n.x + 'px', top: n.y + 'px', width: n.w + 'px', height: n.h + 'px', zIndex: nodeLayerIndex.get(n.id), transform: `rotate(${n.rotate || 0}deg)` }" @pointerdown="nodePointerDown($event, n)" @dblclick="handleNodeDoubleClick($event, n)" @contextmenu="openContextMenu($event, n)">
+          <div v-for="n in editorRenderedNodes" :key="n.id" :data-node-id="n.id" v-memo="[nodeRenderMemo(n),isNodeSelected(n.id),selectedId === n.id,selectedId === n.id && selectedNodeCount === 1,connectFrom === n.id,editingText?.id === n.id,editingFormId === n.id,editorProgressiveDomNodeHidden(n.id),editorLodSignalAnimationTimestamp(n)]" class="node-shell" :class="{ selected: isNodeSelected(n.id), 'selection-primary': selectedId === n.id, 'single-transform-source': selectedId === n.id && selectedNodeCount === 1 && !n.locked, 'multi-selected': selectedNodeCount > 1 && isNodeSelected(n.id), connecting: connectFrom === n.id, locked: n.locked, 'line-node': n.type === 'lineShape' || isPolylineNodeType(n.type), 'text-editing': editingText?.id === n.id, 'form-interacting': editingFormId === n.id && !n.locked, 'progressive-dom-hidden': editorProgressiveDomNodeHidden(n.id) }" :style="{ left: n.x + 'px', top: n.y + 'px', width: n.w + 'px', height: n.h + 'px', zIndex: nodeLayerIndex.get(n.id), transform: `rotate(${n.rotate || 0}deg)` }" @pointerdown="nodePointerDown($event, n)" @dblclick="handleNodeDoubleClick($event, n)" @contextmenu="openContextMenu($event, n)">
             <i class="node-move-hit" data-testid="node-move-hit" aria-hidden="true"></i>
             <NodeVisual :key="`${n.id}:${n.dataKey}`" v-show="!editorLodGeometryHiddenNodeIds.has(n.id)" :node="n" :runtime-store="runtimeData" :time-context="timeRenderContext" :signal-animation-timestamp="editorLodSignalAnimationTimestamp(n)" :interactive="editingFormId === n.id && !n.locked" @form-change="handleFormChange(n, $event)" @table-cell-view="openTableCellViewer(n, $event)" @table-edit="openTableDataEditor(n)" />
-            <input v-if="editingText?.id === n.id && !n.locked" ref="textEditor" v-model="n.text" data-testid="inline-text-editor" lang="zh-CN" inputmode="text" autocomplete="off" class="inline-text-editor" @pointerdown.stop @dblclick.stop @compositionstart="inlineTextComposing = true" @compositionend="inlineTextComposing = false" @keydown="handleInlineTextEditorKeydown" @blur="inlineTextComposing = false; finishTextEdit()" />
+            <input v-if="editingText?.id === n.id && !n.locked && !ECHARTS_COMPONENT_TYPES.has(n.type)" ref="textEditor" v-model="n.text" data-testid="inline-text-editor" lang="zh-CN" inputmode="text" autocomplete="off" class="inline-text-editor" :style="inlineTextEditorStyle(n)" @pointerdown.stop @dblclick.stop @compositionstart="inlineTextComposing = true" @compositionend="inlineTextComposing = false" @keydown="handleInlineTextEditorKeydown" @blur="inlineTextComposing = false; finishTextEdit()" />
             <span v-if="n.locked" class="lock-badge" title="组件已锁定，请使用属性栏或右键菜单解锁" @pointerdown.stop="handleLockedBadgePointerDown($event, n)" @dblclick.stop="handleNodeDoubleClick($event, n)"><Lock /></span>
           </div>
         </div>
@@ -9770,37 +10301,74 @@ onUnmounted(() => {
               <div class="layer-actions"><button @click="bringFront">置顶</button><button @click="sendBack">置底</button><button @click="moveLayer(1)">上一个图层</button><button @click="moveLayer(-1)">下一个图层</button></div>
             </template>
             <template v-else>
-            <h3>{{ selected.type === 'lineShape' ? '线条尺寸' : isPolylineNodeType(selected.type) ? (selected.type === 'flowDirection' ? '流向尺寸' : '线段尺寸') : '基础属性' }}</h3><div class="form-grid"><label>X<input type="number" v-model.number="selected.x" @change="normalizeSelectedNodeGeometry()" @blur="normalizeSelectedNodeGeometry()"></label><label>Y<input type="number" v-model.number="selected.y" @change="normalizeSelectedNodeGeometry()" @blur="normalizeSelectedNodeGeometry()"></label><label>{{ selected.type === 'lineShape' ? '宽度' : '宽' }}<input type="number" :min="nodeMinimumSize(selected).w" step="1" v-model.number="selected.w" @change="normalizeSelectedNodeGeometry()" @blur="normalizeSelectedNodeGeometry()"></label><label>{{ selected.type === 'lineShape' ? '高度' : '高' }}<input type="number" :min="nodeMinimumSize(selected).h" :step="selected.type === 'lineShape' ? 0.1 : 1" v-model.number="selected.h" @change="normalizeSelectedNodeGeometry()" @blur="normalizeSelectedNodeGeometry()"></label><label>旋转<input type="number" v-model.number="selected.rotate" @change="normalizeSelectedNodeGeometry()" @blur="normalizeSelectedNodeGeometry()"></label><label>层级<button @click="bringFront">置顶</button></label></div>
-            <template v-if="supportsInteractionAnimation(selected)">
-              <h3>交互动画</h3><label class="field">动画效果<select :value="selected.animation" data-testid="interaction-animation-select" @change="setInteractionAnimation(selected, $event.target.value)"><option v-for="option in interactionAnimationOptions(selected)" :key="option.value" :value="option.value">{{ option.label }}</option></select></label>
+            <h3 data-property-section="base">基础属性</h3><div class="form-grid"><label>X<input type="number" v-model.number="selected.x" @change="normalizeSelectedNodeGeometry()" @blur="normalizeSelectedNodeGeometry()"></label><label>Y<input type="number" v-model.number="selected.y" @change="normalizeSelectedNodeGeometry()" @blur="normalizeSelectedNodeGeometry()"></label><label>{{ selected.type === 'lineShape' ? '宽度' : '宽' }}<input type="number" :min="nodeMinimumSize(selected).w" step="1" v-model.number="selected.w" @change="normalizeSelectedNodeGeometry()" @blur="normalizeSelectedNodeGeometry()"></label><label>{{ selected.type === 'lineShape' ? '高度' : '高' }}<input type="number" :min="nodeMinimumSize(selected).h" :step="selected.type === 'lineShape' ? 0.1 : 1" v-model.number="selected.h" @change="normalizeSelectedNodeGeometry()" @blur="normalizeSelectedNodeGeometry()"></label><label>旋转<input type="number" v-model.number="selected.rotate" @change="normalizeSelectedNodeGeometry()" @blur="normalizeSelectedNodeGeometry()"></label><label>层级<button @click="bringFront">置顶</button></label></div>
+            <h3 data-property-section="appearance">外观与样式</h3>
+            <label class="switch-row" data-property-target="visible">显示组件<input type="checkbox" v-model="selected.visible"><i></i></label>
+            <template v-if="selected.type === 'lineShape'">
+              <label class="field" data-property-target="fill">线条颜色<input type="color" v-model="selected.fill"></label>
+              <label class="switch-row">线条完全透明<input type="checkbox" :checked="selected.backgroundOpacity === 0" @change="selected.backgroundOpacity = $event.target.checked ? 0 : 1"><i></i></label>
+              <label class="field">线条不透明度<input type="range" min="0" max="1" step="0.05" v-model.number="selected.backgroundOpacity"><span>{{ Math.round((selected.backgroundOpacity ?? 1) * 100) }}%</span></label>
+              <label class="field">线条样式<select v-model="selected.borderStyle" data-testid="line-shape-style"><option value="solid">实线</option><option value="dashed">虚线</option><option value="dotted">点线</option></select></label>
+              <template v-if="selected.borderStyle !== 'solid'"><label class="field">线段长度<input type="number" min="0.1" max="50" step="0.1" v-model.number="selected.borderDashLength"></label><label class="field">线段间隔<input type="number" min="0.1" max="50" step="0.1" v-model.number="selected.borderDashGap"></label></template>
+              <label class="switch-row">显示轮廓<input type="checkbox" v-model="selected.borderVisible"><i></i></label>
+              <label class="field" data-property-target="stroke">轮廓颜色<input type="color" v-model="selected.stroke"></label>
+              <label class="field">轮廓宽度<input type="number" min="0" max="20" step="0.1" v-model.number="selected.borderWidth"></label>
             </template>
+            <template v-else-if="selected.type === 'table'">
+              <label class="field" data-property-targets="tableRowFill fill">填充颜色<input type="color" v-model="selected.tableRowFill" @input="selected.tableAltRowFill = $event.target.value"></label>
+              <label class="switch-row">背景完全透明<input type="checkbox" :checked="selected.backgroundOpacity === 0" @change="selected.backgroundOpacity = $event.target.checked ? 0 : 1"><i></i></label>
+              <label class="field">背景不透明度<input type="range" min="0" max="1" step="0.05" v-model.number="selected.backgroundOpacity"><span>{{ Math.round((selected.backgroundOpacity ?? 1) * 100) }}%</span></label>
+              <label class="switch-row">显示边框<input type="checkbox" v-model="selected.borderVisible"><i></i></label>
+              <label class="field" data-property-targets="tableBorderColor stroke">边框颜色<input type="color" v-model="selected.tableBorderColor"></label>
+              <label class="field">边框宽度<input type="number" min="0" max="20" step="0.1" v-model.number="selected.tableBorderWidth"></label>
+              <label class="field">边框样式<select v-model="selected.tableBorderStyle"><option value="solid">实线</option><option value="dashed">虚线</option><option value="dotted">点线</option></select></label>
+              <label class="field">圆角<input type="range" min="0" max="100" v-model.number="selected.radius"><span>{{ selected.radius }}</span></label>
+            </template>
+            <template v-else-if="!['pencil','polyline','flowDirection'].includes(selected.type)">
+              <label class="field" data-property-target="fill">填充颜色<input type="color" v-model="selected.fill"></label>
+              <label class="switch-row">背景完全透明<input type="checkbox" :checked="selected.backgroundOpacity === 0" @change="selected.backgroundOpacity = $event.target.checked ? 0 : 1"><i></i></label>
+              <label class="field">背景不透明度<input type="range" min="0" max="1" step="0.05" v-model.number="selected.backgroundOpacity"><span>{{ Math.round((selected.backgroundOpacity ?? 1) * 100) }}%</span></label>
+              <label class="switch-row">显示边框<input type="checkbox" v-model="selected.borderVisible"><i></i></label>
+              <label class="field" data-property-target="stroke">边框颜色<input type="color" v-model="selected.stroke"></label>
+              <label class="field">边框宽度<input type="number" min="0" max="20" step="0.1" v-model.number="selected.borderWidth"></label>
+              <label class="field">边框样式<select v-model="selected.borderStyle"><option value="solid">实线</option><option value="dashed">虚线</option><option value="dotted">点线</option></select></label>
+              <template v-if="selected.borderStyle !== 'solid'"><label class="field">线段长度<input type="number" min="0.1" max="50" step="0.1" v-model.number="selected.borderDashLength"></label><label class="field">线段间隔<input type="number" min="0.1" max="50" step="0.1" v-model.number="selected.borderDashGap"></label></template>
+              <label class="field">圆角<input type="range" min="0" max="100" v-model.number="selected.radius"><span>{{ selected.radius }}</span></label>
+            </template>
+            <template v-if="['checkbox','radio','switch'].includes(selected.type)">
+              <label class="field">标签位置<select v-model="selected.labelPosition"><option value="right">控件在左</option><option value="left">控件在右</option></select></label>
+              <label v-if="selected.type !== 'switch'" class="field">控件大小<input type="number" min="12" max="48" v-model.number="selected.controlSize"></label>
+              <template v-else><label class="field">开关宽度<input type="number" min="28" max="100" v-model.number="selected.switchWidth"></label><label class="field">开关高度<input type="number" min="16" max="48" v-model.number="selected.switchHeight"></label></template>
+            </template>
+            <label v-if="!['pencil','polyline','flowDirection'].includes(selected.type)" class="field" data-property-target="opacity">整体透明度<input type="range" min="0" max="1" step="0.05" v-model.number="selected.opacity"><span>{{ Math.round((selected.opacity ?? 1) * 100) }}%</span></label>
             <template v-if="selected.type === 'pencil'">
-              <h3>线条编辑</h3><label class="field">线条颜色<input type="color" v-model="selected.pencilColor"></label><label class="field">线条宽度<input type="number" min="0.1" max="100" step="0.1" v-model.number="selected.pencilWidth"></label><label class="field">透明度<input type="range" min="0" max="1" step="0.05" v-model.number="selected.opacity"><span>{{ Math.round((selected.opacity ?? 1) * 100) }}%</span></label><label class="switch-row">虚线<input type="checkbox" v-model="selected.pencilDash"><i></i></label><label class="switch-row">平滑曲线<input type="checkbox" v-model="selected.pencilSmooth"><i></i></label><label class="switch-row">闭合并填充<input type="checkbox" v-model="selected.pencilClosed"><i></i></label><label class="field">端点<select v-model="selected.pencilLineCap"><option value="round">圆形</option><option value="butt">平直</option><option value="square">方形</option></select></label><label class="field">连接<select v-model="selected.pencilLineJoin"><option value="round">圆角</option><option value="bevel">斜角</option><option value="miter">尖角</option></select></label>
+              <label class="field">线条颜色<input type="color" v-model="selected.pencilColor"></label><label class="field">线条宽度<input type="number" min="0.1" max="100" step="0.1" v-model.number="selected.pencilWidth"></label><label class="field" data-property-target="opacity">整体透明度<input type="range" min="0" max="1" step="0.05" v-model.number="selected.opacity"><span>{{ Math.round((selected.opacity ?? 1) * 100) }}%</span></label><label class="switch-row">虚线<input type="checkbox" v-model="selected.pencilDash"><i></i></label>
+              <h3>铅笔属性</h3><label class="switch-row">平滑曲线<input type="checkbox" v-model="selected.pencilSmooth"><i></i></label><label class="switch-row">闭合并填充<input type="checkbox" v-model="selected.pencilClosed"><i></i></label><label class="field">端点<select v-model="selected.pencilLineCap"><option value="round">圆形</option><option value="butt">平直</option><option value="square">方形</option></select></label><label class="field">连接<select v-model="selected.pencilLineJoin"><option value="round">圆角</option><option value="bevel">斜角</option><option value="miter">尖角</option></select></label>
               <h3>组件操作</h3><p class="property-note">铅笔线稿是普通组件，可框选、旋转、缩放、锁定，并可与其他组件组合或添加到“我的”。</p>
             </template>
             <template v-if="isPolylineNodeType(selected.type)">
-              <h3>线条样式</h3>
-              <label class="field">线条颜色<input type="color" v-model="selected.polylineColor"></label>
+              <label class="field" data-property-target="polylineColor">线条颜色<input type="color" v-model="selected.polylineColor"></label>
               <label class="switch-row">线条完全透明<input type="checkbox" :checked="selected.polylineOpacity === 0" @change="selected.polylineOpacity = $event.target.checked ? 0 : 1"><i></i></label>
               <label class="field">线条不透明度<input type="range" min="0" max="1" step="0.05" v-model.number="selected.polylineOpacity"><span>{{ Math.round((selected.polylineOpacity ?? 1) * 100) }}%</span></label>
               <label v-if="selected.type === 'polyline'" class="field">线条样式<select v-model="selected.polylineStyle" data-testid="polyline-style"><option value="solid">实线</option><option value="dashed">虚线</option><option value="dotted">点线</option></select></label>
               <template v-if="selected.type === 'flowDirection'"><label class="field">虚线长度<input type="number" min="0.1" max="50" step="0.1" v-model.number="selected.borderDashLength"></label><label class="field">虚线间隔<input type="number" min="0.1" max="50" step="0.1" v-model.number="selected.borderDashGap"></label></template>
               <template v-else-if="selected.polylineStyle !== 'solid'"><label class="field">线段长度<input type="number" min="0.1" max="50" step="0.1" v-model.number="selected.borderDashLength"></label><label class="field">线段间隔<input type="number" min="0.1" max="50" step="0.1" v-model.number="selected.borderDashGap"></label></template>
               <label class="switch-row">显示轮廓<input type="checkbox" v-model="selected.borderVisible"><i></i></label>
-              <label class="field">轮廓颜色<input type="color" v-model="selected.stroke"></label>
+              <label class="field" data-property-target="stroke">轮廓颜色<input type="color" v-model="selected.stroke"></label>
               <label class="field">轮廓宽度<input type="number" min="0" max="20" step="0.1" v-model.number="selected.borderWidth"></label>
+              <label class="field" data-property-target="opacity">整体透明度<input type="range" min="0" max="1" step="0.05" v-model.number="selected.opacity"><span>{{ Math.round((selected.opacity ?? 1) * 100) }}%</span></label>
               <h3 v-if="selected.type === 'flowDirection'">流向属性</h3><h3 v-else>线段属性</h3>
               <label class="field">分段数<input type="number" min="1" max="9999" step="1" :value="polylineSegmentCount(selected)" data-testid="polyline-segment-count" @change="setPolylineSegmentCount(selected, $event.target.value)"></label>
               <label class="field">线条宽度<input type="number" min="0.1" max="100" step="0.1" v-model.number="selected.polylineWidth"></label>
               <label class="field">箭头大小<input type="number" min="1" max="100" step="1" v-model.number="selected.polylineArrowSize" data-testid="polyline-arrow-size"></label>
-              <template v-if="selected.type === 'flowDirection'"><label class="field">流动方向<select v-model="selected.animationDirection" @change="refreshBuiltInAnimation(selected)"><option value="normal">从起点到终点</option><option value="reverse">从终点到起点</option></select></label><label class="switch-row">显示方向箭头<input type="checkbox" v-model="selected.flowArrowVisible"><i></i></label><label class="switch-row">启用流动<input type="checkbox" :checked="selected.animation === 'flow'" @change="setFlowDirectionAnimationEnabled(selected, $event.target.checked)"><i></i></label><label class="field">流动周期（秒）<input type="number" :min="ANIMATION_DURATION_MIN_SECONDS" :max="BUILT_IN_ANIMATION_DURATION_MAX_SECONDS" step="0.1" v-model.number="selected.animationDuration" @input="refreshBuiltInAnimation(selected)" @change="normalizeBuiltInAnimationDuration(selected)"></label><label class="switch-row">暂停流动<input type="checkbox" v-model="selected.animationPaused" @change="refreshBuiltInAnimation(selected)"><i></i></label></template>
+              <template v-if="selected.type === 'flowDirection'"><label class="field">流动方向<select v-model="selected.animationDirection" @change="refreshBuiltInAnimation(selected)"><option value="normal">从起点到终点</option><option value="reverse">从终点到起点</option></select></label><label class="switch-row">显示方向箭头<input type="checkbox" v-model="selected.flowArrowVisible"><i></i></label><label class="switch-row">启用流动<input type="checkbox" :checked="selected.animation === 'flow'" @change="setFlowDirectionAnimationEnabled(selected, $event.target.checked)"><i></i></label><label class="field" data-property-target="animationDuration">流动周期（秒）<input type="number" :min="ANIMATION_DURATION_MIN_SECONDS" :max="BUILT_IN_ANIMATION_DURATION_MAX_SECONDS" step="0.1" v-model.number="selected.animationDuration" @input="refreshBuiltInAnimation(selected)" @change="normalizeBuiltInAnimationDuration(selected)"></label><label class="switch-row" data-property-target="animationPlaying">播放流动<input type="checkbox" :checked="selected.animationPaused !== true" @change="setAnimationPlaying(selected, $event.target.checked)"><i></i></label></template>
               <template v-else><label class="field">起点样式<select v-model="selected.polylineStartMarker"><option value="none">无</option><option value="arrow">箭头</option></select></label><label class="field">终点样式<select v-model="selected.polylineEndMarker"><option value="none">无</option><option value="arrow">箭头</option></select></label></template>
               <label class="field">端点<select v-model="selected.polylineLineCap"><option value="round">圆形</option><option value="butt">平直</option><option value="square">方形</option></select></label>
               <label class="field">连接<select v-model="selected.polylineLineJoin"><option value="round">圆角</option><option value="bevel">斜角</option><option value="miter">尖角</option></select></label>
             </template>
-            <template v-if="!['lineShape','pencil','polyline','flowDirection','flowPipe','rotatingFan','signalLight','waterTank','heartbeat','particles'].includes(selected.type) && !['table','input','select','time','formProgress'].includes(selected.type)">
+            <template v-if="!ECHARTS_COMPONENT_TYPES.has(selected.type) && !['lineShape','pencil','polyline','flowDirection','flowPipe','rotatingFan','signalLight','waterTank','heartbeat','particles'].includes(selected.type) && !['table','input','select','time','formProgress','progress','image','video','customMotion','customImageMotion','customIndicator'].includes(selected.type)">
               <h3>文字编辑</h3>
-              <label class="field">内容<input v-model="selected.text" data-testid="selected-text-content" lang="zh-CN" inputmode="text" autocomplete="off"></label>
+              <label class="field" data-property-target="text">内容<input v-model="selected.text" data-testid="selected-text-content" lang="zh-CN" inputmode="text" autocomplete="off"></label>
               <div v-if="selected.type === 'text'" class="field"><span>文字排布</span><div class="text-layout-control" role="radiogroup" aria-label="文字排布" data-testid="text-layout-control"><label><input type="radio" v-model="selected.textLayout" value="horizontal" aria-label="横向排布"><span>横向</span></label><label><input type="radio" v-model="selected.textLayout" value="vertical" aria-label="竖向排布"><span>竖向</span></label></div></div>
               <label class="field">文字颜色<input type="color" v-model="selected.color"></label>
               <label class="field">字号<input type="number" min="8" max="96" v-model.number="selected.fontSize"></label>
@@ -9826,79 +10394,28 @@ onUnmounted(() => {
               <label class="field hint-field">次数说明<span>0 表示无限循环</span></label>
               <label class="switch-row">开启声音<input type="checkbox" :checked="!selected.videoMuted" @change="selected.videoMuted = !$event.target.checked"><i></i></label>
             </template>
-            <h3 v-if="!['pencil','polyline','flowDirection'].includes(selected.type)">{{ selected.type === 'table' ? '表格样式' : selected.type === 'lineShape' ? '线条样式' : '外观与样式' }}</h3>
-            <template v-if="selected.type === 'lineShape'">
-              <label class="field">线条颜色<input type="color" v-model="selected.fill"></label>
-              <label class="switch-row">线条完全透明<input type="checkbox" :checked="selected.backgroundOpacity === 0" @change="selected.backgroundOpacity = $event.target.checked ? 0 : 1"><i></i></label>
-              <label class="field">线条不透明度<input type="range" min="0" max="1" step="0.05" v-model.number="selected.backgroundOpacity"><span>{{ Math.round((selected.backgroundOpacity ?? 1) * 100) }}%</span></label>
-              <label class="field">线条样式<select v-model="selected.borderStyle" data-testid="line-shape-style"><option value="solid">实线</option><option value="dashed">虚线</option><option value="dotted">点线</option></select></label>
-              <template v-if="selected.borderStyle !== 'solid'"><label class="field">线段长度<input type="number" min="0.1" max="50" step="0.1" v-model.number="selected.borderDashLength"></label><label class="field">线段间隔<input type="number" min="0.1" max="50" step="0.1" v-model.number="selected.borderDashGap"></label></template>
-              <label class="switch-row">显示轮廓<input type="checkbox" v-model="selected.borderVisible"><i></i></label>
-              <label class="field">轮廓颜色<input type="color" v-model="selected.stroke"></label>
-              <label class="field">轮廓宽度<input type="number" min="0" max="20" step="0.1" v-model.number="selected.borderWidth"></label>
-            </template>
-            <template v-else-if="!['table','pencil','polyline','flowDirection'].includes(selected.type)">
-              <label class="field">填充颜色<input type="color" v-model="selected.fill"></label>
-              <label class="switch-row">背景完全透明<input type="checkbox" :checked="selected.backgroundOpacity === 0" @change="selected.backgroundOpacity = $event.target.checked ? 0 : 1"><i></i></label>
-              <label class="field">背景不透明度<input type="range" min="0" max="1" step="0.05" v-model.number="selected.backgroundOpacity"><span>{{ Math.round((selected.backgroundOpacity ?? 1) * 100) }}%</span></label>
-              <label class="switch-row">显示边框<input type="checkbox" v-model="selected.borderVisible"><i></i></label>
-              <label class="field">边框颜色<input type="color" v-model="selected.stroke"></label>
-              <label class="field">边框宽度<input type="number" min="0" max="20" step="0.1" v-model.number="selected.borderWidth"></label>
-              <label class="field">边框样式<select v-model="selected.borderStyle"><option value="solid">实线</option><option value="dashed">虚线</option><option value="dotted">点线</option></select></label>
-              <template v-if="selected.borderStyle !== 'solid'"><label class="field">线段长度<input type="number" min="0.1" max="50" step="0.1" v-model.number="selected.borderDashLength"></label><label class="field">线段间隔<input type="number" min="0.1" max="50" step="0.1" v-model.number="selected.borderDashGap"></label></template>
-              <label class="field">圆角<input type="range" min="0" max="100" v-model.number="selected.radius"><span>{{ selected.radius }}</span></label>
-            </template>
-            <template v-if="['checkbox','radio','switch'].includes(selected.type)">
-              <label class="field">标签位置<select v-model="selected.labelPosition"><option value="right">控件在左</option><option value="left">控件在右</option></select></label>
-              <label v-if="selected.type !== 'switch'" class="field">控件大小<input type="number" min="12" max="48" v-model.number="selected.controlSize"></label>
-              <template v-else><label class="field">开关宽度<input type="number" min="28" max="100" v-model.number="selected.switchWidth"></label><label class="field">开关高度<input type="number" min="16" max="48" v-model.number="selected.switchHeight"></label></template>
-            </template>
-            <label v-if="!['table','pencil'].includes(selected.type)" class="field">整体透明度<input type="range" min="0.1" max="1" step="0.05" v-model.number="selected.opacity"><span>{{ Math.round((selected.opacity ?? 1) * 100) }}%</span></label>
-            <template v-if="selected.type === 'table'">
-              <section class="table-style-group"><h4>整体与滚动</h4>
-                <label class="field">整体透明度<input type="range" min="0.1" max="1" step="0.05" v-model.number="selected.opacity"><span>{{ Math.round((selected.opacity ?? 1) * 100) }}%</span></label>
-                <label class="switch-row">显示边框<input type="checkbox" v-model="selected.borderVisible"><i></i></label>
-                <label class="switch-row">显示横向滚动条<input type="checkbox" v-model="selected.tableScrollX"><i></i></label>
-                <label class="switch-row">显示纵向滚动条<input type="checkbox" v-model="selected.tableScrollY"><i></i></label>
-              </section>
-              <section class="table-style-group"><h4>外框</h4>
-                <label class="field">颜色<input type="color" v-model="selected.tableBorderColor"></label><label class="field">宽度<input type="number" min="0" max="20" step="0.1" v-model.number="selected.tableBorderWidth"></label><label class="field">样式<select v-model="selected.tableBorderStyle"><option value="solid">实线</option><option value="dashed">虚线</option><option value="dotted">点线</option></select></label>
-              </section>
-              <section class="table-style-group"><h4>内框</h4>
-                <label class="field">颜色<input type="color" v-model="selected.tableGridColor"></label><label class="field">宽度<input type="number" min="0" max="10" step="0.1" v-model.number="selected.tableGridWidth"></label><label class="field">样式<select v-model="selected.tableGridStyle"><option value="solid">实线</option><option value="dashed">虚线</option><option value="dotted">点线</option></select></label>
-              </section>
-              <section class="table-style-group"><h4>标题</h4>
-                <label class="field">背景颜色<input type="color" v-model="selected.tableTitleFill"></label><label class="field">文字颜色<input type="color" v-model="selected.tableTitleColor"></label><label class="field">字体大小<input type="number" min="8" max="48" v-model.number="selected.tableTitleSize"></label><label class="field">字体粗细<select v-model="selected.tableTitleWeight"><option value="400">常规</option><option value="600">中粗</option><option value="700">粗体</option></select></label><label class="field">对齐方式<select v-model="selected.tableTitleAlign"><option value="left">左对齐</option><option value="center">居中</option><option value="right">右对齐</option></select></label>
-              </section>
-              <section class="table-style-group"><h4>表头</h4>
-                <label class="field">背景颜色<input type="color" v-model="selected.tableHeaderFill"></label><label class="field">文字颜色<input type="color" v-model="selected.tableHeaderColor"></label><label class="field">字体大小<input type="number" min="8" max="48" v-model.number="selected.tableHeaderSize"></label><label class="field">字体粗细<select v-model="selected.tableHeaderWeight"><option value="400">常规</option><option value="600">中粗</option><option value="700">粗体</option></select></label><label class="field">表头高度<input type="number" min="18" max="120" v-model.number="selected.tableHeaderHeight"></label><label class="field">对齐方式<select v-model="selected.tableHeaderAlign"><option value="left">左对齐</option><option value="center">居中</option><option value="right">右对齐</option></select></label>
-              </section>
-              <section class="table-style-group"><h4>内容行</h4>
-                <label class="field">内容显示<select v-model="selected.tableContentDisplay"><option value="wrap">自适应换行</option><option value="ellipsis">缩略展示</option></select></label><label class="field">奇数行背景<input type="color" v-model="selected.tableRowFill"></label><label class="field">偶数行背景<input type="color" v-model="selected.tableAltRowFill"></label><label class="field">文字颜色<input type="color" v-model="selected.tableCellColor"></label><label class="field">字体大小<input type="number" min="8" max="48" v-model.number="selected.tableCellSize"></label><label class="field">字体粗细<select v-model="selected.tableCellWeight"><option value="400">常规</option><option value="600">中粗</option><option value="700">粗体</option></select></label><label class="field">统一行高<input type="number" min="18" max="120" v-model.number="selected.tableRowHeight" @input="syncAllTableRowHeights($event.target.value)"></label><label class="field">对齐方式<select v-model="selected.tableTextAlign"><option value="left">左对齐</option><option value="center">居中</option><option value="right">右对齐</option></select></label>
-              </section>
-            </template>
-            <template v-if="selectedCategory === '表单'">
+            <template v-if="selectedCategory === '功能组件'">
               <template v-if="selected.type === 'table'">
                 <h3>表格内容</h3>
                 <label class="field"><span>当前规模</span><output>{{ selected.tableRows }} 行 × {{ selected.tableColumns }} 列</output></label>
-                <button class="secondary-wide" @click="openTableDataEditor(selected)"><TableProperties />编辑表格</button>
+                <button class="secondary-wide" data-property-targets="tableTitle tableHeaders tableCells tableData text" @click="openTableDataEditor(selected)"><TableProperties />编辑表格</button>
               </template>
               <template v-else-if="selected.type === 'checkbox'">
-                <h3>复选框数据</h3><label class="switch-row">默认选中<input type="checkbox" v-model="selected.defaultChecked"><i></i></label><label class="switch-row">当前选中<input type="checkbox" v-model="selected.checked"><i></i></label>
+                <h3>复选框数据</h3><label class="switch-row">默认选中<input type="checkbox" v-model="selected.defaultChecked"><i></i></label><label class="switch-row" data-property-target="checked">当前选中<input type="checkbox" v-model="selected.checked"><i></i></label>
                 <label class="field">选中值<input v-model="selected.checkedValue"></label><label class="field">未选中值<input v-model="selected.uncheckedValue"></label>
               </template>
               <template v-else-if="selected.type === 'radio'">
-                <h3>单选框数据</h3><label class="field">单选分组<input v-model="selected.formName" placeholder="同组名称保持一致"></label><label class="switch-row">默认选中<input type="checkbox" v-model="selected.defaultChecked"><i></i></label><label class="switch-row">当前选中<input type="checkbox" v-model="selected.checked"><i></i></label>
+                <h3>单选框数据</h3><label class="field">单选分组<input v-model="selected.formName" placeholder="同组名称保持一致"></label><label class="switch-row">默认选中<input type="checkbox" v-model="selected.defaultChecked"><i></i></label><label class="switch-row" data-property-target="checked">当前选中<input type="checkbox" v-model="selected.checked"><i></i></label>
                 <label class="field">选中值<input v-model="selected.checkedValue"></label><label class="field">未选中值<input v-model="selected.uncheckedValue"></label>
               </template>
               <template v-else-if="selected.type === 'switch'">
-                <h3>开关数据</h3><label class="switch-row">默认开启<input type="checkbox" v-model="selected.defaultChecked"><i></i></label><label class="switch-row">当前开启<input type="checkbox" v-model="selected.checked"><i></i></label>
+                <h3>开关数据</h3><label class="switch-row">默认开启<input type="checkbox" v-model="selected.defaultChecked"><i></i></label><label class="switch-row" data-property-target="checked">当前开启<input type="checkbox" v-model="selected.checked"><i></i></label>
                 <label class="field">开启值<input v-model="selected.checkedValue"></label><label class="field">关闭值<input v-model="selected.uncheckedValue"></label>
               </template>
               <template v-else-if="selected.type === 'formProgress'">
                 <h3>进度数据</h3><label class="field">展示方式<select v-model="selected.progressMode" @change="normalizeProgress()"><option value="percent">百分比</option><option value="value">当前值 / 总数</option></select></label>
                 <label v-if="selected.progressMode === 'value'" class="field">总数<input type="number" min="1" v-model.number="selected.progressMax" @change="normalizeProgress()"></label>
-                <label class="field">{{ selected.progressMode === 'value' ? '当前数据' : '当前百分比' }}<input type="number" :min="0" :max="selected.progressMode === 'value' ? selected.progressMax : 100" step="0.1" v-model.number="selected.progressValue" @change="normalizeProgress()"></label><label class="switch-row">显示数值<input type="checkbox" v-model="selected.showProgressText"><i></i></label>
+                <label class="field" data-property-target="progressValue">{{ selected.progressMode === 'value' ? '当前数据' : '当前百分比' }}<input type="number" :min="0" :max="selected.progressMode === 'value' ? selected.progressMax : 100" step="0.1" v-model.number="selected.progressValue" @change="normalizeProgress()"></label><label class="switch-row">显示数值<input type="checkbox" v-model="selected.showProgressText"><i></i></label>
                 <h3>进度条设置</h3>
                 <label class="field">粗细<input type="number" min="2" max="80" step="1" v-model.number="selected.progressThickness"></label>
                 <label class="field">长度<input type="range" min="10" max="100" step="1" v-model.number="selected.progressLength"><span>{{ selected.progressLength }}%</span></label>
@@ -9914,17 +10431,17 @@ onUnmounted(() => {
                 <h3>按钮数据</h3>
                 <label class="field">点击动作<select v-model="selected.buttonAction"><option value="count">点击计数</option><option value="toggle">切换状态</option><option value="message">显示消息</option></select></label>
                 <label v-if="selected.buttonAction === 'message'" class="field">消息内容<input v-model="selected.actionMessage"></label>
-                <template v-if="selected.buttonAction === 'toggle'"><label class="switch-row">默认开启<input type="checkbox" v-model="selected.defaultChecked"><i></i></label><label class="switch-row">当前开启<input type="checkbox" v-model="selected.checked"><i></i></label><label class="field">点击前颜色<input type="color" v-model="selected.buttonBeforeColor"></label><label class="field">点击后颜色<input type="color" v-model="selected.buttonAfterColor"></label><label class="field">开启值<input v-model="selected.checkedValue"></label><label class="field">关闭值<input v-model="selected.uncheckedValue"></label></template>
+                <template v-if="selected.buttonAction === 'toggle' || selectedBindingParameters.some(parameter => parameter.target === 'checked')"><label class="switch-row">默认开启<input type="checkbox" v-model="selected.defaultChecked"><i></i></label><label class="switch-row" data-property-target="checked">当前开启<input type="checkbox" v-model="selected.checked"><i></i></label><template v-if="selected.buttonAction === 'toggle'"><label class="field">点击前颜色<input type="color" v-model="selected.buttonBeforeColor"></label><label class="field">点击后颜色<input type="color" v-model="selected.buttonAfterColor"></label><label class="field">开启值<input v-model="selected.checkedValue"></label><label class="field">关闭值<input v-model="selected.uncheckedValue"></label></template></template>
                 <template v-if="selected.buttonAction === 'count'"><label class="switch-row">显示数值<input type="checkbox" v-model="selected.showClickCount"><i></i></label><label class="field">当前点击次数<output>{{ selected.clickCount || 0 }}</output></label></template><button class="secondary-wide" @click="resetButtonData"><RotateCcw />重置按钮数据</button>
               </template>
               <template v-else-if="selected.type === 'input'">
-                <h3>输入框数据</h3><label class="field">默认内容<input v-model="selected.defaultValue"></label><label class="field">当前内容<input v-model="selected.value"></label><label class="field">占位文字<input v-model="selected.placeholder"></label><label class="field">输入类型<select v-model="selected.inputType"><option value="text">文本</option><option value="number">数字</option><option value="password">密码</option><option value="email">邮箱</option><option value="search">搜索</option><option value="tel">电话</option><option value="url">网址</option></select></label><label class="field">最大长度<input type="number" min="1" max="1000" v-model.number="selected.maxLength"></label><label class="switch-row">只读<input type="checkbox" v-model="selected.readOnly"><i></i></label><label class="switch-row">必填<input type="checkbox" v-model="selected.required"><i></i></label>
+                <h3>输入框数据</h3><label class="field">默认内容<input v-model="selected.defaultValue"></label><label class="field" data-property-target="value">当前内容<input v-model="selected.value"></label><label class="field">占位文字<input v-model="selected.placeholder"></label><label class="field">输入类型<select v-model="selected.inputType"><option value="text">文本</option><option value="number">数字</option><option value="password">密码</option><option value="email">邮箱</option><option value="search">搜索</option><option value="tel">电话</option><option value="url">网址</option></select></label><label class="field">最大长度<input type="number" min="1" max="1000" v-model.number="selected.maxLength"></label><label class="switch-row">只读<input type="checkbox" v-model="selected.readOnly"><i></i></label><label class="switch-row">必填<input type="checkbox" v-model="selected.required"><i></i></label>
               </template>
               <template v-else-if="selected.type === 'select'">
                 <h3>选择器数据</h3><label class="field">选项数量<output>{{ selected.selectOptions.length }}</output></label>
                 <div v-for="(option, index) in selected.selectOptions" :key="`option-${index}`" class="option-editor-row"><input v-model="option.label" placeholder="选项名称"><input :value="option.value" placeholder="选项值" @input="setSelectOptionValue(index, $event.target.value)"><button :disabled="selected.selectOptions.length <= 1" @click="removeSelectOption(index)" title="删除选项"><Trash2 /></button></div>
                 <button class="secondary-wide" :disabled="selected.selectOptions.length >= 50" @click="addSelectOption"><Plus />添加选项</button>
-                <label class="field">默认选中<select v-model="selected.defaultValue"><option v-for="(option, index) in selected.selectOptions" :key="`default-${index}`" :value="option.value">{{ option.label }}</option></select></label><label class="field">当前选中<select v-model="selected.value"><option v-for="(option, index) in selected.selectOptions" :key="`current-${index}`" :value="option.value">{{ option.label }}</option></select></label><label class="switch-row">必选<input type="checkbox" v-model="selected.required"><i></i></label>
+                <label class="field">默认选中<select v-model="selected.defaultValue"><option v-for="(option, index) in selected.selectOptions" :key="`default-${index}`" :value="option.value">{{ option.label }}</option></select></label><label class="field" data-property-target="value">当前选中<select v-model="selected.value"><option v-for="(option, index) in selected.selectOptions" :key="`current-${index}`" :value="option.value">{{ option.label }}</option></select></label><label class="switch-row">必选<input type="checkbox" v-model="selected.required"><i></i></label>
               </template>
               <template v-else-if="selected.type === 'time'">
                 <h3>时间设置</h3>
@@ -9932,15 +10449,15 @@ onUnmounted(() => {
                 <label class="switch-row">显示右侧图标<input type="checkbox" v-model="selected.timeShowRightIcon" data-testid="time-right-icon-toggle"><i></i></label>
                 <label class="field">展示格式<select :value="selected.timeFormat" @change="setTimeFormat($event.target.value)"><option value="datetime-seconds">YYYY-MM-DDTHH:MM:SS</option><option value="datetime-local">YYYY-MM-DDTHH:MM</option><option value="date">YYYY-MM-DD</option><option value="time-seconds">HH:MM:SS</option><option value="time">HH:MM</option><option value="month">YYYY-MM</option><option value="week">YYYY-Www</option></select></label>
                 <label class="field">展示方式<select :value="selected.timeMode" @change="setTimeMode($event.target.value)"><option value="fixed">展示固定时间</option><option value="elapsed">从固定时间开始计时</option></select></label>
-                <label class="field">{{ selected.timeMode === 'elapsed' ? '起始时间' : '固定时间' }}<input :type="timeInputType(selected.timeFormat)" :step="timeInputStep(selected.timeFormat)" v-model="selected.defaultValue" :disabled="selected.timeUseServer || selected.timeRunning"></label>
+                <label class="field" data-property-target="value">{{ selected.timeMode === 'elapsed' ? '起始时间' : '固定时间' }}<input :type="timeInputType(selected.timeFormat)" :step="timeInputStep(selected.timeFormat)" :value="selected.defaultValue" @input="setTimeStaticValue($event.target.value)"></label>
                 <label class="switch-row">自动获取服务器时间<input type="checkbox" :checked="selected.timeUseServer" @change="setTimeUseServer($event.target.checked)"><i></i></label>
                 <label v-if="selected.timeMode === 'elapsed' || selected.timeUseServer" class="switch-row">开始计时<input type="checkbox" :checked="selected.timeRunning" @change="setTimeRunning($event.target.checked)"><i></i></label>
                 <label class="field">当前展示<output>{{ formDataValue(selected) }}</output></label>
               </template>
               <template v-if="!['table','time'].includes(selected.type)"><label class="field">当前输出<output>{{ formDataValue(selected) }}</output></label><label class="switch-row">禁用<input type="checkbox" v-model="selected.disabled"><i></i></label></template>
             </template>
-            <template v-if="['工业设备','图表组件'].includes(selectedCategory)">
-              <h3>数据属性</h3><label class="field vertical">数据键<input :value="selected.dataKey" placeholder="device.temperature" @input="setSelectedDataKey($event.target.value)"></label><div class="form-grid"><label>最小<input type="number" v-model.number="selected.min"></label><label>最大<input type="number" v-model.number="selected.max"></label></div><label class="field">设备状态<select v-model="selected.status"><option>正常</option><option>告警</option><option>离线</option></select></label>
+            <template v-if="selectedCategory === '工业设备'">
+              <h3>数据属性</h3><label class="field vertical">数据键<input :value="selected.dataKey" placeholder="device.temperature" @input="setSelectedDataKey($event.target.value)"></label><div class="form-grid"><label>最小<input type="number" v-model.number="selected.min"></label><label>最大<input type="number" v-model.number="selected.max"></label></div><label v-if="['gauge','progress'].includes(selected.type)" class="field" data-property-target="progressValue">当前数值<input type="number" min="0" max="100" step="0.1" v-model.number="selected.progressValue" @change="normalizeBindableProgressValue(selected)"></label><label class="field">设备状态<select v-model="selected.status"><option>正常</option><option>告警</option><option>离线</option></select></label>
               <template v-if="selected.type === 'progress'">
                 <h3>进度条设置</h3>
                 <label class="field">粗细<input type="number" min="2" max="80" step="1" v-model.number="selected.progressThickness"></label>
@@ -9954,16 +10471,86 @@ onUnmounted(() => {
                 </template>
               </template>
             </template>
+            <template v-if="selectedCategory === '图表组件'">
+              <template v-if="STANDARD_CHART_TYPES.has(selected.type)">
+                <h3>图表设置</h3>
+                <label class="field vertical" data-property-target="chartTitle">图表标题<input v-model="selected.chartTitle" placeholder="留空则不显示标题"></label>
+                <label class="switch-row" data-property-target="chartShowLegend">显示图例<input type="checkbox" v-model="selected.chartShowLegend"><i></i></label>
+                <label class="switch-row" data-property-target="chartShowTooltip">显示提示<input type="checkbox" v-model="selected.chartShowTooltip"><i></i></label>
+                <label v-if="['lineChart','barChart','scatterChart'].includes(selected.type)" class="switch-row" data-property-target="chartShowGrid">显示网格<input type="checkbox" v-model="selected.chartShowGrid"><i></i></label>
+                <template v-if="selected.type === 'lineChart'">
+                  <label class="switch-row" data-property-target="chartSmooth">平滑曲线<input type="checkbox" v-model="selected.chartSmooth"><i></i></label>
+                  <label class="switch-row" data-property-target="chartAreaFill">显示面积<input type="checkbox" v-model="selected.chartAreaFill"><i></i></label>
+                </template>
+                <label v-if="['lineChart','scatterChart'].includes(selected.type)" class="field" data-property-target="chartSymbolSize">数据点大小<input type="number" min="1" max="80" step="1" v-model.number="selected.chartSymbolSize"></label>
+                <label v-if="selected.type === 'radarChart'" class="field" data-property-target="chartRadarMax">雷达最大值<input type="number" min="1" step="1" v-model.number="selected.chartRadarMax"></label>
+                <template v-if="selected.type !== 'pieChart'">
+                  <h3>数据系列</h3>
+                  <div class="chart-series-toolbar">
+                    <span>共 {{ selectedChartSeries.length }} 个系列，选择后编辑下方数据</span>
+                    <button type="button" :disabled="selectedChartSeries.length >= MAX_EDITABLE_CHART_SERIES" :title="selectedChartSeries.length >= MAX_EDITABLE_CHART_SERIES ? `最多支持 ${MAX_EDITABLE_CHART_SERIES} 个系列` : '添加数据系列'" aria-label="添加数据系列" @click="addSelectedChartSeries"><Plus />新增</button>
+                  </div>
+                  <div class="chart-series-list" data-property-targets="chartSeries chartSeriesName chartColor">
+                    <div v-for="(series, seriesIndex) in selectedChartSeries" :key="`chart-series-${seriesIndex}`" class="chart-series-item" :class="{ active: selectedChartSeriesIndex === seriesIndex }" @click="setSelectedChartSeriesIndex(seriesIndex)">
+                      <div class="chart-series-item-head">
+                        <button type="button" class="chart-series-select" :aria-pressed="selectedChartSeriesIndex === seriesIndex" :aria-label="`编辑系列 ${seriesIndex + 1} 的数据`" @click.stop="setSelectedChartSeriesIndex(seriesIndex)">
+                          <i aria-hidden="true" :style="{ backgroundColor: series.color }"></i>
+                          <b>系列 {{ seriesIndex + 1 }}</b>
+                          <span>{{ chartSeriesRowCount(seriesIndex) }} 项</span>
+                        </button>
+                        <button type="button" class="chart-series-delete" :disabled="selectedChartSeries.length <= 1" :title="selectedChartSeries.length <= 1 ? '至少保留 1 个系列' : `删除${series.name || `系列 ${seriesIndex + 1}`}`" :aria-label="selectedChartSeries.length <= 1 ? '至少保留 1 个系列' : `删除${series.name || `系列 ${seriesIndex + 1}`}`" @click.stop="removeSelectedChartSeries(seriesIndex)"><Trash2 /></button>
+                      </div>
+                      <div class="chart-series-item-fields">
+                        <label><span>名称</span><input :value="series.name" placeholder="系列名称" :aria-label="`系列 ${seriesIndex + 1} 名称`" @focus="setSelectedChartSeriesIndex(seriesIndex)" @click.stop @input="setSelectedChartSeriesName(seriesIndex, $event.target.value)"></label>
+                        <label><span>颜色</span><input type="color" :value="series.color" :aria-label="`系列 ${seriesIndex + 1} 颜色`" @focus="setSelectedChartSeriesIndex(seriesIndex)" @click.stop @input="setSelectedChartSeriesColor(seriesIndex, $event.target.value)"></label>
+                      </div>
+                    </div>
+                  </div>
+                </template>
+                <h3>{{ selected.type === 'pieChart' ? selectedChartMeta.title : `${selectedChartActiveSeries?.name || '当前系列'} · 数据` }}</h3>
+                <div class="chart-data-overview"><span>{{ selectedChartMeta.relation }}</span><strong>{{ selectedChartTotal }} {{ selectedChartMeta.countUnit }}</strong></div>
+                <p v-if="selectedChartLimitMessage" id="chart-data-limit-note" class="chart-data-limit-note">{{ selectedChartLimitMessage }}</p>
+                <div class="chart-data-list" :class="{ scatter: selected.type === 'scatterChart', pie: selected.type === 'pieChart' }" data-property-targets="chartLabels chartData chartSeries chartSliceColors chartColor">
+                  <div class="chart-data-table-head" aria-hidden="true">
+                    <span>{{ selected.type === 'pieChart' ? '颜色' : '序号' }}</span>
+                    <span>{{ selectedChartMeta.labelField }}</span>
+                    <template v-if="selected.type === 'scatterChart'"><span>X</span><span>Y</span></template>
+                    <span v-else>{{ selectedChartMeta.valueField }}</span>
+                    <span></span>
+                  </div>
+                  <div v-for="row in selectedChartRows" :key="`chart-value-${row.sourceIndex}`" class="chart-data-row">
+                    <input v-if="selected.type === 'pieChart'" class="chart-slice-color" type="color" :value="selectedPieSliceColor(row.sourceIndex)" :aria-label="`扇区 ${row.index + 1} 颜色`" title="扇区颜色" @input="setSelectedPieSliceColor(row.sourceIndex, $event.target.value)">
+                    <i v-else class="chart-data-item-marker" aria-hidden="true" :style="chartDataMarkerStyle(row.sourceIndex)">{{ row.index + 1 }}</i>
+                    <input class="chart-label-input" :value="row.label" :title="row.label" :aria-label="`${selectedChartMeta.itemLabel} ${row.index + 1} ${selectedChartMeta.labelField}`" @input="setSelectedChartLabel(row, $event.target.value)">
+                    <template v-if="selected.type === 'scatterChart'">
+                      <input type="number" step="0.1" :value="row.x" :aria-label="`散点 ${row.index + 1} X 坐标`" @input="setSelectedChartValue(row, $event.target.value, 'x')" @blur="restoreSelectedChartNumber($event, row, 'x')">
+                      <input type="number" step="0.1" :value="row.y" :aria-label="`散点 ${row.index + 1} Y 坐标`" @input="setSelectedChartValue(row, $event.target.value, 'y')" @blur="restoreSelectedChartNumber($event, row, 'y')">
+                    </template>
+                    <input v-else type="number" step="0.1" :min="selected.type === 'pieChart' ? 0 : undefined" :value="row.value" :aria-label="`${selectedChartMeta.itemLabel} ${row.index + 1} ${selectedChartMeta.valueField}`" @input="setSelectedChartValue(row, $event.target.value)" @blur="restoreSelectedChartNumber($event, row)">
+                    <button type="button" :disabled="selectedChartTotal <= 1" :title="selectedChartTotal <= 1 ? '至少保留 1 项' : `删除${selectedChartMeta.itemLabel} ${row.index + 1}`" :aria-label="selectedChartTotal <= 1 ? '至少保留 1 项' : `删除${selectedChartMeta.itemLabel} ${row.index + 1}`" @click="removeSelectedChartValue(row)"><Trash2 /></button>
+                  </div>
+                </div>
+                <button class="secondary-wide" type="button" :disabled="selectedChartTotal >= MAX_EDITABLE_CHART_ITEMS" :title="selectedChartTotal >= MAX_EDITABLE_CHART_ITEMS ? `手动编辑最多支持 ${MAX_EDITABLE_CHART_ITEMS} 项` : selectedChartMeta.addLabel" :aria-describedby="selectedChartLimitMessage ? 'chart-data-limit-note' : undefined" @click="addSelectedChartValue"><Plus />{{ selectedChartMeta.addLabel }}</button>
+              </template>
+              <template v-else-if="selected.type === 'echartsCode'">
+                <h3>ECharts 代码</h3>
+                <label class="field vertical chart-code-field" data-property-target="echartsCode">完整示例代码<textarea v-model="selected.echartsCode" spellcheck="false" placeholder="粘贴 ECharts 官方完整示例代码" @input="scheduleSelectedEChartsCode(selected)"></textarea></label>
+                <div v-if="echartsCodeStatus.nodeId === selected.id && echartsCodeStatus.message" class="chart-code-status" :class="echartsCodeStatus.type" role="status">{{ echartsCodeStatus.message }}</div>
+                <button class="secondary-wide" type="button" data-testid="echarts-code-editor-open" @click="openEChartsCodeEditor(selected)"><Maximize2 />展开编辑</button>
+                <button class="secondary-wide" type="button" @click="applySelectedEChartsCode(selected)"><RefreshCw />重新应用代码</button>
+                <p class="property-note">可直接粘贴 ECharts 官方完整示例代码；完整代码将在隔离环境中运行。</p>
+              </template>
+            </template>
             <template v-if="selectedCategory === '网络与云'">
               <h3>网络属性</h3><label class="field vertical">地址<input v-model="selected.address" placeholder="192.168.1.10"></label><label class="field vertical">数据键<input :value="selected.dataKey" placeholder="network.status" @input="setSelectedDataKey($event.target.value)"></label><label class="field">状态<select v-model="selected.status"><option>正常</option><option>告警</option><option>离线</option></select></label>
             </template>
             <template v-if="selectedCategory === '动效组件' && selected.type !== 'flowDirection'">
-              <template v-if="selected.type === 'signalLight'"><h3>信号灯属性</h3><label class="field">切换颜色数量<input type="number" min="1" :max="MAX_SIGNAL_COLORS" :value="selected.signalColorCount" @input="setSignalColorCount($event.target.value)"></label><label v-for="index in selected.signalColorCount" :key="index" class="field">颜色 {{ index }}<input type="color" v-model="selected.signalColors[index - 1]"></label><label class="switch-row">完全透明<input type="checkbox" :checked="selected.signalOpacity === 0" @change="selected.signalOpacity = $event.target.checked ? 0 : 1"><i></i></label><label class="field">灯光不透明度<input type="range" min="0" max="1" step="0.05" v-model.number="selected.signalOpacity"><span>{{ Math.round((selected.signalOpacity ?? 1) * 100) }}%</span></label></template>
-              <template v-else><h3>主体属性</h3><label class="field">主体颜色<input type="color" v-model="selected.visualPrimaryColor" data-testid="visual-primary-color"></label><label v-if="selected.type === 'waterTank'" class="field">液位（%）<input type="number" min="0" max="100" step="0.1" v-model.number="selected.progressValue" @change="normalizeWaterTankProgress(selected)"></label></template>
-              <h3>动效属性</h3><label class="field">动画类型<select v-model="selected.animation" @change="refreshBuiltInAnimation(selected)"><option v-for="option in builtInAnimationOptions(selected)" :key="option.value" :value="option.value">{{ option.label }}</option></select></label><label class="field">动画周期（秒）<input type="number" :min="ANIMATION_DURATION_MIN_SECONDS" :max="BUILT_IN_ANIMATION_DURATION_MAX_SECONDS" step="0.1" v-model.number="selected.animationDuration" @input="refreshBuiltInAnimation(selected)" @change="normalizeBuiltInAnimationDuration(selected)"></label><label class="field">播放方向<select v-model="selected.animationDirection" @change="refreshBuiltInAnimation(selected)"><option value="normal">正向</option><option value="reverse">反向</option><option value="alternate">往返</option></select></label><label class="switch-row">暂停动画<input type="checkbox" v-model="selected.animationPaused" @change="refreshBuiltInAnimation(selected)"><i></i></label><label class="switch-row">显示边框<input type="checkbox" v-model="selected.borderVisible"><i></i></label>
+              <template v-if="selected.type === 'signalLight'"><h3>信号灯属性</h3><label class="field">切换颜色数量<input type="number" min="1" :max="MAX_SIGNAL_COLORS" :value="selected.signalColorCount" @input="setSignalColorCount($event.target.value)"></label><label v-for="parameter in selectedSignalColorParameters" :key="parameter.target" class="field" :data-property-target="parameter.target">颜色 {{ parameter.signalColorIndex + 1 }}<small v-if="parameter.signalColorIndex >= selected.signalColorCount">历史绑定</small><input type="color" :value="selected.signalColors[parameter.signalColorIndex] || signalColorDefaults[parameter.signalColorIndex]" @input="setSignalColor(parameter.signalColorIndex, $event.target.value)"></label><label class="switch-row">完全透明<input type="checkbox" :checked="selected.signalOpacity === 0" @change="selected.signalOpacity = $event.target.checked ? 0 : 1"><i></i></label><label class="field" data-property-target="signalOpacity">灯光不透明度<input type="range" min="0" max="1" step="0.05" v-model.number="selected.signalOpacity"><span>{{ Math.round((selected.signalOpacity ?? 1) * 100) }}%</span></label></template>
+              <template v-else><h3>主体属性</h3><label class="field" data-property-target="visualPrimaryColor">主体颜色<input type="color" v-model="selected.visualPrimaryColor" data-testid="visual-primary-color"></label><label v-if="selected.type === 'waterTank'" class="field" data-property-target="progressValue">液位（%）<input type="number" min="0" max="100" step="0.1" v-model.number="selected.progressValue" @change="normalizeWaterTankProgress(selected)"></label></template>
+              <h3>动效属性</h3><label class="field">动画类型<select v-model="selected.animation" @change="refreshBuiltInAnimation(selected)"><option v-for="option in builtInAnimationOptions(selected)" :key="option.value" :value="option.value">{{ option.label }}</option></select></label><label class="field" data-property-target="animationDuration">动画周期（秒）<input type="number" :min="ANIMATION_DURATION_MIN_SECONDS" :max="BUILT_IN_ANIMATION_DURATION_MAX_SECONDS" step="0.1" v-model.number="selected.animationDuration" @input="refreshBuiltInAnimation(selected)" @change="normalizeBuiltInAnimationDuration(selected)"></label><label class="field">播放方向<select v-model="selected.animationDirection" @change="refreshBuiltInAnimation(selected)"><option value="normal">正向</option><option value="reverse">反向</option><option value="alternate">往返</option></select></label><label class="switch-row" data-property-target="animationPlaying">播放动画<input type="checkbox" :checked="selected.animationPaused !== true" @change="setAnimationPlaying(selected, $event.target.checked)"><i></i></label><label class="switch-row">显示边框<input type="checkbox" v-model="selected.borderVisible"><i></i></label>
             </template>
             <template v-else-if="selectedCategory === '自定义动效'">
-              <h3>自定义动效</h3><label class="field">效果<select v-model="selected.customEffect"><option value="bounce">弹跳</option><option value="slide">水平移动</option><option value="rotate">旋转</option><option value="scale">缩放</option><option value="fade">淡入淡出</option><option value="color">颜色变化</option></select></label><label class="field">周期（秒）<input type="number" min="0.2" max="20" step="0.1" v-model.number="selected.animationDuration"></label><label class="field">延迟（秒）<input type="number" min="0" max="20" step="0.1" v-model.number="selected.animationDelay"></label><label class="field">缓动<select v-model="selected.animationEasing"><option value="linear">匀速</option><option value="ease-in-out">平滑</option><option value="ease-out">减速</option><option value="steps(4,end)">步进</option></select></label><label class="field">循环<select v-model="selected.animationIterations"><option value="infinite">无限</option><option value="1">1 次</option><option value="2">2 次</option><option value="3">3 次</option></select></label><label class="field">方向<select v-model="selected.animationDirection"><option value="normal">正向</option><option value="reverse">反向</option><option value="alternate">往返</option></select></label><label v-if="['bounce','slide'].includes(selected.customEffect)" class="field">位移距离<input type="number" min="1" max="200" v-model.number="selected.motionDistance"></label><label v-if="selected.customEffect === 'scale'" class="field">缩放倍数<input type="number" min="0.1" max="3" step="0.05" v-model.number="selected.motionScale"></label><label v-if="selected.customEffect === 'rotate'" class="field">旋转角度<input type="number" min="1" max="1440" v-model.number="selected.motionRotate"></label><label v-if="selected.customEffect === 'color'" class="field">目标颜色<input type="color" v-model="selected.motionColor"></label><label class="switch-row">暂停动画<input type="checkbox" v-model="selected.animationPaused"><i></i></label><label class="switch-row">显示边框<input type="checkbox" v-model="selected.borderVisible"><i></i></label>
+              <h3>自定义动效</h3><label class="field">效果<select v-model="selected.customEffect"><option value="bounce">弹跳</option><option value="slide">水平移动</option><option value="rotate">旋转</option><option value="scale">缩放</option><option value="fade">淡入淡出</option><option value="color">颜色变化</option></select></label><label class="field" data-property-target="animationDuration">周期（秒）<input type="number" min="0.2" max="20" step="0.1" v-model.number="selected.animationDuration"></label><label class="field">延迟（秒）<input type="number" min="0" max="20" step="0.1" v-model.number="selected.animationDelay"></label><label class="field">缓动<select v-model="selected.animationEasing"><option value="linear">匀速</option><option value="ease-in-out">平滑</option><option value="ease-out">减速</option><option value="steps(4,end)">步进</option></select></label><label class="field">循环<select v-model="selected.animationIterations"><option value="infinite">无限</option><option value="1">1 次</option><option value="2">2 次</option><option value="3">3 次</option></select></label><label class="field">方向<select v-model="selected.animationDirection"><option value="normal">正向</option><option value="reverse">反向</option><option value="alternate">往返</option></select></label><label v-if="['bounce','slide'].includes(selected.customEffect)" class="field">位移距离<input type="number" min="1" max="200" v-model.number="selected.motionDistance"></label><label v-if="selected.customEffect === 'scale'" class="field">缩放倍数<input type="number" min="0.1" max="3" step="0.05" v-model.number="selected.motionScale"></label><label v-if="selected.customEffect === 'rotate'" class="field">旋转角度<input type="number" min="1" max="1440" v-model.number="selected.motionRotate"></label><label v-if="selected.customEffect === 'color'" class="field">目标颜色<input type="color" v-model="selected.motionColor"></label><label class="switch-row" data-property-target="animationPlaying">播放动画<input type="checkbox" :checked="selected.animationPaused !== true" @change="setAnimationPlaying(selected, $event.target.checked)"><i></i></label><label class="switch-row">显示边框<input type="checkbox" v-model="selected.borderVisible"><i></i></label>
             </template>
             </template>
             </fieldset>
@@ -9983,9 +10570,9 @@ onUnmounted(() => {
             <label class="field">文件名<input v-model="fileName"></label>
             <h3>画布尺寸</h3>
             <label class="field">尺寸预设<select :value="canvasSizePreset" @change="setCanvasPreset($event.target.value)"><option value="custom">自定义</option><option value="1920x1080">1920 × 1080</option><option value="2560x1440">2560 × 1440</option><option value="3840x2160">3840 × 2160</option><option value="6000x4000">6000 × 4000</option></select></label>
-            <div class="form-grid"><label>宽<input data-testid="canvas-width" type="number" min="320" max="20000" step="10" v-model.number="stageWidth" @change="normalizeCanvasSize"></label><label>高<input data-testid="canvas-height" type="number" min="320" max="20000" step="10" v-model.number="stageHeight" @change="normalizeCanvasSize"></label></div>
+            <div class="form-grid"><label>宽<input data-testid="canvas-width" type="number" min="320" max="20000" step="1" v-model.number="stageWidth" @input="canvasSizeMode = 'fixed'" @change="normalizeFixedCanvasSize('width')"></label><label>高<input data-testid="canvas-height" type="number" min="320" max="20000" step="1" v-model.number="stageHeight" @input="canvasSizeMode = 'fixed'" @change="normalizeFixedCanvasSize('height')"></label></div>
             <button class="secondary-wide" data-testid="use-screen-size" @click="useCurrentScreenSize"><Scaling />使用当前屏幕尺寸</button>
-            <label class="field hint-field">当前尺寸<span>{{ stageWidth }} × {{ stageHeight }} px</span></label>
+            <label class="field hint-field">当前尺寸<span>{{ canvasSizeMode === 'screen' ? `全屏分辨率 ${stageWidth} × ${stageHeight} px` : `${stageWidth} × ${stageHeight} px` }}</span></label>
             <h3>画布样式</h3>
             <label class="field">背景颜色<input type="color" v-model="canvasBg"></label>
             <label class="field">边框颜色<input type="color" v-model="canvasBorderColor"></label>
@@ -10089,8 +10676,22 @@ onUnmounted(() => {
     </section>
   </div>
 
-  <div v-if="showPreview" ref="previewOverlay" class="preview-overlay" :class="{ 'is-fullscreen': previewFullscreen, 'is-preparing': !previewPresentationReady }" :aria-busy="!previewPresentationReady" data-testid="preview-overlay">
-    <div class="preview-viewport-clip" data-testid="preview-viewport-clip"><div ref="previewCanvas" class="preview-canvas" :class="{ 'preview-fit': previewFittedVisible }" data-testid="preview-canvas" @scroll.passive="updatePreviewViewport"><div class="preview-stage-space" :style="{ width: stageWidth * previewRenderScale + 'px', height: stageHeight * previewRenderScale + 'px', marginLeft: previewFittedVisible ? previewFitPresentationOffset.left + 'px' : '0px', marginTop: previewFittedVisible ? previewFitPresentationOffset.top + 'px' : '0px', backgroundColor: canvasBg, boxShadow: previewFitVisible ? `inset 0 0 0 ${canvasBorderWidth * previewRenderScale}px ${canvasBorderColor}, 0 4px 18px #26323d26` : undefined }">
+  <div v-if="echartsCodeEditor.show" class="echarts-code-editor-backdrop" @pointerdown.self="closeEChartsCodeEditor">
+    <section class="echarts-code-editor-dialog" role="dialog" aria-modal="true" aria-labelledby="echarts-code-editor-title" data-testid="echarts-code-editor-dialog" @pointerdown.stop>
+      <header>
+        <div><b id="echarts-code-editor-title">编辑 ECharts 完整代码</b><span>支持直接粘贴 ECharts 官方示例代码</span></div>
+        <button type="button" title="关闭" aria-label="关闭代码编辑器" @click="closeEChartsCodeEditor"><X /></button>
+      </header>
+      <div class="echarts-code-editor-body">
+        <textarea ref="echartsCodeEditorInput" v-model="echartsCodeEditor.draft" class="echarts-code-editor-textarea" spellcheck="false" aria-label="ECharts 完整代码" placeholder="粘贴 ECharts 官方完整示例代码"></textarea>
+        <p v-if="echartsCodeEditor.error" class="echarts-code-editor-error" role="alert">{{ echartsCodeEditor.error }}</p>
+      </div>
+      <footer><span>代码将在隔离环境中运行</span><div><button type="button" class="secondary" @click="closeEChartsCodeEditor">取消</button><button type="button" class="primary" @click="applyEChartsCodeEditor">应用代码</button></div></footer>
+    </section>
+  </div>
+
+  <div v-if="showPreview" ref="previewOverlay" class="preview-overlay" :class="{ 'is-fullscreen': previewFullscreen, 'is-preparing': !previewPresentationReady, 'scroll-x': previewFullscreen && previewFullscreenScrollAxes.x, 'scroll-y': previewFullscreen && previewFullscreenScrollAxes.y }" :aria-busy="!previewPresentationReady" data-testid="preview-overlay">
+    <div class="preview-viewport-clip" data-testid="preview-viewport-clip"><div ref="previewCanvas" class="preview-canvas" :class="{ 'preview-fit': previewFittedVisible && !previewFullscreen }" data-testid="preview-canvas" @scroll.passive="updatePreviewViewport"><div class="preview-stage-space" :style="{ width: stageWidth * previewRenderScale + 'px', height: stageHeight * previewRenderScale + 'px', marginLeft: previewFittedVisible && !previewFullscreen ? previewFitPresentationOffset.left + 'px' : '0px', marginTop: previewFittedVisible && !previewFullscreen ? previewFitPresentationOffset.top + 'px' : '0px', backgroundColor: canvasBg, boxShadow: previewFitVisible ? `inset 0 0 0 ${canvasBorderWidth * previewRenderScale}px ${canvasBorderColor}, 0 4px 18px #26323d26` : undefined }">
       <MiniMapPreview v-if="previewFitMounted" ref="previewFitCanvas" class="preview-fit-canvas" :class="{ 'is-visible': previewCanvasVisible }" :active="previewCanvasRenderActive" :nodes="nodes" :edges="edges" :drawings="drawings" :node-index="nodeIndex" :ordered-entities="layerEntries" :excluded-node-ids="previewFitExcludedNodeIds" :excluded-drawing-ids="previewFitExcludedDrawingIds" :render-plan-key="previewFitPlan.key" :frame-commit-token="previewFitFrameCommitToken" :frame-commit-guard="canCommitPreviewFitFrame" :spatial-index="nodeSpatialIndex" :drawing-spatial-index="drawingSpatialIndex" :runtime-store="runtimeData" :time-context="timeRenderContext" :stage-width="stageWidth" :stage-height="stageHeight" :width="previewFitCanvasWidth" :height="previewFitCanvasHeight" :background="canvasBg" :max-bitmap-pixels="previewFitBitmapPixelBudget" :pixel-ratio="previewFitPixelRatio" :render-budget-ms="previewFitRenderBudgetMs" :respect-reduced-motion="false" fit-mode="stretch" :render-mode="previewFitRenderMode" wait-for-images incremental-runtime atomic-css-size faithful test-id="preview-fit-canvas" aria-label="图纸自适应预览" @render-complete="handlePreviewFitRenderComplete" @render-rejected="handlePreviewFitRenderRejected" @render-error="handlePreviewFitRenderError" />
       <MiniMapPreview v-if="previewEdgeCanvasBounds" ref="previewEdgeCanvas" class="preview-edge-canvas" :class="{ 'is-visible': previewEdgeCanvasVisible }" :active="previewDomEdgeCanvasActive" :style="previewEdgeCanvasFrameStyle" :nodes="previewEdgeCanvasNodes" :edges="previewEdgeCanvasEdges" :drawings="previewEdgeCanvasDrawings" :node-index="nodeIndex" :edge-spatial-index="edgeSpatialIndex" :drawing-spatial-index="drawingSpatialIndex" :spatial-index="nodeSpatialIndex" :ordered-entities="previewEdgeCanvasEntities" :excluded-node-ids="previewFitExcludedNodeIds" :excluded-drawing-ids="previewFitExcludedDrawingIds" :render-revision="projectRevision" :stage-width="stageWidth" :stage-height="stageHeight" :view-box="previewEdgeCanvasBounds" :render-plan-key="previewEdgeCanvasPlanKey" :frame-commit-guard="canCommitPreviewEdgeCanvasFrame" :width="Math.max(1, previewEdgeCanvasBounds.w)" :height="Math.max(1, previewEdgeCanvasBounds.h)" :runtime-store="runtimeData" :time-context="timeRenderContext" :background="canvasBg" :max-bitmap-pixels="previewEdgeCanvasBitmapBudget" :pixel-ratio="previewEdgeCanvasPixelRatio" :render-budget-ms="4" :respect-reduced-motion="false" fit-mode="stretch" render-mode="task" wait-for-images incremental-runtime atomic-css-size faithful test-id="preview-edge-canvas" aria-label="高清视口预览层" @render-complete="handlePreviewEdgeCanvasRenderComplete" @render-rejected="handlePreviewEdgeCanvasRenderRejected" @render-error="handlePreviewEdgeCanvasRenderError" />
       <div v-if="previewDomMounted" ref="previewDomStage" class="preview-stage" :class="{ 'is-hidden': !previewDomVisible }" data-testid="preview-dom-stage" :data-preview-ready="previewDomReady" :aria-hidden="!previewDomVisible" :inert="!previewDomVisible" :style="{ width: stageWidth + 'px', height: stageHeight + 'px', backgroundColor: previewDomEdgeCanvasActive ? 'transparent' : canvasBg, boxShadow: `inset 0 0 0 ${canvasBorderWidth}px ${canvasBorderColor}`, transform: `scale(${previewRenderScale})` }">
@@ -10161,7 +10762,7 @@ onUnmounted(() => {
   <div v-if="tableDataEditor.show && activeTableDataNode && !activeTableDataNode.locked" class="table-data-backdrop" @pointerdown.self="closeTableDataEditor">
     <section class="table-data-dialog" role="dialog" aria-modal="true" aria-labelledby="table-data-title" @pointerdown.stop @focusin.capture="beginTableFieldEdit" @focusout.capture="finishActiveFieldEdit" @input.capture="markDocumentInput" @change.capture="markDocumentInput">
       <header>
-        <div><b id="table-data-title">编辑表格</b><span>{{ activeTableDataNode.tableRows }} 行 × {{ activeTableDataNode.tableColumns }} 列</span></div>
+        <div><b id="table-data-title">编辑表格</b><span v-if="!tableEditorShowsRuntimeData || activeTableUsesRuntimeData">{{ activeTableEditorNode.tableRows }} 行 × {{ activeTableEditorNode.tableColumns }} 列</span><span v-else>暂无接口数据</span></div>
         <button @click="closeTableDataEditor" title="关闭"><X /></button>
       </header>
       <nav class="table-data-tabs">
@@ -10169,63 +10770,100 @@ onUnmounted(() => {
         <button :class="{ active: tableDataEditor.tab === 'style' }" @click="setTableDataEditorTab('style')"><Scaling />样式</button>
       </nav>
       <template v-if="tableDataEditor.tab === 'data'">
-        <div class="table-data-primary">
-          <label><span>表格标题</span><input v-model="activeTableDataNode.tableTitle" placeholder="请输入表格标题"></label>
-          <label class="table-data-toggle"><input type="checkbox" v-model="activeTableDataNode.showTableTitle"><i></i><span>显示标题</span></label>
-          <label class="table-data-toggle"><input type="checkbox" v-model="activeTableDataNode.showHeader"><i></i><span>显示表头</span></label>
-        </div>
-        <div class="table-data-toolbar">
-          <div v-if="tableDataEditor.mode === 'edit'" class="table-data-structure-actions"><button :disabled="activeTableDataNode.tableCells.length >= 50" @click="addTableRow"><Plus />添加行</button><button :disabled="activeTableDataNode.tableHeaders.length >= 12" @click="addTableColumn"><Plus />添加列</button></div>
-          <div class="table-data-mode-switch"><button :class="{ active: tableDataEditor.mode === 'edit' }" @click="setTableDataEditorMode('edit')"><Pencil />编辑数据</button><button :class="{ active: tableDataEditor.mode === 'merge' }" @click="setTableDataEditorMode('merge')"><TableCellsMerge />拖选合并</button></div>
-          <div v-if="tableDataEditor.mode === 'merge'" class="table-data-merge-actions"><output v-if="activeTableSelection">{{ activeTableSelection.rowSpan }} × {{ activeTableSelection.columnSpan }}</output><button :disabled="!activeTableSelection || activeTableSelection.cellCount < 2" @click="mergeSelectedTableCells"><TableCellsMerge />合并选区</button><button :disabled="!selectedTableMerges.length" @click="splitSelectedTableCells"><TableCellsSplit />拆分选区</button></div>
-        </div>
-        <div class="table-data-grid-wrap">
-          <div class="table-data-grid" :class="{ 'merge-mode': tableDataEditor.mode === 'merge' }" :style="{ gridTemplateColumns: tableDataGridColumns(activeTableDataNode) }" @pointermove="extendTableDataSelectionFromPointer">
-            <b class="table-data-corner" :style="{ gridRow: 1, gridColumn: 1 }">#</b>
-            <div v-for="(header, columnIndex) in activeTableDataNode.tableHeaders" :key="`data-header-${columnIndex}`" class="table-data-header" :class="{ selected: activeTableSelection?.column === columnIndex && activeTableSelection?.columnEnd === columnIndex && activeTableSelection?.row === 0 && activeTableSelection?.rowEnd === activeTableDataNode.tableRows - 1 }" :style="{ gridRow: 1, gridColumn: columnIndex + 2 }">
-              <template v-if="tableDataEditor.mode === 'edit'">
-                <div class="table-data-axis-heading"><b>第 {{ columnIndex + 1 }} 列</b><button type="button" :disabled="activeTableDataNode.tableHeaders.length <= 1" @click="deleteTableColumn(columnIndex)" title="删除此列"><Trash2 /></button></div>
-                <input v-model="activeTableDataNode.tableHeaders[columnIndex]" :aria-label="`第 ${columnIndex + 1} 列名称`" placeholder="表头内容">
-                <label class="table-data-size-field"><span>宽</span><input type="number" min="40" max="2000" step="1" v-model.number="activeTableDataNode.tableColumnWidthsPx[columnIndex]" @change="setTableColumnWidth(columnIndex, $event.target.value)"><i>px</i></label>
-              </template>
-              <button v-else type="button" class="table-data-axis-select" @click="selectTableDataColumn(columnIndex)"><b>第 {{ columnIndex + 1 }} 列</b><span>{{ header || `列 ${columnIndex + 1}` }}</span></button>
-            </div>
-            <template v-for="(row, rowIndex) in activeTableDataNode.tableCells" :key="`data-row-${rowIndex}`">
-              <div class="table-data-row-number" :class="{ selected: activeTableSelection?.row === rowIndex && activeTableSelection?.rowEnd === rowIndex && activeTableSelection?.column === 0 && activeTableSelection?.columnEnd === activeTableDataNode.tableColumns - 1 }" :style="{ gridRow: rowIndex + 2, gridColumn: 1 }">
-                <template v-if="tableDataEditor.mode === 'edit'"><div class="table-data-axis-heading"><b>第 {{ rowIndex + 1 }} 行</b><button type="button" :disabled="activeTableDataNode.tableCells.length <= 1" @click="deleteTableRow(rowIndex)" title="删除此行"><Trash2 /></button></div><label><input type="number" min="18" max="120" step="1" v-model.number="activeTableDataNode.tableRowHeights[rowIndex]" @change="setTableRowHeight(rowIndex, $event.target.value)"><span>px</span></label></template>
-                <button v-else type="button" class="table-data-axis-select" @click="selectTableDataRow(rowIndex)"><b>第 {{ rowIndex + 1 }} 行</b><span>{{ activeTableDataNode.tableRowHeights[rowIndex] }}px</span></button>
-              </div>
-              <div
-                v-for="(cell, columnIndex) in row"
-                v-show="!tableDataCellCovered(rowIndex, columnIndex)"
-                :key="`data-cell-${rowIndex}-${columnIndex}`"
-                class="table-data-cell"
-                :class="{ selected: tableDataCellSelected(rowIndex, columnIndex), merged: tableDataMergeAt(rowIndex, columnIndex) }"
-                :style="tableDataEditorCellStyle(rowIndex, columnIndex)"
-                data-table-cell
-                :data-table-row="rowIndex"
-                :data-table-column="columnIndex"
-                :role="tableDataEditor.mode === 'merge' ? 'button' : undefined"
-                :tabindex="tableDataEditor.mode === 'merge' ? 0 : undefined"
-                @pointerdown="startTableDataSelectionDrag($event, rowIndex, columnIndex)"
-                @pointerenter="extendTableDataSelectionDrag(rowIndex, columnIndex)"
-                @keydown.enter.self.prevent="selectTableDataCell(rowIndex, columnIndex)"
-                @keydown.space.self.prevent="selectTableDataCell(rowIndex, columnIndex)"
-              >
-                <input v-if="tableDataEditor.mode === 'edit'" v-model="activeTableDataNode.tableCells[rowIndex][columnIndex]" :aria-label="`第 ${rowIndex + 1} 行，${activeTableDataNode.tableHeaders[columnIndex] || `第 ${columnIndex + 1} 列`}`">
-                <span v-else class="table-data-cell-value">{{ cell || '空' }}</span>
-                <small v-if="tableDataMergeAt(rowIndex, columnIndex)" class="table-data-merge-label">{{ tableDataMergeLabel(rowIndex, columnIndex) }}</small>
-              </div>
-            </template>
+        <div class="table-data-editor" data-testid="table-data-panel">
+          <div class="table-data-primary">
+            <div class="table-data-view-switch" role="group" aria-label="表格数据视图"><button type="button" :class="{ active: !tableEditorShowsRuntimeData }" @click="setTableDataEditorView('static')">静态配置</button><button type="button" :class="{ active: tableEditorShowsRuntimeData }" @click="setTableDataEditorView('runtime')">当前接口数据</button></div>
+            <label v-if="!tableEditorShowsRuntimeData || activeTableUsesRuntimeData" data-property-target="tableTitle"><span>表格标题</span><input :value="activeTableEditorNode.tableTitle" :readonly="tableEditorShowsRuntimeData" placeholder="请输入表格标题" @input="tableDataEditorUpdateTitle($event.target.value)"></label>
+            <div v-if="!tableEditorShowsRuntimeData" class="table-runtime-data-state" role="status"><b>静态后备数据（可编辑）</b><span>接口无数据、禁用或解绑后，表格会自动恢复这里的内容</span></div>
+            <div v-else-if="activeTableUsesRuntimeData" class="table-runtime-data-state" role="status"><b>当前接口数据（内容只读）</b><span>接口内容不会写回图纸，合并布局可编辑</span></div>
           </div>
+          <div v-if="tableEditorShowsRuntimeData && !activeTableUsesRuntimeData" class="table-runtime-empty" role="status" data-testid="table-runtime-empty">
+            <HardDrive />
+            <b>{{ activeTableHasRuntimeConfiguration ? '暂未获取到接口数据' : '尚未配置接口数据' }}</b>
+            <span>{{ activeTableHasRuntimeConfiguration ? '接口已配置，请检查连接状态或等待数据返回。' : '请先配置表格接口数据，再查看当前接口内容。' }}</span>
+            <button type="button" @click="openTableCommunicationSettings"><HardDrive />{{ activeTableHasRuntimeConfiguration ? '检查接口配置' : '配置接口' }}</button>
+          </div>
+          <template v-else>
+            <div class="table-data-toolbar">
+              <div v-if="!tableEditorShowsRuntimeData && tableDataEditor.mode === 'edit'" class="table-data-structure-actions"><button :disabled="activeTableDataNode.tableCells.length >= 50" @click="addTableRow"><Plus />添加行</button><button :disabled="activeTableDataNode.tableHeaders.length >= 12" @click="addTableColumn"><Plus />添加列</button></div>
+              <div class="table-data-mode-switch"><button :class="{ active: tableDataEditor.mode === 'edit' }" @click="setTableDataEditorMode('edit')"><Pencil />{{ tableEditorShowsRuntimeData ? '查看数据' : '编辑数据' }}</button><button :class="{ active: tableDataEditor.mode === 'merge' }" @click="setTableDataEditorMode('merge')"><TableCellsMerge />拖选合并</button></div>
+              <div v-if="tableDataEditor.mode === 'merge'" class="table-data-merge-actions" :class="{ 'is-ready': tableSelectionMergeReady }" aria-live="polite">
+                <output v-if="activeTableSelection">已选 {{ activeTableSelection.rowSpan }} × {{ activeTableSelection.columnSpan }}</output>
+                <button class="table-data-merge-primary" :disabled="!tableSelectionMergeReady" @click="mergeSelectedTableCells"><TableCellsMerge /><template v-if="tableSelectionMergeReady">合并 {{ activeTableSelection.rowSpan }} × {{ activeTableSelection.columnSpan }} 选区</template><template v-else-if="tableSelectionMergeConflict">先拆分冲突区域</template><template v-else-if="activeTableSelection && activeTableSelection.cellCount > 1">选区已合并</template><template v-else>合并选区</template></button>
+                <button :disabled="!selectedTableMerges.length" @click="splitSelectedTableCells"><TableCellsSplit />拆分选区</button>
+              </div>
+            </div>
+            <div class="table-data-grid-wrap">
+              <div class="table-data-grid" :class="{ 'merge-mode': tableDataEditor.mode === 'merge' }" :style="{ gridTemplateColumns: tableDataGridColumns(activeTableEditorNode) }" @pointermove="extendTableDataSelectionFromPointer($event)">
+              <b class="table-data-corner" :style="{ gridRow: 1, gridColumn: 1 }">#</b>
+              <div v-for="(header, columnIndex) in activeTableEditorNode.tableHeaders" :key="`data-header-${columnIndex}`" class="table-data-header" :class="{ selected: activeTableSelection?.column === columnIndex && activeTableSelection?.columnEnd === columnIndex && activeTableSelection?.row === 0 && activeTableSelection?.rowEnd === activeTableEditorNode.tableRows - 1 }" :style="{ gridRow: 1, gridColumn: columnIndex + 2 }">
+                <template v-if="tableDataEditor.mode === 'edit'">
+                  <div class="table-data-axis-heading"><b>第 {{ columnIndex + 1 }} 列</b><button v-if="!tableEditorShowsRuntimeData" type="button" :disabled="activeTableDataNode.tableHeaders.length <= 1" @click="deleteTableColumn(columnIndex)" title="删除此列"><Trash2 /></button></div>
+                  <input :value="header" :readonly="tableEditorShowsRuntimeData" :aria-label="`第 ${columnIndex + 1} 列名称`" placeholder="表头内容" data-property-target="tableHeaders" @input="tableDataEditorUpdateHeader(columnIndex, $event.target.value)">
+                </template>
+                <button v-else type="button" class="table-data-axis-select" @click="selectTableDataColumn(columnIndex)"><b>第 {{ columnIndex + 1 }} 列</b><span>{{ header || `列 ${columnIndex + 1}` }}</span></button>
+              </div>
+              <template v-for="(row, rowIndex) in activeTableEditorNode.tableCells" :key="`data-row-${rowIndex}`">
+                <div class="table-data-row-number" :class="{ selected: activeTableSelection?.row === rowIndex && activeTableSelection?.rowEnd === rowIndex && activeTableSelection?.column === 0 && activeTableSelection?.columnEnd === activeTableEditorNode.tableColumns - 1 }" :style="{ gridRow: rowIndex + 2, gridColumn: 1 }">
+                  <template v-if="tableDataEditor.mode === 'edit'"><div class="table-data-axis-heading"><b>第 {{ rowIndex + 1 }} 行</b><button v-if="!tableEditorShowsRuntimeData" type="button" :disabled="activeTableDataNode.tableCells.length <= 1" @click="deleteTableRow(rowIndex)" title="删除此行"><Trash2 /></button></div></template>
+                  <button v-else type="button" class="table-data-axis-select" @click="selectTableDataRow(rowIndex)"><b>第 {{ rowIndex + 1 }} 行</b><span>选择整行</span></button>
+                </div>
+                <div
+                  v-for="(cell, columnIndex) in row"
+                  v-show="!tableDataCellCovered(rowIndex, columnIndex)"
+                  :key="`data-cell-${rowIndex}-${columnIndex}`"
+                  class="table-data-cell"
+                  :class="{ selected: tableDataCellSelected(rowIndex, columnIndex), merged: tableDataMergeAt(rowIndex, columnIndex) }"
+                  :style="tableDataEditorCellStyle(rowIndex, columnIndex)"
+                  data-table-cell
+                  :data-table-row="rowIndex"
+                  :data-table-column="columnIndex"
+                  :role="tableDataEditor.mode === 'merge' ? 'button' : undefined"
+                  :tabindex="tableDataEditor.mode === 'merge' ? 0 : undefined"
+                  @pointerdown="startTableDataSelectionDrag($event, rowIndex, columnIndex)"
+                  @pointerenter="extendTableDataSelectionDrag(rowIndex, columnIndex)"
+                  @keydown.enter.self.prevent="selectTableDataCell(rowIndex, columnIndex)"
+                  @keydown.space.self.prevent="selectTableDataCell(rowIndex, columnIndex)"
+                >
+                  <input v-if="tableDataEditor.mode === 'edit'" :value="cell" :readonly="tableEditorShowsRuntimeData" :aria-label="`第 ${rowIndex + 1} 行，${activeTableEditorNode.tableHeaders[columnIndex] || `第 ${columnIndex + 1} 列`}`" data-property-target="tableCells" @input="tableDataEditorUpdateCell(rowIndex, columnIndex, $event.target.value)">
+                  <span v-else class="table-data-cell-value">{{ cell || '空' }}</span>
+                  <small v-if="tableDataMergeAt(rowIndex, columnIndex)" class="table-data-merge-label">{{ tableDataMergeLabel(rowIndex, columnIndex) }}</small>
+                </div>
+              </template>
+              </div>
+            </div>
+          </template>
         </div>
       </template>
-      <div v-else class="table-style-editor">
-        <section><h3>尺寸</h3><div class="table-style-editor-fields"><label><span>宽度</span><span class="table-data-number"><input type="number" min="1" :max="MAX_EDITOR_STAGE_SIZE" step="1" v-model.number="activeTableDataNode.w" @change="normalizeSelectedNodeGeometry()" @blur="normalizeSelectedNodeGeometry()"><i>px</i></span></label><label><span>高度</span><span class="table-data-number"><input type="number" min="1" :max="MAX_EDITOR_STAGE_SIZE" step="1" v-model.number="activeTableDataNode.h" @change="normalizeSelectedNodeGeometry()" @blur="normalizeSelectedNodeGeometry()"><i>px</i></span></label></div></section>
-        <section><h3>颜色</h3><div class="table-style-editor-fields"><label><span>标题背景</span><input type="color" v-model="activeTableDataNode.tableTitleFill"></label><label><span>表头背景</span><input type="color" v-model="activeTableDataNode.tableHeaderFill"></label><label><span>内容背景</span><input type="color" v-model="activeTableDataNode.tableRowFill"></label><label><span>内容文字</span><input type="color" v-model="activeTableDataNode.tableCellColor"></label></div></section>
+      <div v-else class="table-style-editor" data-testid="table-style-panel">
+        <section><h3>整体与显示</h3><div class="table-style-editor-fields">
+          <label><span>宽度</span><span class="table-data-number"><input type="number" min="1" :max="MAX_EDITOR_STAGE_SIZE" step="1" v-model.number="activeTableDataNode.w" @change="normalizeSelectedNodeGeometry()" @blur="normalizeSelectedNodeGeometry()"><i>px</i></span></label>
+          <label><span>高度</span><span class="table-data-number"><input type="number" min="1" :max="MAX_EDITOR_STAGE_SIZE" step="1" v-model.number="activeTableDataNode.h" @change="normalizeSelectedNodeGeometry()" @blur="normalizeSelectedNodeGeometry()"><i>px</i></span></label>
+          <label><span>整体透明度</span><span class="table-style-range"><input type="range" min="0.1" max="1" step="0.05" v-model.number="activeTableDataNode.opacity"><i>{{ Math.round((activeTableDataNode.opacity ?? 1) * 100) }}%</i></span></label>
+          <label class="table-style-toggle"><input type="checkbox" v-model="activeTableDataNode.showTableTitle"><i></i><span>显示标题</span></label>
+          <label class="table-style-toggle"><input type="checkbox" v-model="activeTableDataNode.showHeader"><i></i><span>显示表头</span></label>
+          <label class="table-style-toggle"><input type="checkbox" v-model="activeTableDataNode.borderVisible"><i></i><span>显示边框</span></label>
+          <label class="table-style-toggle"><input type="checkbox" v-model="activeTableDataNode.tableScrollX"><i></i><span>横向滚动</span></label>
+          <label class="table-style-toggle"><input type="checkbox" v-model="activeTableDataNode.tableScrollY"><i></i><span>纵向滚动</span></label>
+        </div></section>
+        <section><h3>标题样式</h3><div class="table-style-editor-fields">
+          <label><span>背景颜色</span><input type="color" v-model="activeTableDataNode.tableTitleFill"></label><label><span>文字颜色</span><input type="color" v-model="activeTableDataNode.tableTitleColor"></label><label><span>字体大小</span><span class="table-data-number"><input type="number" min="8" max="48" step="1" v-model.number="activeTableDataNode.tableTitleSize"><i>px</i></span></label><label><span>字体粗细</span><select v-model="activeTableDataNode.tableTitleWeight"><option value="400">常规</option><option value="600">中粗</option><option value="700">粗体</option></select></label><label><span>对齐方式</span><select v-model="activeTableDataNode.tableTitleAlign"><option value="left">左对齐</option><option value="center">居中</option><option value="right">右对齐</option></select></label>
+        </div></section>
+        <section><h3>表头样式</h3><div class="table-style-editor-fields">
+          <label><span>背景颜色</span><input type="color" v-model="activeTableDataNode.tableHeaderFill"></label><label><span>文字颜色</span><input type="color" v-model="activeTableDataNode.tableHeaderColor"></label><label><span>字体大小</span><span class="table-data-number"><input type="number" min="8" max="48" step="1" v-model.number="activeTableDataNode.tableHeaderSize"><i>px</i></span></label><label><span>字体粗细</span><select v-model="activeTableDataNode.tableHeaderWeight"><option value="400">常规</option><option value="600">中粗</option><option value="700">粗体</option></select></label><label><span>对齐方式</span><select v-model="activeTableDataNode.tableHeaderAlign"><option value="left">左对齐</option><option value="center">居中</option><option value="right">右对齐</option></select></label><label><span>表头高度</span><span class="table-data-number"><input type="number" min="18" max="120" step="1" v-model.number="activeTableDataNode.tableHeaderHeight"><i>px</i></span></label>
+        </div></section>
+        <section><h3>内容样式</h3><div class="table-style-editor-fields">
+          <label><span>奇数行背景</span><input type="color" v-model="activeTableDataNode.tableRowFill"></label><label><span>偶数行背景</span><input type="color" v-model="activeTableDataNode.tableAltRowFill"></label><label><span>文字颜色</span><input type="color" v-model="activeTableDataNode.tableCellColor"></label><label><span>字体大小</span><span class="table-data-number"><input type="number" min="8" max="48" step="1" v-model.number="activeTableDataNode.tableCellSize"><i>px</i></span></label><label><span>字体粗细</span><select v-model="activeTableDataNode.tableCellWeight"><option value="400">常规</option><option value="600">中粗</option><option value="700">粗体</option></select></label><label><span>对齐方式</span><select v-model="activeTableDataNode.tableTextAlign"><option value="left">左对齐</option><option value="center">居中</option><option value="right">右对齐</option></select></label><label><span>内容显示</span><select v-model="activeTableDataNode.tableContentDisplay"><option value="wrap">自适应换行</option><option value="ellipsis">缩略展示</option></select></label><label><span>统一行高</span><span class="table-data-number"><input type="number" min="18" max="120" step="1" v-model.number="activeTableDataNode.tableRowHeight" @input="syncAllTableRowHeights($event.target.value)"><i>px</i></span></label>
+        </div></section>
+        <section><h3>列宽</h3><div class="table-style-size-list">
+          <label v-for="(width, columnIndex) in activeTableDataNode.tableColumnWidthsPx" :key="`style-column-${columnIndex}`"><span>第 {{ columnIndex + 1 }} 列</span><span class="table-data-number"><input type="number" min="40" max="2000" step="1" :value="width" @change="setTableColumnWidth(columnIndex, $event.target.value)"><i>px</i></span></label>
+        </div></section>
+        <section><h3>逐行高度</h3><div class="table-style-size-list">
+          <label v-for="(height, rowIndex) in activeTableDataNode.tableRowHeights" :key="`style-row-${rowIndex}`"><span>第 {{ rowIndex + 1 }} 行</span><span class="table-data-number"><input type="number" min="18" max="120" step="1" :value="height" @change="setTableRowHeight(rowIndex, $event.target.value)"><i>px</i></span></label>
+        </div></section>
         <section><h3>边框</h3><div class="table-style-editor-fields"><label><span>外框颜色</span><input type="color" v-model="activeTableDataNode.tableBorderColor"></label><label><span>外框粗细</span><span class="table-data-number"><input type="number" min="0" max="20" step="0.1" v-model.number="activeTableDataNode.tableBorderWidth"><i>px</i></span></label><label><span>外框样式</span><select v-model="activeTableDataNode.tableBorderStyle"><option value="solid">实线</option><option value="dashed">虚线</option><option value="dotted">点线</option></select></label><label><span>内框颜色</span><input type="color" v-model="activeTableDataNode.tableGridColor"></label><label><span>内框粗细</span><span class="table-data-number"><input type="number" min="0" max="10" step="0.1" v-model.number="activeTableDataNode.tableGridWidth"><i>px</i></span></label><label><span>内框样式</span><select v-model="activeTableDataNode.tableGridStyle"><option value="solid">实线</option><option value="dashed">虚线</option><option value="dotted">点线</option></select></label></div></section>
       </div>
-      <footer><span v-if="tableDataEditor.tab === 'data' && tableDataEditor.mode === 'merge' && activeTableSelection">选区 {{ activeTableSelection.rowSpan }} × {{ activeTableSelection.columnSpan }}</span><span v-else-if="tableDataEditor.tab === 'data' && tableDataEditor.mode === 'merge'">拖选合并模式</span><span v-else>{{ activeTableDataNode.tableRows }} 行 × {{ activeTableDataNode.tableColumns }} 列</span><button @click="closeTableDataEditor">完成</button></footer>
+      <footer><span v-if="tableDataEditor.tab === 'data' && tableEditorShowsRuntimeData && !activeTableUsesRuntimeData">{{ activeTableHasRuntimeConfiguration ? '接口数据暂不可用' : '尚未配置接口数据' }}</span><span v-else-if="tableDataEditor.tab === 'data' && tableDataEditor.mode === 'merge' && activeTableSelection">已选 {{ activeTableSelection.rowSpan }} × {{ activeTableSelection.columnSpan }}</span><span v-else-if="tableDataEditor.tab === 'data' && tableDataEditor.mode === 'merge'">拖选合并模式</span><span v-else>{{ activeTableEditorNode.tableRows }} 行 × {{ activeTableEditorNode.tableColumns }} 列</span><button v-if="tableDataEditor.tab === 'data' && tableDataEditor.mode === 'merge' && tableSelectionMergeReady" class="table-data-finish-merge" @click="mergeSelectedTableCellsAndClose"><TableCellsMerge />合并并完成</button><button v-else @click="closeTableDataEditor">完成</button></footer>
     </section>
   </div>
 

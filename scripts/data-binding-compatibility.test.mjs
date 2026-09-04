@@ -193,14 +193,23 @@ test('point type and stale/offline status labels are explicit', () => {
 })
 
 test('component schema removes only clearly ineffective entries and preserves existing targets', () => {
-  const commonTargets = ['fill', 'stroke', 'opacity', 'text', 'animationPlaying', 'animationDuration']
+  const commonTargets = ['fill', 'stroke', 'opacity', 'text', 'visible']
   assert.ok(commonTargets.every(target => getBindableParameter('table', target)))
-  assert.ok(getBindableParameter('progress', 'text'))
+  assert.equal(getBindableParameter('table', 'animationPlaying'), undefined)
+  assert.equal(getBindableParameter('table', 'animationDuration'), undefined)
+  assert.equal(getBindableParameter('flowPipe', 'animationPlaying')?.valueType, 'boolean')
+  assert.equal(getBindableParameter('customMotion', 'animationDuration')?.max, 20)
+  assert.equal(getBindableParameter('progress', 'text'), undefined)
   assert.equal(getBindableParameter('pencil', 'fill'), undefined)
   assert.equal(getBindableParameter('pencil', 'stroke'), undefined)
   assert.equal(getBindableParameter('polyline', 'fill'), undefined)
   assert.equal(getBindableParameter('polyline', 'stroke')?.valueType, 'color')
-  for (const type of ['flowPipe', 'rotatingFan', 'signalLight', 'waterTank', 'heartbeat', 'particles']) {
+  for (const type of [
+    'lineShape', 'image', 'video', 'pencil', 'polyline', 'flowDirection',
+    'input', 'select', 'time', 'formProgress', 'progress',
+    'flowPipe', 'rotatingFan', 'signalLight', 'waterTank', 'heartbeat', 'particles',
+    'customMotion', 'customImageMotion', 'customIndicator'
+  ]) {
     assert.equal(getBindableParameter(type, 'text'), undefined, `${type} must not expose text that it never renders`)
   }
 

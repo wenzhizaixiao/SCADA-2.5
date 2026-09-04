@@ -4,6 +4,7 @@ import test from 'node:test'
 
 const appSource = readFileSync(new URL('../src/App.vue', import.meta.url), 'utf8')
 const enhancementCss = readFileSync(new URL('../src/enhancements.css', import.meta.url), 'utf8')
+const nodeVisualSource = readFileSync(new URL('../src/components/NodeVisual.vue', import.meta.url), 'utf8')
 
 function sourceBetween(source, startMarker, endMarker) {
   const start = source.indexOf(startMarker)
@@ -13,104 +14,74 @@ function sourceBetween(source, startMarker, endMarker) {
   return source.slice(start, end)
 }
 
-function interactionAnimationHarness() {
-  const source = sourceBetween(
+test('ordinary components no longer expose or execute generic animation effects', () => {
+  assert.doesNotMatch(appSource, /INTERACTION_ANIMATION_OPTIONS/)
+  assert.doesNotMatch(appSource, /supportsInteractionAnimation/)
+  assert.doesNotMatch(appSource, /interaction-animation-select/)
+  assert.doesNotMatch(appSource, />交互动画</)
+  assert.match(nodeVisualSource, /isAnimationComponentType\(node\.value\?\.type\)/)
+  assert.match(nodeVisualSource, /animationComponentActive/)
+})
+
+test('built-in and custom animation categories keep their dedicated controls', () => {
+  assert.match(appSource, /selectedCategory === '动效组件'/)
+  assert.match(appSource, /<h3>动效属性<\/h3>/)
+  assert.match(appSource, /selectedCategory === '自定义动效'/)
+  assert.match(appSource, /<h3>自定义动效<\/h3>/)
+})
+
+test('every component exposes the same static visibility property used by communication binding', () => {
+  assert.match(appSource, /显示组件<input type="checkbox" v-model="selected\.visible"/)
+  assert.match(nodeVisualSource, /v-show="node\.visible !== false"/)
+})
+
+test('every communication parameter is gated by a matching property editor contract and wired to a real control', () => {
+  assert.match(appSource, /import \{ getPropertyEditorContract \} from '\.\/config\/componentPropertyContracts'/)
+  assert.match(
     appSource,
-    'const INTERACTION_ANIMATION_OPTIONS',
-    'function normalizeBuiltInAnimationDuration'
+    /getBindableParameters\(selected\.value\)[\s\S]*?filter\(parameter => getPropertyEditorContract\(selected\.value, parameter\.target\)\)/
   )
-  return new Function(
-    'formTypeIds',
-    'BUILT_IN_ANIMATION_OPTIONS',
-    `${source}\nreturn { interactionAnimationOptions, supportsInteractionAnimation }`
-  )(
-    new Set(['input', 'select', 'button']),
-    { flowPipe: [{ value: 'flow' }], signalLight: [{ value: 'blink' }] }
-  )
-}
 
-test('offers only animation effects that each component can visibly render', () => {
-  const { interactionAnimationOptions } = interactionAnimationHarness()
-  const values = type => interactionAnimationOptions({ type }).map(option => option.value)
-
-  assert.deepEqual(values('rect'), ['none', 'pulse', 'float'])
-  assert.deepEqual(values('cloud'), ['none', 'pulse', 'float'])
-  assert.deepEqual(values('network'), ['none', 'pulse', 'float'])
-  assert.deepEqual(values('router'), ['none', 'pulse', 'float'])
-  assert.deepEqual(values('chart'), ['none', 'pulse', 'float', 'flow'])
-  assert.deepEqual(values('gauge'), ['none', 'pulse', 'float', 'flow'])
-  assert.deepEqual(values('server'), ['none', 'pulse', 'float', 'blink'])
-})
-
-test('exposes interaction animation by node capability instead of broad catalog exclusions', () => {
-  const { supportsInteractionAnimation } = interactionAnimationHarness()
-
-  for (const type of ['rect', 'chart', 'gauge', 'server', 'cloud', 'network', 'router']) {
-    assert.equal(supportsInteractionAnimation({ type }), true, `${type} should expose interaction animation`)
+  for (const target of [
+    'fill',
+    'stroke',
+    'opacity',
+    'text',
+    'visible',
+    'animationPlaying',
+    'animationDuration',
+    'tableRowFill',
+    'tableBorderColor',
+    'tableTitle',
+    'tableHeaders',
+    'tableCells',
+    'tableData',
+    'checked',
+    'value',
+    'progressValue',
+    'visualPrimaryColor',
+    'polylineColor',
+    'chartData',
+    'signalOpacity'
+  ]) {
+    assert.match(
+      appSource,
+      new RegExp(`(?:data-property-target="${target}"|data-property-targets="[^"]*\\b${target}\\b[^"]*")`),
+      `missing property control for communication target ${target}`
+    )
   }
-  for (const type of ['pencil', 'input', 'flowPipe', 'signalLight', 'customShapeMotion']) {
-    assert.equal(supportsInteractionAnimation({ type }), false, `${type} should use its specialized properties`)
-  }
+
+  assert.match(appSource, /v-for="parameter in selectedSignalColorParameters"[\s\S]*?:data-property-target="parameter\.target"/)
 })
 
-test('commits a validated selection and refreshes cached canvas visuals', () => {
-  const setterSource = sourceBetween(appSource, 'function setInteractionAnimation', 'function normalizeWaterTankProgress')
-  const refreshes = []
-  const allowedValues = {
-    rect: ['none', 'pulse', 'float'],
-    chart: ['none', 'pulse', 'float', 'flow']
-  }
-  const setInteractionAnimation = new Function(
-    'supportsInteractionAnimation',
-    'interactionAnimationOptions',
-    'refreshBuiltInAnimation',
-    `${setterSource}\nreturn setInteractionAnimation`
-  )(
-    node => Boolean(allowedValues[node?.type]),
-    node => allowedValues[node.type].map(value => ({ value })),
-    node => refreshes.push(node)
-  )
+test('keeps the time binding fallback editable while live time sources are active', () => {
+  const setter = sourceBetween(appSource, 'function setTimeStaticValue', 'function setTimeFormat')
+  const timeProperty = appSource.match(/<label class="field" data-property-target="value">\{\{ selected\.timeMode[\s\S]*?<\/label>/)?.[0] || ''
 
-  const rect = { type: 'rect', animation: 'none', animationPaused: true }
-  setInteractionAnimation(rect, 'float')
-  assert.equal(rect.animation, 'float')
-  assert.equal(rect.animationPaused, false)
-  assert.deepEqual(refreshes, [rect])
-
-  const chart = { type: 'chart', animation: 'flow', animationPaused: false }
-  setInteractionAnimation(chart, 'blink')
-  assert.equal(chart.animation, 'none', 'unsupported values must fall back to a visible state')
-  assert.equal(refreshes.at(-1), chart)
-
-  const locked = { type: 'rect', animation: 'none', animationPaused: true, locked: true }
-  setInteractionAnimation(locked, 'pulse')
-  assert.deepEqual(locked, { type: 'rect', animation: 'none', animationPaused: true, locked: true })
-})
-
-test('wires the property select through the explicit animation setter', () => {
-  const template = sourceBetween(
-    appSource,
-    '<template v-if="supportsInteractionAnimation(selected)">',
-    '</template>'
-  )
-
-  assert.match(template, /data-testid="interaction-animation-select"/)
-  assert.match(template, /:value="selected\.animation"/)
-  assert.match(template, /@change="setInteractionAnimation\(selected, \$event\.target\.value\)"/)
-  assert.match(template, /v-for="option in interactionAnimationOptions\(selected\)"/)
-  assert.doesNotMatch(template, /v-model="selected\.animation"/)
-})
-
-test('places interaction animation directly after basic properties', () => {
-  const basicProperties = appSource.indexOf("<h3>{{ selected.type === 'lineShape' ? '线条尺寸'")
-  const interactionAnimation = appSource.indexOf('<template v-if="supportsInteractionAnimation(selected)">')
-  const pencilEditor = appSource.indexOf('<template v-if="selected.type === \'pencil\'">', interactionAnimation)
-  const textEditor = appSource.indexOf('<h3>文字编辑</h3>', interactionAnimation)
-
-  assert.ok(basicProperties >= 0, 'expected the basic property section')
-  assert.ok(interactionAnimation > basicProperties, 'interaction animation should follow basic properties')
-  assert.ok(pencilEditor > interactionAnimation, 'interaction animation should precede pencil editing')
-  assert.ok(textEditor > interactionAnimation, 'interaction animation should precede text editing')
+  assert.match(setter, /node\.defaultValue = text/)
+  assert.match(setter, /if \(!node\.timeUseServer && !node\.timeRunning\) node\.value = text/)
+  assert.doesNotMatch(setter, /\|\| node\.timeUseServer \|\| node\.timeRunning/)
+  assert.doesNotMatch(timeProperty, /:disabled=/)
 })
 
 test('preserves property scroll while choosing an animation and leaves room for the last control', () => {

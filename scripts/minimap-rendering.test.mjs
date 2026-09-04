@@ -1580,7 +1580,7 @@ test('uses a bounded faithful canvas with a controlled live DOM preview handoff'
   assert.match(adaptiveCanvas, /:height="previewFitCanvasHeight"/)
   assert.match(adaptiveCanvas, /:pixel-ratio="previewFitPixelRatio"/)
   assert.doesNotMatch(adaptiveCanvas, /transform:\s*`scale/)
-  assert.match(appSource, /const previewFitCanvasScale = computed\(\(\) => \(previewFitLayoutRequested\.value \|\| previewFittedVisible\.value\) \? previewFitScale\.value : 1\)/)
+  assert.match(appSource, /const previewFitCanvasScale = computed\(\(\) => previewFullscreen\.value\s*\? 1\s*: \(\(previewFitLayoutRequested\.value \|\| previewFittedVisible\.value\) \? previewFitScale\.value : 1\)/)
   assert.match(appSource, /const previewFitCanvasWidth = computed\(\(\) => Math\.max\(1, stageWidth\.value \* previewFitCanvasScale\.value\)\)/)
   assert.match(appSource, /const previewFitCanvasHeight = computed\(\(\) => Math\.max\(1, stageHeight\.value \* previewFitCanvasScale\.value\)\)/)
   assert.match(appSource, /const previewFitPixelRatio = computed\(\(\) => previewBitmapPixelRatio\(previewDevicePixelRatio\.value\)\)/)

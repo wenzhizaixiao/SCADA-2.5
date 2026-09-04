@@ -216,10 +216,12 @@ test('App scopes activation to projectId and only activates data collection for 
   assert.match(blankPaper, /resetToBlankProject\(\)/)
   assert.match(blankPaper, /activateCurrentDrawingPointCatalog\(\{\s*inheritLegacyWorkspace:\s*false\s*\}\)/)
 
-  const mounted = appSource.slice(
-    appSource.indexOf('onMounted(async () => {'),
-    appSource.indexOf('onUnmounted(() => {')
-  )
+  const startupRestoreAt = appSource.indexOf('let restored = await restoreWorkspacePaperSessions()')
+  const mountedStart = appSource.lastIndexOf('onMounted(async () => {', startupRestoreAt)
+  const mountedEnd = appSource.indexOf('onUnmounted(() => {', startupRestoreAt)
+  assert.ok(startupRestoreAt >= 0, 'expected the main startup restoration flow')
+  assert.ok(mountedStart >= 0 && mountedEnd > mountedStart, 'expected the main component lifecycle hooks')
+  const mounted = appSource.slice(mountedStart, mountedEnd)
   const restoreIndex = mounted.indexOf('restoreWorkspacePaperSessions()')
   assert.ok(restoreIndex >= 0, 'startup must restore the active paper before selecting a source scope')
   assert.doesNotMatch(mounted.slice(0, restoreIndex), /activate(?:PointCatalog|CurrentDrawingPointCatalog)/)

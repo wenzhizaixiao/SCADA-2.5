@@ -97,7 +97,7 @@ function assertClose(actual, expected, epsilon = 1e-10) {
 test('keeps straight line in basic shapes and polyline alone in its own category', () => {
   const groups = createComponentGroups()
   const basicShapes = groups.find(group => group.name === '基本形状')
-  const polylineGroup = groups.find(group => group.name === '线段')
+  const polylineGroup = groups.find(group => group.name === '线段组件')
 
   assert.ok(basicShapes)
   assert.ok(polylineGroup)
@@ -107,11 +107,11 @@ test('keeps straight line in basic shapes and polyline alone in its own category
     { type: 'polyline', name: '线段' }
   ])
   assert.equal(COMPONENT_CATEGORY_BY_TYPE.get('lineShape'), '基本形状')
-  assert.equal(COMPONENT_CATEGORY_BY_TYPE.get('polyline'), '线段')
+  assert.equal(COMPONENT_CATEGORY_BY_TYPE.get('polyline'), '线段组件')
 
   const secondCatalog = createComponentGroups()
   assert.notStrictEqual(groups, secondCatalog)
-  assert.notStrictEqual(polylineGroup.items, secondCatalog.find(group => group.name === '线段').items)
+  assert.notStrictEqual(polylineGroup.items, secondCatalog.find(group => group.name === '线段组件').items)
 })
 
 test('normalizes polyline points, width, endpoint markers, and independent arrays', () => {
@@ -482,7 +482,7 @@ test('routes clicks over nodes, drawings, and locked badges into the active poly
   assert.ok(nodePointerDown.indexOf('addPolylinePoint(e)') < nodePointerDown.indexOf('consumeTableDoublePointerDown'))
   assert.ok(drawingPointerDown.indexOf('addPolylinePoint(e)') < drawingPointerDown.indexOf('moveDrawing'))
   assert.match(lockedBadge, /isPolylineNodeType\(activeTool\.value\)\) addPolylinePoint\(e\)/)
-  assert.match(appSource, /function canStartNodeTextEdit\(node\)[\s\S]*?!\['lineShape', 'pencil'\]\.includes\(node\.type\) && !isPolylineNodeType\(node\.type\)/)
+  assert.match(appSource, /function canStartNodeTextEdit\(node\)[\s\S]*?!\['lineShape', 'pencil'\]\.includes\(node\.type\)[\s\S]*?!isPolylineNodeType\(node\.type\)/)
 })
 
 test('renders every start and end arrow combination independently', async () => {
@@ -549,7 +549,7 @@ test('orders shared straight-line controls before polyline-only controls', () =>
   const lineControls = sourceBetween(
     appSource,
     '<template v-if="selected.type === \'lineShape\'">',
-    '<template v-else-if="![\'table\',\'pencil\',\'polyline\',\'flowDirection\'].includes(selected.type)">'
+    '<template v-else-if="selected.type === \'table\'">'
   )
   const labels = source => [...source.matchAll(/<label[^>]*>([^<]+)/g)].map(match => match[1])
   const sharedLabels = [

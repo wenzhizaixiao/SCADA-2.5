@@ -1,3 +1,8 @@
+import {
+  MAX_RUNTIME_TABLE_COLUMNS,
+  MAX_RUNTIME_TABLE_ROWS
+} from '../models/dataBindingModel.js'
+
 export const TABLE_VIRTUALIZATION_CELL_THRESHOLD = 120
 export const TABLE_VIRTUALIZATION_OVERSCAN_ROWS = 2
 export const TABLE_VIRTUALIZATION_OVERSCAN_COLUMNS = 1
@@ -94,7 +99,9 @@ function normalizedWindow(window, rows, columns, headerOffset) {
 function validTableMerges(node, rows, columns) {
   const occupied = new Set()
   const merges = []
-  const source = Array.isArray(node.tableMerges) ? node.tableMerges.slice(0, rows * columns) : []
+  const source = Array.isArray(node.tableMerges)
+    ? node.tableMerges.slice(0, MAX_RUNTIME_TABLE_ROWS * MAX_RUNTIME_TABLE_COLUMNS)
+    : []
   for (const item of source) {
     const row = Math.floor(Number(item?.row))
     const column = Math.floor(Number(item?.column))

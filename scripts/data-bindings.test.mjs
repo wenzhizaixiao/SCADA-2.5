@@ -7,6 +7,8 @@ import {
   getBindableParameters,
   isBindingTargetAllowed
 } from '../src/config/componentBindingSchema.js'
+import { isAnimationComponentType } from '../src/config/componentCapabilities.js'
+import { COMPONENT_CATEGORY_BY_TYPE } from '../src/config/componentCatalog.js'
 import {
   MAX_NODE_DATA_BINDINGS,
   MAX_RUNTIME_TABLE_COLUMNS,
@@ -16,6 +18,7 @@ import {
   bindingPointIds,
   findBinding,
   normalizeDataBindings,
+  removeChartSeriesBindings,
   removeDataBinding,
   resolveBindingValue,
   resolveNodeBindingValue,
@@ -37,15 +40,40 @@ function projectWithNode(node) {
 }
 
 test('binding schema exposes common and component-specific parameters from one whitelist', () => {
-  const commonTargets = ['fill', 'stroke', 'opacity', 'text', 'animationPlaying', 'animationDuration']
+  const commonTargets = ['fill', 'stroke', 'opacity', 'text', 'visible']
   const rectangleTargets = bindingParametersForType('rect').map(item => item.target)
   const tableTargets = bindingParametersForType('table').map(item => item.target)
-  const chartTargets = bindingParametersForType('chart').map(item => item.target)
+  const chartTargets = bindingParametersForType('barChart').map(item => item.target)
+  const lineChartTargets = bindingParametersForType('lineChart').map(item => item.target)
+  const scatterChartTargets = bindingParametersForType('scatterChart').map(item => item.target)
+  const radarChartTargets = bindingParametersForType('radarChart').map(item => item.target)
+  const echartsCodeTargets = bindingParametersForType('echartsCode').map(item => item.target)
+  const flowPipeTargets = bindingParametersForType('flowPipe').map(item => item.target)
+  const customMotionTargets = bindingParametersForType('customMotion').map(item => item.target)
 
   assert.deepEqual(rectangleTargets, commonTargets)
   assert.ok(commonTargets.every(target => isBindingTargetAllowed('table', target)))
+  assert.equal(bindingParameterFor('rect', 'animationPlaying'), undefined)
+  assert.equal(bindingParameterFor('rect', 'animationDuration'), undefined)
+  assert.ok(['animationPlaying', 'animationDuration'].every(target => flowPipeTargets.includes(target)))
+  assert.ok(['animationPlaying', 'animationDuration'].every(target => customMotionTargets.includes(target)))
+  assert.equal(bindingParameterFor('rect', 'visible')?.valueType, 'boolean')
+  assert.equal(bindingParameterFor('rect', 'visible')?.label, '显示组件')
   assert.ok(tableTargets.includes('tableData'))
-  assert.ok(chartTargets.includes('chartData'))
+  assert.ok([
+    'chartTitle', 'chartSeriesName', 'chartLabels', 'chartData', 'chartColor',
+    'chartShowLegend', 'chartShowTooltip', 'chartShowGrid'
+  ].every(target => chartTargets.includes(target)))
+  assert.ok([
+    'chartSeries.0.name', 'chartSeries.0.color', 'chartSeries.0.data'
+  ].every(target => chartTargets.includes(target)))
+  assert.ok(['chartSmooth', 'chartAreaFill', 'chartSymbolSize'].every(target => lineChartTargets.includes(target)))
+  assert.ok(scatterChartTargets.includes('chartSymbolSize'))
+  assert.ok(radarChartTargets.includes('chartRadarMax'))
+  assert.equal(chartTargets.includes('text'), false)
+  assert.equal(echartsCodeTargets.includes('text'), false)
+  assert.equal(echartsCodeTargets.includes('echartsCode'), false)
+  assert.equal(echartsCodeTargets.includes('chartOption'), false)
   assert.equal(bindingParameterFor('checkbox', 'checked')?.valueType, 'boolean')
   assert.equal(bindingParameterFor('input', 'value')?.valueType, 'text')
   assert.equal(bindingParameterFor('progress', 'progressValue')?.valueType, 'number')
@@ -56,6 +84,93 @@ test('binding schema exposes common and component-specific parameters from one w
   )
   assert.equal(bindingParameterFor('rect', '__proto__'), undefined)
   assert.equal(isBindingTargetAllowed('rect', 'style.fill'), false)
+})
+
+test('chart binding schema mirrors every configured series and keeps old first-series targets only for compatibility', () => {
+  const node = {
+    type: 'lineChart',
+    chartSeriesName: '流量',
+    chartColor: '#16b89a',
+    chartData: [10, 20],
+    chartSeries: [
+      { name: '流量', color: '#16b89a', data: [10, 20] },
+      { name: '压力', color: '#168eea', data: [30, 40] },
+      { name: '温度', color: '#f59e0b', data: [50, 60] }
+    ],
+    dataBindings: []
+  }
+
+  const parameters = getBindableParameters(node)
+  const targets = parameters.map(parameter => parameter.target)
+  assert.deepEqual(
+    targets.filter(target => target.startsWith('chartSeries.')),
+    [
+      'chartSeries.0.name', 'chartSeries.0.color', 'chartSeries.0.data',
+      'chartSeries.1.name', 'chartSeries.1.color', 'chartSeries.1.data',
+      'chartSeries.2.name', 'chartSeries.2.color', 'chartSeries.2.data'
+    ]
+  )
+  assert.equal(parameters.find(parameter => parameter.target === 'chartSeries.1.data')?.label, '系列 2（压力） · 数据')
+  assert.ok(!targets.includes('chartSeriesName'))
+  assert.ok(!targets.includes('chartColor'))
+  assert.ok(!targets.includes('chartData'))
+
+  const legacyTargets = getBindableParameters({
+    ...node,
+    dataBindings: [
+      { target: 'chartSeriesName', pointId: 'legacy.name' },
+      { target: 'chartColor', pointId: 'legacy.color' },
+      { target: 'chartData', pointId: 'legacy.data' }
+    ]
+  }).map(parameter => parameter.target)
+  assert.ok(['chartSeriesName', 'chartColor', 'chartData'].every(target => legacyTargets.includes(target)))
+  assert.equal(bindingParameterFor('lineChart', 'chartSeries.7.data')?.valueType, 'table')
+  assert.equal(bindingParameterFor('lineChart', 'chartSeries.8.data'), undefined)
+  assert.equal(bindingParameterFor('pieChart', 'chartSeries.0.data'), undefined)
+})
+
+test('removing a chart series drops its bindings and shifts later series targets with the data', () => {
+  const node = {
+    type: 'barChart',
+    dataBindings: [
+      { target: 'chartTitle', pointId: 'title' },
+      { target: 'chartSeries.0.data', pointId: 'series-0' },
+      { target: 'chartSeries.1.name', pointId: 'series-1-name' },
+      { target: 'chartSeries.1.data', pointId: 'series-1-data' },
+      { target: 'chartSeries.2.color', pointId: 'series-2-color' }
+    ]
+  }
+  const before = structuredClone(node)
+  const bindings = removeChartSeriesBindings(node, 1)
+
+  assert.deepEqual(node, before)
+  assert.deepEqual(bindings.map(binding => binding.target), [
+    'chartTitle',
+    'chartSeries.0.data',
+    'chartSeries.1.color'
+  ])
+  assert.equal(bindings[2].pointId, 'series-2-color')
+})
+
+test('every component can control visibility and only animation components expose animation bindings', () => {
+  const componentTypes = [...COMPONENT_CATEGORY_BY_TYPE.keys(), 'pencil']
+
+  for (const type of componentTypes) {
+    const targets = bindingParametersForType(type).map(parameter => parameter.target)
+    const expectedAnimationBindings = isAnimationComponentType(type)
+
+    assert.ok(targets.includes('visible'), `${type} must expose component visibility`)
+    assert.equal(
+      targets.includes('animationPlaying'),
+      expectedAnimationBindings,
+      `${type} animation playback capability is inconsistent with its category`
+    )
+    assert.equal(
+      targets.includes('animationDuration'),
+      expectedAnimationBindings,
+      `${type} animation duration capability is inconsistent with its category`
+    )
+  }
 })
 
 test('signal light communication mirrors the configured color slots and lamp opacity', () => {
@@ -139,6 +254,8 @@ test('normalizes bindings to unique schema targets without changing legacy dataK
       { target: 'unknown', pointId: 'ignored' },
       { target: 'fill', pointId: ' new.color ', enabled: false },
       { target: 'text', pointId: ' device.name ', adapter: { type: 'join', separator: ' / ' } },
+      { target: 'visible', pointId: ' device.visible ' },
+      { target: 'animationPlaying', pointId: ' legacy.animation ' },
       { target: 'stroke', pointId: '   ' }
     ]
   })
@@ -146,7 +263,8 @@ test('normalizes bindings to unique schema targets without changing legacy dataK
   assert.equal(normalized.dataKey, 'legacy.temperature')
   assert.deepEqual(normalized.dataBindings, [
     { target: 'fill', pointId: 'new.color', enabled: false },
-    { target: 'text', pointId: 'device.name', adapter: { type: 'join', separator: ' / ' }, enabled: true }
+    { target: 'text', pointId: 'device.name', adapter: { type: 'join', separator: ' / ' }, enabled: true },
+    { target: 'visible', pointId: 'device.visible', enabled: true }
   ])
 
   const firstDefaults = baseNodeOptions()
@@ -298,6 +416,7 @@ test('resolves color, number, boolean and text values with static fallback', () 
     text: '静态文字',
     animationPaused: true,
     animationDuration: 1.5,
+    visible: true,
     checked: false
   }
 
@@ -309,8 +428,10 @@ test('resolves color, number, boolean and text values with static fallback', () 
   assert.equal(resolveBindingValue(node, 'opacity', 'not-a-number'), 0.4)
   assert.equal(resolveBindingValue(node, 'checked', '开启'), true)
   assert.equal(resolveBindingValue(node, 'checked', 'unknown'), false)
-  assert.equal(resolveBindingValue(node, 'animationPlaying', 1), true)
-  assert.equal(resolveBindingValue(node, 'animationPlaying', undefined), false)
+  assert.equal(resolveBindingValue(node, 'visible', 1), true)
+  assert.equal(resolveBindingValue(node, 'visible', 0), false)
+  assert.equal(resolveBindingValue(node, 'visible', undefined), true)
+  assert.equal(resolveBindingValue(node, 'animationPlaying', 1), undefined)
   assert.equal(resolveBindingValue(node, 'text', 42), '42')
   assert.equal(resolveBindingValue(node, 'text', [1, 2]), '静态文字')
   assert.equal(resolveBindingValue(node, 'text', [1, 2], { type: 'first' }), '1')

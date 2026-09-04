@@ -34,6 +34,7 @@ const ADAPTER_TYPES_BY_VALUE_TYPE = Object.freeze({
 })
 
 const UNSAFE_RECORD_KEYS = new Set(['__proto__', 'prototype', 'constructor'])
+const CHART_SERIES_TARGET_PATTERN = /^chartSeries\.(\d+)\.(name|color|data)$/
 
 function plainObject(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false
@@ -206,6 +207,20 @@ export function upsertDataBinding(node, targetOrBinding, pointId, adapter) {
 export function removeDataBinding(node, target) {
   const normalizedTarget = normalizedText(target, 128)
   return normalizeDataBindings(node).filter(item => item.target !== normalizedTarget)
+}
+
+/** 删除系列时同步删除该系列绑定，并让后续系列绑定跟随新索引。 */
+export function removeChartSeriesBindings(node, removedIndex) {
+  const index = Math.trunc(Number(removedIndex))
+  if (!Number.isInteger(index) || index < 0) return normalizeDataBindings(node)
+  return normalizeDataBindings(node).flatMap(binding => {
+    const match = CHART_SERIES_TARGET_PATTERN.exec(binding.target)
+    if (!match) return [binding]
+    const seriesIndex = Number(match[1])
+    if (seriesIndex === index) return []
+    if (seriesIndex < index) return [binding]
+    return [{ ...binding, target: `chartSeries.${seriesIndex - 1}.${match[2]}` }]
+  })
 }
 
 function cloneStructuredValue(value, seen = new Map()) {

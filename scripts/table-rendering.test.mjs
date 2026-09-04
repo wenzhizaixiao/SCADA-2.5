@@ -94,6 +94,16 @@ async function renderLine(overrides = {}) {
   }))
 }
 
+test('keeps an explicitly empty table title instead of restoring legacy text', async () => {
+  const html = await renderTable(tableNode({
+    showTableTitle: true,
+    tableTitle: '',
+    text: 'Legacy table title'
+  }))
+
+  assert.doesNotMatch(html, /Legacy table title/)
+})
+
 async function renderTime(overrides = {}) {
   return renderToString(h(nodeVisual, {
     node: {
@@ -261,6 +271,30 @@ test('virtual windows preserve every cell and cross-window merge origin', () => 
     fullCells.find(cell => cell.key === 'cell:40:9')
   )
   assert.equal(visited.has('cell:49:11'), false, 'covered merged cells must stay omitted')
+})
+
+test('keeps visible merges after earlier persisted merges fall outside the current table', () => {
+  const node = tableNode({
+    tableRows: 2,
+    tableColumns: 2,
+    tableHeaders: ['A', 'B'],
+    tableCells: [['A1', 'B1'], ['A2', 'B2']],
+    tableColumnWidthsPx: [100, 100],
+    tableRowHeights: [40, 40],
+    tableMerges: [
+      { row: 10, column: 0, rowSpan: 2, columnSpan: 2 },
+      { row: 12, column: 0, rowSpan: 2, columnSpan: 2 },
+      { row: 14, column: 0, rowSpan: 2, columnSpan: 2 },
+      { row: 16, column: 0, rowSpan: 2, columnSpan: 2 },
+      { row: 0, column: 0, rowSpan: 1, columnSpan: 2 }
+    ]
+  })
+
+  const cells = createTableCellModels(node)
+  const merge = cells.find(cell => cell.key === 'cell:0:0')
+
+  assert.equal(merge?.columnSpan, 2)
+  assert.equal(cells.some(cell => cell.key === 'cell:0:1'), false)
 })
 
 test('keeps the title, header, and body on one fixed-width table surface', async () => {

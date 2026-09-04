@@ -98,8 +98,7 @@ import {
 import { bindingPointIds } from '../models/dataBindingModel'
 import {
   hasEnabledRuntimeBinding,
-  materializeRuntimeNode,
-  runtimeChartPercentages
+  materializeRuntimeNode
 } from '../utils/runtimeNodeMaterializer'
 import { sharedPreviewImageCache } from '../utils/sharedPreviewImageCache'
 import {
@@ -1051,7 +1050,7 @@ function formDisplayText(node) {
 }
 
 function drawTableText(ctx, node, width, height, scaleX, scaleY) {
-  const title = node.showTableTitle === false ? '' : (node.tableTitle || node.text)
+  const title = node.showTableTitle === false ? '' : (node.tableTitle ?? node.text)
   if (title) drawText(ctx, node, width, height, scaleX, scaleY, title, { y: height * .1, maxWidth: width * .92 })
   if (!props.faithful) return
   const headers = Array.isArray(node.tableHeaders) ? node.tableHeaders : []
@@ -1197,12 +1196,139 @@ function drawGrid(ctx, width, height, columns, rows, lineWidth, color) {
   ctx.stroke()
 }
 
-function drawChart(ctx, node, width, height) {
-  const values = runtimeChartPercentages(node).map(value => value / 100)
-  const gap = width * .07
-  const barWidth = (width - gap * (values.length + 1)) / values.length
-  ctx.fillStyle = VISUAL_ACCENT_COLOR
-  values.forEach((value, index) => ctx.fillRect(gap + index * (barWidth + gap), height * (1 - value), barWidth, height * value))
+function chartSeries(node) {
+  if (node.type === 'echartsCode') {
+    const series = Array.isArray(node.chartOption?.series) ? node.chartOption.series[0] : null
+    return {
+      type: series?.type ? `${series.type}Chart` : 'barChart',
+      data: Array.isArray(series?.data) ? series.data : []
+    }
+  }
+  return { type: node.type === 'chart' ? 'barChart' : node.type, data: node.chartData }
+}
+
+function chartNumbers(source) {
+  const rows = Array.isArray(source?.rows) ? source.rows : Array.isArray(source) ? source : []
+  return rows.slice(0, 48).map(item => {
+    if (Array.isArray(item)) return Number(item.at(-1))
+    if (item && typeof item === 'object') return Number(item.value)
+    return Number(item)
+  }).filter(Number.isFinite)
+}
+
+function chartPairs(source) {
+  const rows = Array.isArray(source?.rows) ? source.rows : Array.isArray(source) ? source : []
+  return rows.slice(0, 64).map((item, index) => {
+    if (Array.isArray(item)) return [Number(item[0]), Number(item[1])]
+    if (item && typeof item === 'object') {
+      const value = Array.isArray(item.value) ? item.value : [item.x, item.y]
+      return [Number(value[0]), Number(value[1])]
+    }
+    return [index, Number(item)]
+  }).filter(pair => pair.every(Number.isFinite))
+}
+
+function normalizedChartValues(values) {
+  if (!values.length) return []
+  const min = Math.min(0, ...values)
+  const max = Math.max(0, ...values)
+  const span = Math.max(1, max - min)
+  return values.map(value => (value - min) / span)
+}
+
+function drawChart(ctx, node, width, height, lineWidth) {
+  const { type, data } = chartSeries(node)
+  const color = node.chartColor || VISUAL_ACCENT_COLOR
+  const padding = Math.max(lineWidth * 2, Math.min(width, height) * .12)
+  const plotWidth = Math.max(.1, width - padding * 2)
+  const plotHeight = Math.max(.1, height - padding * 2)
+  ctx.save()
+  ctx.strokeStyle = color
+  ctx.fillStyle = color
+  ctx.lineWidth = Math.max(.5, lineWidth)
+  try {
+    if (type === 'pieChart') {
+      const values = chartNumbers(data).map(value => Math.max(0, value))
+      const total = values.reduce((sum, value) => sum + value, 0) || 1
+      const radius = Math.max(.1, Math.min(plotWidth, plotHeight) * .42)
+      let angle = -Math.PI / 2
+      values.forEach((value, index) => {
+        const end = angle + Math.PI * 2 * value / total
+        ctx.beginPath()
+        ctx.moveTo(width / 2, height / 2)
+        ctx.arc(width / 2, height / 2, radius, angle, end)
+        ctx.closePath()
+        ctx.globalAlpha = Math.max(.32, 1 - index * .1)
+        ctx.fill()
+        angle = end
+      })
+      return
+    }
+
+    if (type === 'scatterChart') {
+      const points = chartPairs(data)
+      if (!points.length) return
+      const xs = points.map(point => point[0])
+      const ys = points.map(point => point[1])
+      const minX = Math.min(...xs); const maxX = Math.max(...xs)
+      const minY = Math.min(...ys); const maxY = Math.max(...ys)
+      const radius = Math.max(1, Math.min(4, Number(node.chartSymbolSize) / 4 || lineWidth * 1.5))
+      points.forEach(([x, y]) => {
+        const px = padding + (x - minX) / Math.max(1, maxX - minX) * plotWidth
+        const py = height - padding - (y - minY) / Math.max(1, maxY - minY) * plotHeight
+        ctx.beginPath(); ctx.arc(px, py, radius, 0, Math.PI * 2); ctx.fill()
+      })
+      return
+    }
+
+    const values = chartNumbers(data)
+    const normalized = normalizedChartValues(values)
+    if (!normalized.length) return
+    if (type === 'radarChart') {
+      const count = Math.max(3, normalized.length)
+      const radius = Math.max(.1, Math.min(plotWidth, plotHeight) * .45)
+      const cx = width / 2; const cy = height / 2
+      ctx.globalAlpha = .18
+      ctx.beginPath()
+      for (let index = 0; index < count; index += 1) {
+        const angle = -Math.PI / 2 + Math.PI * 2 * index / count
+        const x = cx + Math.cos(angle) * radius
+        const y = cy + Math.sin(angle) * radius
+        if (index) ctx.lineTo(x, y); else ctx.moveTo(x, y)
+      }
+      ctx.closePath(); ctx.fill()
+      ctx.globalAlpha = 1
+      ctx.beginPath()
+      normalized.forEach((value, index) => {
+        const angle = -Math.PI / 2 + Math.PI * 2 * index / count
+        const x = cx + Math.cos(angle) * radius * Math.max(.04, value)
+        const y = cy + Math.sin(angle) * radius * Math.max(.04, value)
+        if (index) ctx.lineTo(x, y); else ctx.moveTo(x, y)
+      })
+      ctx.closePath(); ctx.stroke()
+      return
+    }
+
+    if (type === 'lineChart') {
+      ctx.beginPath()
+      normalized.forEach((value, index) => {
+        const x = padding + plotWidth * index / Math.max(1, normalized.length - 1)
+        const y = height - padding - plotHeight * value
+        if (index) ctx.lineTo(x, y); else ctx.moveTo(x, y)
+      })
+      ctx.stroke()
+      return
+    }
+
+    const gap = plotWidth * .06
+    const barWidth = Math.max(.1, (plotWidth - gap * (normalized.length - 1)) / normalized.length)
+    normalized.forEach((value, index) => {
+      const barHeight = Math.max(lineWidth, plotHeight * value)
+      ctx.fillRect(padding + index * (barWidth + gap), height - padding - barHeight, barWidth, barHeight)
+    })
+  } finally {
+    ctx.restore()
+  }
 }
 
 function drawGauge(ctx, node, width, height, lineWidth, value, renderPass = 'full') {
@@ -1280,10 +1406,17 @@ function drawFan(ctx, node, width, height, worldPixel, animationTimestamp) {
   fillAndStroke(ctx, node, width, height, worldPixel, '#fff')
   const radius = Math.max(.1, Math.min(43, width * .39, height * .39))
   const visualScale = radius * 35 / 43 / 32
-  ctx.fillStyle = '#edf3f2'
-  ctx.beginPath()
-  ctx.arc(width / 2, height / 2, radius, 0, Math.PI * 2)
-  ctx.fill()
+  ctx.save()
+  try {
+    const backgroundOpacity = Number(node.backgroundOpacity ?? 1)
+    ctx.globalAlpha *= Number.isFinite(backgroundOpacity) ? Math.max(0, Math.min(1, backgroundOpacity)) : 1
+    ctx.fillStyle = '#edf3f2'
+    ctx.beginPath()
+    ctx.arc(width / 2, height / 2, radius, 0, Math.PI * 2)
+    ctx.fill()
+  } finally {
+    ctx.restore()
+  }
   const rotorAngle = rotatingFanAngle(node, animationTimestamp)
   ctx.save()
   try {
@@ -1459,7 +1592,7 @@ function drawFormControl(ctx, node, width, height, lineWidth) {
     const trackWidth = Math.min(width * .55, height * 1.65)
     const trackHeight = Math.min(height * .55, trackWidth * .5)
     roundedRect(ctx, (width - trackWidth) / 2, (height - trackHeight) / 2, trackWidth, trackHeight, trackHeight / 2)
-    ctx.fillStyle = node.checked ? accent : '#bcc5ca'
+    ctx.fillStyle = node.checked ? accent : dark
     ctx.fill()
     ctx.fillStyle = '#fff'
     ctx.beginPath()
@@ -1472,13 +1605,13 @@ function drawFormControl(ctx, node, width, height, lineWidth) {
   if (node.type === 'formProgress') {
     const value = Math.max(0, Math.min(1, number(node.progressValue, 68) / Math.max(1, number(node.progressMax, 100))))
     const trackHeight = Math.min(height * .28, lineWidth * 4)
-    ctx.fillStyle = '#dce3e6'
+    ctx.fillStyle = dark
     ctx.fillRect(width * .08, (height - trackHeight) / 2, width * .84, trackHeight)
     ctx.fillStyle = accent
     ctx.fillRect(width * .08, (height - trackHeight) / 2, width * .84 * value, trackHeight)
     return
   }
-  ctx.fillStyle = node.type === 'button' ? accent : '#fff'
+  ctx.fillStyle = accent
   ctx.strokeStyle = dark
   ctx.lineWidth = lineWidth
   roundedRect(ctx, 0, 0, width, height, Math.min(number(node.radius, 4), height / 3))
@@ -1541,9 +1674,9 @@ function drawSpecialNode(ctx, node, width, height, lineWidth, value, renderPass 
     ? node.motionColor || VISUAL_ACCENT_COLOR
     : VISUAL_ACCENT_COLOR
   const dark = node.stroke || '#485563'
-  if (node.type === 'chart') {
+  if (['chart', 'lineChart', 'barChart', 'pieChart', 'scatterChart', 'radarChart', 'echartsCode'].includes(node.type)) {
     fillAndStroke(ctx, node, width, height, worldPixel, '#fff')
-    return drawChart(ctx, node, width, height)
+    return drawChart(ctx, node, width, height, lineWidth)
   }
   if (node.type === 'gauge') {
     if (renderPass !== 'runtime') fillAndStroke(ctx, node, width, height, worldPixel, '#fff')
@@ -1802,6 +1935,7 @@ function drawNode(ctx, sourceNode, scaleX, scaleY, worldPixel, renderPass = 'ful
   // 运行时值只生成本次绘制使用的有效节点，不回写图纸中的静态属性。
   const textLayout = options.textLayout || null
   const node = options.node || textLayout?.node || materializeRuntimeNode(sourceNode, runtimePointValue)
+  if (node.visible === false) return
   const rawAnimationTimestamp = number(options.animationTimestamp)
   const animationTimestamp = options.animationTimestampResolved === true
     ? rawAnimationTimestamp
@@ -1890,7 +2024,7 @@ function drawNode(ctx, sourceNode, scaleX, scaleY, worldPixel, renderPass = 'ful
         if (borderWidth > 0 && innerThickness > 0) drawBodyLine(node.fill || '#485563', innerThickness, alpha(node.backgroundOpacity))
       }
     } else if (node.type === 'text') {
-      strokeNodeOutline(ctx, node, layoutWidth, layoutHeight, visualWorldPixel)
+      fillAndStroke(ctx, node, layoutWidth, layoutHeight, visualWorldPixel)
       drawText(ctx, node, layoutWidth, layoutHeight, effectiveScaleX, effectiveScaleY, undefined, {}, textLayout)
     } else if (Array.isArray(shapePoints[node.type]) || ['circle', 'rect', 'process', 'decision', 'terminal', 'code'].includes(node.type)) {
       fillAndStroke(ctx, node, layoutWidth, layoutHeight, visualWorldPixel)
@@ -2038,6 +2172,7 @@ function canvasVisualDescriptorSourceKey(node) {
     node?.visualScaleX,
     node?.visualScaleY,
     node?.opacity,
+    node?.visible,
     node?.fill,
     node?.stroke,
     node?.color,
@@ -2368,6 +2503,7 @@ function prepareCanvasVisualSpriteCommand(
   }
   if (!descriptor) {
     const node = materializeRuntimeNode(sourceNode, runtimePointValue)
+    if (node.visible === false) return null
     if (number(node.rotate) !== 0) return null
     const runtimeValueSnapshot = runtimeValue(sourceNode)
     const badgeText = sourceNode.dataKey ? runtimeDisplayText(runtimeValueSnapshot) : ''
@@ -3238,6 +3374,10 @@ function drawEntityIncrementally(
   opacityMultiplier,
   deadline
 ) {
+  let preparedNode = hasEnabledRuntimeBinding(sourceNode, 'visible')
+    ? materializeRuntimeNode(sourceNode, runtimePointValue)
+    : null
+  if (preparedNode?.visible === false) return true
   if (['image', 'customImageMotion'].includes(sourceNode?.type) && sourceNode.imageUrl) {
     task.imageUrls?.add(sourceNode.imageUrl)
     const image = cachedImage(sourceNode.imageUrl)
@@ -3245,9 +3385,8 @@ function drawEntityIncrementally(
     if (!cachedImageSettled(image)) task.pendingImageUrls?.add(sourceNode.imageUrl)
   }
   let work = task.textLayoutWork
-  let preparedNode = null
   if (!work) {
-    if (sourceNode?.type === 'text') preparedNode = materializeRuntimeNode(sourceNode, runtimePointValue)
+    if (sourceNode?.type === 'text' && !preparedNode) preparedNode = materializeRuntimeNode(sourceNode, runtimePointValue)
     work = createLongTextLayoutWork(
       sourceNode,
       scaleX,
@@ -5603,7 +5742,8 @@ function hasSignalRuntimeBinding(node) {
 }
 
 function visualAnimationRuntimeNode(node, { signal = false, composite = false } = {}) {
-  const needsRuntime = hasEnabledRuntimeBinding(node, 'animationDuration')
+  const needsRuntime = hasEnabledRuntimeBinding(node, 'visible')
+    || hasEnabledRuntimeBinding(node, 'animationDuration')
     || hasEnabledRuntimeBinding(node, 'animationPlaying')
     || (signal && (
       hasEnabledRuntimeBinding(node, 'signalOpacity')

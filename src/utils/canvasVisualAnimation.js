@@ -112,7 +112,7 @@ function signalPaletteColor(node, index) {
 }
 
 export function isCanvasVisualAnimationCandidate(node) {
-  if (!node) return false
+  if (!node || node.visible === false) return false
   if (['flowDirection', 'flowPipe', 'rotatingFan', 'waterTank', 'particles'].includes(node.type)) return node.animation === 'flow'
   if (node.type === 'heartbeat') return node.animation === 'pulse'
   return node.type === 'signalLight'

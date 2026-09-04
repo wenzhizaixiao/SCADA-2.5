@@ -27,6 +27,14 @@ test('communication panel keeps property order and identifies legacy point bindi
   assert.match(panelSource, /@click="unbind\(parameter\.target\)"/)
 })
 
+test('communication panel describes boolean control states instead of exposing raw booleans', () => {
+  assert.match(panelSource, /target === 'visible'[^\n]*?'隐藏'[^\n]*?'显示'/)
+  assert.match(panelSource, /target === 'animationPlaying'[^\n]*?'已暂停'[^\n]*?'播放中'/)
+  assert.match(panelSource, /target === 'animationDuration'[\s\S]*?秒/)
+  assert.match(panelSource, /属性当前值/)
+  assert.match(panelSource, /未连接动态数据时，组件继续使用“属性”中的当前值/)
+})
+
 test('JSON tree expands lazily with per-level, visible-node and depth budgets', () => {
   assert.match(treeSource, /maxChildren:\s*\{\s*type:\s*Number,\s*default:\s*60/)
   assert.match(treeSource, /maxVisible:\s*\{\s*type:\s*Number,\s*default:\s*240/)

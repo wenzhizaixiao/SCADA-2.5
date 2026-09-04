@@ -488,7 +488,12 @@ test('pointer geometry history avoids serializing the complete document', async 
 
 test('editor teardown discards a queued pointer frame before ending the operation', async () => {
   const appSource = await readFile(new URL('../src/App.vue', import.meta.url), 'utf8')
-  const teardown = appSource.match(/onUnmounted\(\(\) => \{[\s\S]*?\n\}\)/)?.[0] || ''
+  const pointerCancelAt = appSource.lastIndexOf('if (pointerFrame) cancelAnimationFrame(pointerFrame)')
+  const teardownStart = appSource.lastIndexOf('onUnmounted(() => {', pointerCancelAt)
+  const teardownEnd = appSource.indexOf('\n})', pointerCancelAt)
+  assert.ok(pointerCancelAt >= 0, '应定义待处理指针帧的卸载清理')
+  assert.ok(teardownStart >= 0 && teardownEnd > teardownStart, '应能定位主编辑器卸载流程')
+  const teardown = appSource.slice(teardownStart, teardownEnd)
   const cancelAt = teardown.indexOf('cancelAnimationFrame(pointerFrame)')
   const clearFrameAt = teardown.indexOf('pointerFrame = 0')
   const clearPointerAt = teardown.indexOf('pendingPointer = null')

@@ -10,9 +10,14 @@ import {
 import {
   baseNodeOptions,
   builtInVisualPrimaryColor,
+  migrateTableMergesForDeletion,
+  migrateTableMergesForInsertion,
+  hasTableMergeSelectionConflict,
   normalizeEdge,
   normalizeNode,
-  normalizeTableMerges
+  normalizeTableModel,
+  normalizeTableMerges,
+  tableMergesIntersectingSelection
 } from '../src/models/editorModel.js'
 import { splitTextGraphemes, verticalTextColumns } from '../src/utils/textLayout.js'
 
@@ -25,8 +30,25 @@ test('builds unique component indexes from the catalog', () => {
   const items = groups.flatMap(group => group.items.map(item => ({ ...item, category: group.name })))
   const types = items.map(item => item.type)
 
+  const chartGroup = groups.find(group => group.name === '图表组件')
+  const basicGroup = groups.find(group => group.name === '基本形状')
+  const flowchartGroup = groups.find(group => group.name === '流程图组件')
+  const hiddenCompatibilityTypes = new Set(['pencil', 'chart', 'progress', 'code'])
+
+  assert.equal(groups.length, 9)
+  assert.deepEqual(groups.map(group => group.name), [
+    '基本形状', '线段组件', '功能组件', '图表组件',
+    '动效组件', '自定义动效', '网络与云', '工业设备', '流程图组件'
+  ])
   assert.equal(new Set(types).size, types.length)
-  assert.deepEqual(new Set(types), new Set(Object.keys(SHAPE_DEFAULTS).filter(type => type !== 'pencil')))
+  assert.deepEqual(new Set(types), new Set(Object.keys(SHAPE_DEFAULTS).filter(type => !hiddenCompatibilityTypes.has(type))))
+  assert.deepEqual(
+    chartGroup.items.map(item => item.type),
+    ['lineChart', 'barChart', 'pieChart', 'scatterChart', 'radarChart', 'echartsCode']
+  )
+  assert.ok(['process', 'decision', 'terminal', 'database'].every(type => !basicGroup.items.some(item => item.type === type)))
+  assert.deepEqual(flowchartGroup.items.map(item => item.type), ['process', 'decision', 'terminal', 'database'])
+  assert.ok([...hiddenCompatibilityTypes].every(type => !types.includes(type)))
   assert.equal(COMPONENT_NAME_BY_TYPE.get('heartbeat'), '告警')
   assert.equal(SHAPE_DEFAULTS.heartbeat[0], '告警')
   for (const item of items) {
@@ -46,11 +68,79 @@ test('returns independent catalog and node default state', () => {
   const firstNode = baseNodeOptions()
   const secondNode = baseNodeOptions()
   firstNode.signalColors[0] = '#000000'
+  firstNode.chartLabels[0] = '已修改'
+  firstNode.chartData[0] = 999
+  firstNode.chartOption.series = []
   firstNode.pencilPoints.push({ x: 0, y: 0 })
   firstNode.tableMerges.push({ row: 0, column: 0, rowSpan: 2, columnSpan: 2 })
   assert.equal(secondNode.signalColors[0], '#21c58e')
+  assert.deepEqual(secondNode.chartLabels, ['一月', '二月', '三月', '四月'])
+  assert.deepEqual(secondNode.chartData, [35, 70, 48, 85])
+  assert.notStrictEqual(firstNode.chartSeries, secondNode.chartSeries)
+  assert.notStrictEqual(firstNode.chartSeries[0].data, secondNode.chartSeries[0].data)
+  assert.deepEqual(secondNode.chartOption, {})
   assert.deepEqual(secondNode.pencilPoints, [])
   assert.deepEqual(secondNode.tableMerges, [])
+})
+
+test('normalizes the legacy chart type and validates shared chart properties', () => {
+  const legacy = normalizeNode({
+    type: 'chart',
+    chartData: [12, 30],
+    chartLabels: ['A', 2],
+    chartColor: ' #123456 ',
+    chartShowLegend: 'false',
+    chartShowTooltip: 1,
+    chartShowGrid: 0,
+    chartSmooth: 'true',
+    chartAreaFill: false,
+    chartSymbolSize: 999,
+    chartRadarMax: -10
+  })
+
+  assert.equal(legacy.type, 'barChart')
+  assert.deepEqual(legacy.chartData, [12, 30])
+  assert.deepEqual(legacy.chartLabels, ['A', '2'])
+  assert.equal(legacy.chartColor, '#123456')
+  assert.deepEqual(legacy.chartSeries, [{ name: '系列 1', color: '#123456', data: [12, 30] }])
+  assert.equal(legacy.chartShowLegend, false)
+  assert.equal(legacy.chartShowTooltip, true)
+  assert.equal(legacy.chartShowGrid, false)
+  assert.equal(legacy.chartSmooth, true)
+  assert.equal(legacy.chartAreaFill, false)
+  assert.equal(legacy.chartSymbolSize, 100)
+  assert.equal(legacy.chartRadarMax, 100)
+})
+
+test('normalizes multiple chart series without sharing imported data and keeps the first legacy series fields synchronized', () => {
+  const source = {
+    type: 'lineChart',
+    chartLabels: ['A', 'B'],
+    chartSeries: [
+      { name: '设备 A', color: '#dc2626', data: [10, 20] },
+      { name: '设备 B', color: '#2563eb', data: [12, 18] }
+    ]
+  }
+  const node = normalizeNode(source)
+
+  assert.deepEqual(node.chartSeries, source.chartSeries)
+  assert.notStrictEqual(node.chartSeries, source.chartSeries)
+  assert.notStrictEqual(node.chartSeries[0].data, source.chartSeries[0].data)
+  assert.equal(node.chartSeriesName, '设备 A')
+  assert.equal(node.chartColor, '#dc2626')
+  assert.deepEqual(node.chartData, [10, 20])
+
+  const legacyOverride = normalizeNode({
+    ...source,
+    chartSeriesName: '接口系列',
+    chartColor: '#9333ea',
+    chartData: [30, 40]
+  })
+  assert.deepEqual(legacyOverride.chartSeries[0], {
+    name: '接口系列',
+    color: '#9333ea',
+    data: [30, 40]
+  })
 })
 
 test('code components keep their dark defaults without overriding edited fill and text colors', () => {
@@ -109,10 +199,12 @@ test('node normalization validates animation settings and completes short signal
   assert.deepEqual(bounded.signalColors.slice(0, 4), ['#111111', '#ef5350', '#ffc440', '#168eea'])
 
   assert.equal(normalizeNode({ type: 'heartbeat', animation: 'flow' }).animation, 'none')
-  assert.equal(normalizeNode({ type: 'rect', animation: 'float' }).animation, 'float')
+  assert.equal(normalizeNode({ type: 'rect', animation: 'float' }).animation, 'none')
   assert.equal(normalizeNode({ type: 'rect', animation: 'invalid' }).animation, 'none')
   assert.equal(normalizeNode({ type: 'rect', animationDuration: Number.NaN }).animationDuration, 1.5)
   assert.equal(normalizeNode({ type: 'rect', animationDirection: 'alternate-reverse' }).animationDirection, 'normal')
+  assert.equal(normalizeNode({ type: 'rect' }).visible, true)
+  assert.equal(normalizeNode({ type: 'rect', visible: 'false' }).visible, false)
 })
 
 test('normalizes built-in visual colors and water level without changing legacy defaults', () => {
@@ -206,6 +298,56 @@ test('drops invalid and overlapping table merges', () => {
   ], 3, 3), [
     { row: 0, column: 0, rowSpan: 2, columnSpan: 2 }
   ])
+})
+
+test('preserves bounded interface merge layouts beyond the static fallback size', () => {
+  const table = normalizeTableModel({
+    tableRows: 2,
+    tableColumns: 2,
+    tableHeaders: ['A', 'B'],
+    tableCells: [['1', '2'], ['3', '4']],
+    tableMerges: [{ row: 4, column: 1, rowSpan: 2, columnSpan: 2 }]
+  })
+
+  assert.deepEqual(table.tableMerges, [
+    { row: 4, column: 1, rowSpan: 2, columnSpan: 2 }
+  ])
+})
+
+test('static structure edits leave interface-only merge coordinates unchanged', () => {
+  const rowMerges = [
+    { row: 0, column: 0, rowSpan: 2, columnSpan: 1 },
+    { row: 4, column: 0, rowSpan: 2, columnSpan: 2 }
+  ]
+  assert.deepEqual(migrateTableMergesForInsertion(rowMerges, 'row', 2, 2), rowMerges)
+  assert.deepEqual(migrateTableMergesForDeletion(rowMerges, 'row', 1, 2), [
+    { row: 0, column: 0, rowSpan: 1, columnSpan: 1 },
+    rowMerges[1]
+  ])
+
+  const columnMerges = [
+    { row: 0, column: 0, rowSpan: 1, columnSpan: 2 },
+    { row: 0, column: 4, rowSpan: 2, columnSpan: 2 }
+  ]
+  assert.deepEqual(migrateTableMergesForInsertion(columnMerges, 'column', 2, 2), columnMerges)
+  assert.deepEqual(migrateTableMergesForDeletion(columnMerges, 'column', 1, 2), [
+    { row: 0, column: 0, rowSpan: 1, columnSpan: 1 },
+    columnMerges[1]
+  ])
+})
+
+test('detects persisted merge overlap even when the current view clips it to one cell', () => {
+  const merges = [{ row: 1, column: 1, rowSpan: 2, columnSpan: 2 }]
+  const selection = { row: 1, rowEnd: 1, column: 0, columnEnd: 1 }
+
+  assert.deepEqual(tableMergesIntersectingSelection(merges, selection), merges)
+  assert.equal(hasTableMergeSelectionConflict(merges, selection), true)
+  assert.equal(hasTableMergeSelectionConflict(merges, {
+    row: 0,
+    rowEnd: 3,
+    column: 0,
+    columnEnd: 3
+  }), false)
 })
 
 test('normalizes edge ports against document defaults', () => {

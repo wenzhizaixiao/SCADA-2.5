@@ -1,0 +1,19 @@
+{
+  "nodes": [
+    { "id": "node-32b12f5f-00d0-4c58-b86f-cf19027ed446", "type": "rect", "layer": 1 },
+    { "id": "node-6270cbe2-bcf0-4790-a019-696f0b918221", "type": "text", "layer": 2 },
+    { "id": "node-dd325af1-88c5-4876-aff6-7acaa60d8759", "type": "formProgress", "layer": 3 },
+    { "id": "node-80d23fd1-cb06-44a0-8d15-5dbe6d02ec3a", "type": "table", "layer": 4 },
+    { "id": "node-b74f7f36-50fb-4906-83f2-4ec45380ba86", "type": "time", "layer": 5 },
+    { "id": "node-308cf401-82ab-4312-88d2-4b667fe407df", "type": "select", "layer": 6 },
+    { "id": "node-9251d141-3f15-425d-a2bd-3bd45237dcb2", "type": "flowPipe", "layer": 7 },
+    { "id": "node-0cdf7fa8-dd74-42f4-956b-5f673221e3aa", "type": "rotatingFan", "layer": 8 },
+    { "id": "node-252a1111-9248-47c0-ad01-d56c87943c82", "type": "signalLight", "layer": 9 },
+    { "id": "node-e9bb7fff-708e-459b-b2f5-12cface6a5b9", "type": "customMotion", "layer": 10 },
+    { "id": "node-ff374e25-2b82-423c-8206-68e41ed0050f", "type": "rect", "layer": 11 },
+    { "id": "node-05ccd4c5-6c0a-4e3b-bae2-7667db1abc54", "type": "progress", "layer": 12 },
+    { "id": "node-c1a1c902-e9a2-4db7-8d12-835c880ffa9f", "type": "hexagon", "layer": 13 },
+    { "id": "node-7a81afe0-087a-41b4-bf1c-e97d1fa17c57", "type": "circle", "layer": 14 },
+    { "id": "node-c961a4c6-678b-49bd-9c6e-f03a9638e73f", "type": "flowPipe", "layer": 15 }
+  ]
+}

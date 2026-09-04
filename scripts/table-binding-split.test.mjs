@@ -17,6 +17,7 @@ import {
   parameterValueTypeLabel
 } from '../src/utils/dataBindingCompatibility.js'
 import { materializeRuntimeNode } from '../src/utils/runtimeNodeMaterializer.js'
+import { createTableCellModels } from '../src/utils/tableVirtualization.js'
 
 function tableNode(overrides = {}) {
   return {
@@ -329,6 +330,39 @@ test('split table materialization enforces row and column budgets and preserves 
   assert.deepEqual(empty.tableCells, [['', '']])
 })
 
+test('runtime table rows render the saved merge layout within the current interface dimensions', () => {
+  const tableMerges = [{ row: 0, column: 0, rowSpan: 3, columnSpan: 2 }]
+  const node = tableNode({
+    tableMerges,
+    dataBindings: [{ target: 'tableCells', pointId: 'rows' }]
+  })
+  const compact = materializeRuntimeNode(node, () => [
+    ['08:00', '278.06'],
+    ['09:00', '312.82']
+  ])
+  const compactCells = createTableCellModels(compact)
+  const compactMerge = compactCells.find(cell => cell.row === 0 && cell.column === 0)
+
+  assert.equal(compactMerge.text, '08:00')
+  assert.equal(compactMerge.rowSpan, 2)
+  assert.equal(compactMerge.columnSpan, 2)
+  assert.equal(compactCells.some(cell => cell.row === 1 && cell.column === 0), false)
+  assert.strictEqual(compact.tableMerges, tableMerges)
+
+  const expanded = materializeRuntimeNode(node, () => [
+    ['08:00', '278.06'],
+    ['09:00', '312.82'],
+    ['10:00', '359.17'],
+    ['11:00', '386.20']
+  ])
+  const expandedMerge = createTableCellModels(expanded)
+    .find(cell => cell.row === 0 && cell.column === 0)
+
+  assert.equal(expandedMerge.rowSpan, 3)
+  assert.equal(expandedMerge.columnSpan, 2)
+  assert.deepEqual(node.tableMerges, tableMerges)
+})
+
 test('new split bindings override legacy whole-table data independently of binding order', () => {
   const bindings = [
     { target: 'tableData', pointId: 'legacy.table' },
@@ -382,7 +416,7 @@ test('new split bindings override legacy whole-table data independently of bindi
   assert.deepEqual(values.get('table.rows')[0], { device: '风机 A', state: '运行' })
 })
 
-test('legacy table and text bindings keep their previous visible behavior', () => {
+test('legacy table bindings work while an explicitly empty static title remains empty', () => {
   const effective = materializeRuntimeNode(tableNode({
     dataBindings: [
       { target: 'tableData', pointId: 'legacy.table' },
@@ -405,8 +439,8 @@ test('legacy table and text bindings keep their previous visible behavior', () =
     tableTitle: '',
     dataBindings: [{ target: 'text', pointId: 'missing.title' }]
   }), () => undefined)
-  assert.equal(missingRuntimeValue.text, '旧版静态标题')
-  assert.equal(missingRuntimeValue.tableTitle, '旧版静态标题')
+  assert.equal(missingRuntimeValue.text, '')
+  assert.equal(missingRuntimeValue.tableTitle, '')
 })
 
 test('full-cell viewer preserves the materialized value that the user clicked', async () => {

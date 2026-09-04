@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import { createPreviewFrameFreshness } from '../src/utils/previewFrameFreshness.js'
 import {
+  buildPreviewHybridPlan,
   PREVIEW_RENDER_CAPABILITIES,
   PREVIEW_HYBRID_MAX_DOM_COST,
   PREVIEW_HYBRID_MAX_DOM_ENTRIES,
@@ -10,6 +11,7 @@ import {
   previewHybridDomSafe,
   previewHybridLayerTail,
   previewHybridTailDomSafe,
+  previewNodeCanUseCanvasFallback,
   previewNodeRenderCapability,
   previewNodeNeedsLiveDom
 } from '../src/utils/previewRenderPolicy.js'
@@ -120,7 +122,6 @@ test('fullscreen transitions preserve an already completed DOM handoff', () => {
 
   const previewFullscreenRoot = {}
   const previewFullscreen = { value: false }
-  const previewScale = { value: 2 }
   const previewAutoFit = { value: false }
   const previewFitCanUseCanvas = { value: false }
   let currentFullscreenElement = previewFullscreenRoot
@@ -132,12 +133,12 @@ test('fullscreen transitions preserve an already completed DOM handoff', () => {
     'fullscreenElement',
     'previewFullscreenTarget',
     'invalidatePreviewViewportSchedule',
-    'previewScale',
     'ensurePreviewDomHandoff',
     'updatePreviewViewport',
     'previewAutoFit',
     'previewFitCanUseCanvas',
     'previewRenderTarget',
+    'syncPreviewFullscreenViewportSize',
     'initialScroll',
     `let previewScrollBeforeFullscreen = initialScroll\n${fullscreenSource}\nreturn { handleFullscreenChange, storedScroll: () => previewScrollBeforeFullscreen }`
   )(
@@ -145,7 +146,6 @@ test('fullscreen transitions preserve an already completed DOM handoff', () => {
     () => currentFullscreenElement,
     () => previewFullscreenRoot,
     () => { invalidations += 1 },
-    previewScale,
     () => {
       ensureCount += 1
       return ensurePreviewDomHandoff()
@@ -154,12 +154,12 @@ test('fullscreen transitions preserve an already completed DOM handoff', () => {
     previewAutoFit,
     previewFitCanUseCanvas,
     previewRenderTarget,
+    () => {},
     { left: 17, top: 29 }
   )
 
   harness.handleFullscreenChange()
   assert.equal(previewFullscreen.value, true)
-  assert.equal(previewScale.value, 1)
   assert.equal(previewDomGeneration.value, 41)
   assert.equal(previewDomNodesReady.value, true)
   assert.equal(previewDomGeometryReady.value, true)
@@ -472,7 +472,14 @@ test('preview policy classifies only supported visual animations for Canvas', ()
     null,
     { type: 'rect' },
     { type: 'rect', animation: 'none' },
+    { type: 'rect', animation: 'flow' },
     { type: 'flowPipe', animation: 'none' },
+    { type: 'flowPipe', animation: 'blink' },
+    { type: 'rotatingFan', animation: 'pulse' },
+    { type: 'signalLight', animation: 'flow' },
+    { type: 'waterTank', animation: 'pulse' },
+    { type: 'heartbeat', animation: 'flow' },
+    { type: 'particles', animation: 'float' },
     { type: 'image', imageUrl: 'status.png' }
   ]) assert.equal(previewNodeRenderCapability(node), STATIC_CANVAS)
 
@@ -489,13 +496,6 @@ test('preview policy classifies only supported visual animations for Canvas', ()
   }
 
   for (const node of [
-    { type: 'flowPipe', animation: 'blink' },
-    { type: 'rotatingFan', animation: 'pulse' },
-    { type: 'signalLight', animation: 'flow' },
-    { type: 'waterTank', animation: 'pulse' },
-    { type: 'heartbeat', animation: 'flow' },
-    { type: 'particles', animation: 'float' },
-    { type: 'rect', animation: 'flow' },
     { type: 'flowPipe', animation: 'flow', progressFluctuationEnabled: true },
     { type: 'video' },
     { type: 'time' },
@@ -518,11 +518,11 @@ test('preview policy keeps a bounded DOM tail above the lowest live visual', () 
     { type: 'input' },
     { type: 'table' },
     { type: 'customTextMotion', animation: 'none' },
-    { type: 'rect', animation: 'pulse' },
     { type: 'progress', progressFluctuationEnabled: true },
     { type: 'image', imageUrl: 'status.GIF?revision=2' },
     { type: 'image', imageUrl: 'data:image/webp;base64,animated' }
   ]) assert.equal(previewNodeNeedsLiveDom(node), true, `expected ${node.type} to use live DOM`)
+  assert.equal(previewNodeNeedsLiveDom({ type: 'rect', animation: 'pulse' }), false)
 
   const safe = [
     { kind: 'node', id: 'static', layer: 1 },
@@ -563,6 +563,73 @@ test('preview policy keeps a bounded DOM tail above the lowest live visual', () 
     { kind: 'drawing', entity: { id: 'drawing' } }
   ]), true)
   assert.equal(PREVIEW_HYBRID_MAX_DOM_COST, 128)
+})
+
+test('ECharts prefer live SVG but may fall back to Canvas without forcing a full-document DOM preview', () => {
+  const chartTypes = ['chart', 'lineChart', 'barChart', 'pieChart', 'scatterChart', 'radarChart', 'echartsCode']
+  for (const type of chartTypes) {
+    const node = { id: type, type }
+    assert.equal(previewNodeNeedsLiveDom(node), true, `${type} should prefer the real ECharts renderer`)
+    assert.equal(previewNodeCanUseCanvasFallback(node), true, `${type} should support the bounded Canvas fallback`)
+  }
+  for (const type of ['video', 'input', 'table', 'customTextMotion']) {
+    assert.equal(previewNodeCanUseCanvasFallback({ type }), false, `${type} must remain live DOM`)
+  }
+
+  const lowChart = { id: 'low-chart', type: 'lineChart' }
+  const lowChartEntries = [
+    { kind: 'node', id: lowChart.id, entity: lowChart },
+    ...Array.from({ length: PREVIEW_HYBRID_MAX_DOM_ENTRIES + 4 }, (_, index) => {
+      const entity = { id: `static-${index}`, type: 'rect' }
+      return { kind: 'node', id: entity.id, entity }
+    })
+  ]
+  const lowChartPlan = buildPreviewHybridPlan(lowChartEntries, lowChartEntries.map(entry => entry.entity))
+  assert.equal(lowChartPlan.canUseCanvas, true)
+  assert.equal(lowChartPlan.preservesAllLiveDom, false)
+  assert.deepEqual(lowChartPlan.overlayEntries, [])
+  assert.deepEqual(lowChartPlan.canvasFallbackNodeIds, [lowChart.id])
+
+  const largeNodes = Array.from({ length: 5980 }, (_, index) => ({ id: `base-${index}`, type: 'rect' }))
+  const charts = Array.from({ length: 20 }, (_, index) => ({ id: `chart-${index}`, type: 'barChart' }))
+  const largeEntries = [...largeNodes, ...charts].map(entity => ({ kind: 'node', id: entity.id, entity }))
+  const largePlan = buildPreviewHybridPlan(largeEntries, [...largeNodes, ...charts])
+  assert.equal(largePlan.canUseCanvas, true)
+  assert.equal(largePlan.preservesAllLiveDom, false)
+  assert.equal(largePlan.overlayEntries.length, PREVIEW_HYBRID_MAX_DOM_NODES)
+  assert.deepEqual(largePlan.canvasFallbackNodeIds, charts.slice(0, 4).map(node => node.id))
+
+  const fitPlanSource = sourceBetween(appSource, 'const previewFitPlan', 'const previewFitOverlayNodes')
+  const viewportPlanSource = sourceBetween(appSource, 'const previewViewportCanvasPlanned', 'const previewFallbackRequired')
+  assert.match(fitPlanSource, /buildPreviewHybridPlan\(layerEntries\.value, nodes\.value\)/)
+  assert.match(fitPlanSource, /canUseCanvas:\s*hybridPlan\.canUseCanvas/)
+  assert.match(fitPlanSource, /preservesAllLiveDom:\s*hybridPlan\.preservesAllLiveDom/)
+  assert.match(viewportPlanSource, /previewFitPlan\.value\.preservesAllLiveDom/)
+})
+
+test('hybrid chart fallback never weakens mandatory live DOM layering', () => {
+  const video = { id: 'video', type: 'video' }
+  const coveredVideoEntries = [
+    { kind: 'node', id: video.id, entity: video },
+    ...Array.from({ length: PREVIEW_HYBRID_MAX_DOM_ENTRIES }, (_, index) => {
+      const entity = { id: `cover-${index}`, type: index === 0 ? 'pieChart' : 'rect' }
+      return { kind: 'node', id: entity.id, entity }
+    })
+  ]
+  const unsafePlan = buildPreviewHybridPlan(coveredVideoEntries, coveredVideoEntries.map(entry => entry.entity))
+  assert.equal(unsafePlan.canUseCanvas, false)
+  assert.equal(unsafePlan.layerSafe, false)
+
+  const chart = { id: 'chart-below-video', type: 'radarChart' }
+  const safeEntries = [
+    { kind: 'node', id: chart.id, entity: chart },
+    { kind: 'node', id: video.id, entity: video },
+    { kind: 'node', id: 'top', entity: { id: 'top', type: 'rect' } }
+  ]
+  const safePlan = buildPreviewHybridPlan(safeEntries, safeEntries.map(entry => entry.entity))
+  assert.equal(safePlan.canUseCanvas, true)
+  assert.deepEqual(safePlan.canvasFallbackNodeIds, [])
+  assert.equal(safePlan.preservesAllLiveDom, true)
 })
 
 test('Canvas and controlled live DOM overlay retain a complete fallback between DOM generations', () => {
@@ -1211,6 +1278,7 @@ test('parameter bindings invalidate and materialize both DOM and Canvas previews
   assert.match(batchSource, /:key="[^\n]*bindingRenderKey\(node\)[^\n]*"/)
   assert.match(canvasRuntimeFilter, /bindingPointIds\(node\)\.length/)
   assert.match(canvasNodeDraw, /const node = options\.node \|\| textLayout\?\.node \|\| materializeRuntimeNode\(sourceNode, runtimePointValue\)/)
-  assert.match(miniMapSource, /runtimeChartPercentages\(node\)/)
+  assert.match(miniMapSource, /chartSeries\(node\)/)
+  assert.match(miniMapSource, /node\.chartData/)
   assert.match(miniMapSource, /hasEnabledRuntimeBinding\(node, 'progressValue'\)/)
 })

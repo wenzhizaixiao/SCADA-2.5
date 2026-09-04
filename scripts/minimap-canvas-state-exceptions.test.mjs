@@ -11,6 +11,7 @@ import {
 import { drawEdgeRasterCommand } from '../src/utils/edgeRasterDrawing.js'
 
 const miniMapSource = readFileSync(new URL('../src/components/MiniMapPreview.vue', import.meta.url), 'utf8')
+const nodeVisualSource = readFileSync(new URL('../src/components/NodeVisual.vue', import.meta.url), 'utf8')
 
 function sourceBetween(startMarker, endMarker) {
   const start = miniMapSource.indexOf(startMarker)
@@ -228,6 +229,39 @@ test('fillAndStroke restores its opacity state when fill throws', () => {
   assert.equal(state.depth, 0, 'fillAndStroke must restore its saved opacity state')
 })
 
+test('text components paint their configurable fill before text in DOM and Canvas previews', () => {
+  assert.match(
+    nodeVisualSource,
+    /\.node-body\.text\s*\{\s*background:\s*var\(--shape-fill\)\s*!important;\s*\}/
+  )
+  assert.match(
+    nodeVisualSource,
+    /'--shape-fill':\s*colorWithOpacity\(node\.fill, node\.backgroundOpacity \?\? 1\)/
+  )
+
+  const calls = []
+  const node = {
+    type: 'text',
+    fill: '#123456',
+    backgroundOpacity: .35,
+    opacity: 1,
+    text: '文本'
+  }
+  const drawNode = compileDrawNode({
+    drawText: (_context, source) => calls.push(['text', source]),
+    fillAndStroke: (_context, source, width, height, worldPixel) => {
+      calls.push(['background', source, width, height, worldPixel])
+    }
+  })
+  const { context } = createFaultCanvasContext()
+
+  drawNode(context, node, 1, 1, 1, 'static', 1, { node })
+
+  assert.deepEqual(calls.map(([kind]) => kind), ['background', 'text'])
+  assert.equal(calls[0][1], node)
+  assert.deepEqual(calls[0].slice(2), [40, 20, 1])
+})
+
 test('closed pencil fill failures restore the pencil state', () => {
   const packet = sourceBetween('function drawPencil', '\nfunction drawPolylineArrow')
   const drawPencil = compileSource(packet, 'drawPencil', {
@@ -343,6 +377,48 @@ test('media placeholders use the same clipped background and configurable outlin
   assert.equal(state.depth, 0)
 })
 
+test('Canvas form controls use the same configurable fill and stroke colors as DOM controls', () => {
+  const packet = sourceBetween('function drawFormControl', '\nfunction progressTrackFrame')
+  const drawFormControl = compileSource(packet, 'drawFormControl', {
+    drawGrid: () => {},
+    number: finiteNumber,
+    roundedRect
+  })
+  const render = node => {
+    const { context } = createFaultCanvasContext()
+    const operations = []
+    let fillStyle = '#000'
+    Object.defineProperty(context, 'fillStyle', {
+      get: () => fillStyle,
+      set: value => { fillStyle = value }
+    })
+    context.fill = () => operations.push(['fill', fillStyle])
+    context.fillRect = (...args) => operations.push(['fillRect', fillStyle, ...args])
+    drawFormControl(context, node, 100, 40, 2)
+    return operations
+  }
+
+  for (const type of ['input', 'select', 'time']) {
+    const operations = render({ type, fill: '#123456', stroke: '#654321' })
+    assert.deepEqual(operations[0], ['fill', '#123456'], `${type} background must use node.fill`)
+  }
+
+  const switchOperations = render({ type: 'switch', checked: false, fill: '#123456', stroke: '#654321' })
+  assert.deepEqual(switchOperations[0], ['fill', '#654321'], 'disabled switch track must use node.stroke')
+
+  const progressOperations = render({
+    type: 'formProgress',
+    fill: '#123456',
+    stroke: '#654321',
+    progressValue: 25,
+    progressMax: 100
+  })
+  assert.equal(progressOperations[0][0], 'fillRect')
+  assert.equal(progressOperations[0][1], '#654321', 'progress track must use node.stroke')
+  assert.equal(progressOperations[1][0], 'fillRect')
+  assert.equal(progressOperations[1][1], '#123456', 'progress value must use node.fill')
+})
+
 test('signal light failures restore the nested opacity state', () => {
   const packet = sourceBetween('function drawSpecialNode', '\nfunction canvasNodeLayout')
   const drawSpecialNode = compileSource(packet, 'drawSpecialNode', {
@@ -422,7 +498,11 @@ test('faithful dynamic visuals keep the shared frame without reusing dark text a
   assert.ok(customFillStyles.includes('#f05a7e'))
   assert.equal(customFillStyles.includes('#28323c'), false)
 
-  assert.match(sourceBetween('function drawChart', '\nfunction drawGauge'), /ctx\.fillStyle = VISUAL_ACCENT_COLOR/)
+  const chartPacket = sourceBetween('function drawChart', '\nfunction drawGauge')
+  assert.match(chartPacket, /const color = node\.chartColor \|\| VISUAL_ACCENT_COLOR/)
+  assert.match(chartPacket, /ctx\.strokeStyle = color/)
+  assert.match(chartPacket, /ctx\.fillStyle = color/)
+  assert.doesNotMatch(chartPacket, /node\.color/)
   assert.match(sourceBetween('function drawGauge', '\nfunction drawFlowPipe'), /ctx\.strokeStyle = VISUAL_ACCENT_COLOR/)
   assert.match(sourceBetween('function drawFlowPipe', '\nfunction drawFan'), /ctx\.fillStyle = node\.visualPrimaryColor \|\| VISUAL_ACCENT_COLOR/)
   assert.match(specialPacket, /node\.motionColor \|\| VISUAL_ACCENT_COLOR/)

@@ -310,7 +310,7 @@ test('right-side editors reset their scroll position when the inspected object c
 test('saved source bindings and legacy point bindings round-trip without mutating static properties', () => {
   const sourceNode = {
     id: 'node-runtime-binding',
-    type: 'progress',
+    type: 'gauge',
     fill: '#ffffff',
     text: '静态名称',
     progressValue: 20,

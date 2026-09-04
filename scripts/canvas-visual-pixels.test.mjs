@@ -325,6 +325,7 @@ const fanNode = {
   type: 'rotatingFan', animation: 'flow', animationDuration: 1,
   animationDirection: 'normal', animationPaused: false, borderWidth: 2
 }
+const transparentFanNode = { ...fanNode, backgroundOpacity: 0 }
 const signalNode = {
   type: 'signalLight', animation: 'blink', animationDuration: .4,
   animationDirection: 'normal', animationPaused: false, borderWidth: 2,
@@ -367,6 +368,7 @@ const pipeFirst = snapshot(190, 48, ctx => drawFlowPipe(ctx, pipeNode, 190, 48, 
 const pipeSecond = snapshot(190, 48, ctx => drawFlowPipe(ctx, pipeNode, 190, 48, WORLD_PIXEL, 250))
 const fanFirst = snapshot(110, 110, ctx => drawFan(ctx, fanNode, 110, 110, WORLD_PIXEL, 0))
 const fanSecond = snapshot(110, 110, ctx => drawFan(ctx, fanNode, 110, 110, WORLD_PIXEL, 125))
+const transparentFan = snapshot(110, 110, ctx => drawFan(ctx, transparentFanNode, 110, 110, WORLD_PIXEL, 0))
 const signalFirst = snapshot(90, 130, ctx => drawSpecialNode(ctx, signalNode, 90, 130, 2, undefined, 'full', WORLD_PIXEL, 0))
 const signalSecond = snapshot(90, 130, ctx => drawSpecialNode(ctx, signalNode, 90, 130, 2, undefined, 'full', WORLD_PIXEL, 250))
 const particleFirst = snapshot(190, 72, ctx => drawSpecialNode(ctx, particleNode, 190, 72, 2, undefined, 'full', WORLD_PIXEL, 200))
@@ -401,6 +403,7 @@ const fanAccent = maskSummary(fanFirst, fanAccentMask)
 const fanPhase = maskSummary(fanFirst, colorMask(fanFirst, COLORS.fanPhase, 8))
 const fanHub = maskSummary(fanFirst, colorMask(fanFirst, COLORS.fanHub, 24))
 const fixedFanOutline = maskSummary(fanFirst, colorMask(fanFirst, COLORS.fixedFanOutline, 24))
+const transparentFanBackground = maskSummary(transparentFan, colorMask(transparentFan, [237, 243, 242], 1))
 const signalGreen = maskSummary(signalFirst, colorMask(signalFirst, COLORS.signalFirst, 30))
 const signalRed = maskSummary(signalSecond, colorMask(signalSecond, COLORS.signalSecond, 30))
 const particleFirstAccent = maskSummary(particleFirst, channelMask(
@@ -440,6 +443,7 @@ const result = {
     quadrants: quadrantCount(fanSecond, fanSecondAccentMask),
     phase: fanPhase,
     hub: fanHub,
+    transparentBackground: transparentFanBackground,
     changed: changedPixels(fanFirst, fanSecond)
   },
   signal: {
@@ -501,6 +505,8 @@ test('Canvas and DOM animated component styles keep one visual contract', () => 
   assert.match(fanSource, /ctx\.fillStyle = node\.visualPrimaryColor \|\| VISUAL_ACCENT_COLOR[\s\S]*?for \(let index = 0; index < 4; index \+= 1\)/)
   assert.match(visualStyleSource, /\.fan-rotor\s*\{[^}]*color:\s*var\(--visual-primary-color, #16b89a\)/)
   assert.match(visualStyleSource, /\.fan-blade\s*\{[^}]*fill:\s*currentColor;[^}]*stroke:\s*none/)
+  assert.match(nodeVisualSource, /class="fan-visual"[^>]*:style="\{ backgroundColor: colorWithOpacity\('#edf3f2', node\.backgroundOpacity \?\? 1\) \}"/)
+  assert.doesNotMatch(fanStyle, /background:\s*#edf3f2/)
   assert.match(nodeVisualSource, /class="fan-hub"/)
   assert.doesNotMatch(nodeVisualSource, /fan-direction-marker/)
   assert.doesNotMatch(visualStyleSource, /\.fan-direction-marker/)
@@ -564,6 +570,7 @@ test('low-zoom animated visuals retain recognizable pixels and change between fr
     assert.equal(metrics.fan.quadrants, 4, `fan rotor does not cover four directions: ${JSON.stringify(metrics.fan)}`)
     assert.equal(metrics.fan.phase.count, 0, `fan contains an inconsistent dark blade: ${JSON.stringify(metrics.fan)}`)
     assert.ok(metrics.fan.hub.count >= 1, `fan center hub is not recognizable: ${JSON.stringify(metrics.fan)}`)
+    assert.equal(metrics.fan.transparentBackground.count, 0, `transparent fan kept its gray circular background: ${JSON.stringify(metrics.fan)}`)
     assert.ok(metrics.fan.changed >= 8, `fan rotor did not visibly rotate: ${JSON.stringify(metrics.fan)}`)
 
     assert.ok(metrics.signal.first.count >= 20, `signal color 1 is not recognizable: ${JSON.stringify(metrics.signal)}`)

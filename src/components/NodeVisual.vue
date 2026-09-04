@@ -2,6 +2,7 @@
 import { computed, getCurrentInstance, nextTick, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue'
 import { Check, ChevronDown, Clock3, Cloud, Database, HardDrive, Image, Network, Router, Server, Sparkles, Video } from 'lucide-vue-next'
 import RuntimeValueText from './RuntimeValueText.vue'
+import EChartsVisual from './EChartsVisual.vue'
 import { normalizedVisualScale } from '../utils/editorGeometry'
 import { resolveTimeValue, timeInputStep, timeInputType } from '../utils/formTime'
 import { acquireVisualClock, releaseVisualClock } from '../composables/useSharedVisualClock'
@@ -34,16 +35,17 @@ import {
 import { createTableCellViewPayload } from '../utils/tableCellViewer.js'
 import { bindingPointIds } from '../models/dataBindingModel.js'
 import { MAX_SIGNAL_COLORS } from '../config/componentBindingSchema.js'
+import { isAnimationComponentType } from '../config/componentCapabilities.js'
 import {
   hasEnabledRuntimeBinding,
-  materializeRuntimeNode,
-  runtimeChartPercentages
+  materializeRuntimeNode
 } from '../utils/runtimeNodeMaterializer.js'
 import { normalizeRuntimeKey, runtimeKeySignature } from '../utils/runtimeKey.js'
 import { rectangularNodeBorderGeometry } from '../utils/nodeBorderGeometry.js'
 
 const visualOnlyTypes = new Set(['flowDirection', 'flowPipe', 'rotatingFan', 'signalLight', 'waterTank', 'heartbeat', 'particles'])
 const formVisualTypes = new Set(['table', 'checkbox', 'radio', 'switch', 'formProgress', 'button', 'input', 'select', 'time'])
+const chartVisualTypes = new Set(['chart', 'lineChart', 'barChart', 'pieChart', 'scatterChart', 'radarChart', 'echartsCode'])
 
 function fontWeight(node) {
   const explicit = Number(node.fontWeight)
@@ -170,7 +172,7 @@ function tableCellStyle(node, cell) {
   const drawsTopBorder = leadingGridWidth > 0 && node.showTableTitle === false && cell.gridRow === 1
   const drawsLeftBorder = leadingGridWidth > 0 && cell.column === 0
   return {
-    backgroundColor: cell.header ? node.tableHeaderFill : (cell.row % 2 ? node.tableAltRowFill : node.tableRowFill),
+    backgroundColor: colorWithOpacity(cell.header ? node.tableHeaderFill : (cell.row % 2 ? node.tableAltRowFill : node.tableRowFill), node.backgroundOpacity ?? 1),
     color,
     fontSize: `${size}px`,
     fontWeight: weight,
@@ -201,7 +203,7 @@ function tableTitleStyle(node) {
   const leadingGridWidth = outerMatchesGrid ? 0 : gridWidth
   const trailingGridWidth = !hasTrailingSpace && outerMatchesGrid ? 0 : gridWidth
   return {
-    backgroundColor: node.tableTitleFill,
+    backgroundColor: colorWithOpacity(node.tableTitleFill, node.backgroundOpacity ?? 1),
     color: node.tableTitleColor,
     fontSize: `${size}px`,
     fontWeight: weight,
@@ -347,6 +349,7 @@ watch(
 const effectiveNode = computed(() => materializeRuntimeNode(props.node, runtimePointValue))
 // 显式声明 node，让模板统一读取运行时有效值；交互写入仍只通过 props.node 完成。
 const node = effectiveNode
+const animationComponentActive = computed(() => isAnimationComponentType(node.value?.type))
 const visualNode = computed(() => {
   const source = node.value
   const scaleX = normalizedVisualScale(props.node.visualScaleX, props.node.w)
@@ -583,7 +586,7 @@ function applyVideoSettings({ preserveMuted = false } = {}) {
 
 async function playVideo({ allowMutedFallback = false, preserveMuted = false } = {}) {
   const video = videoElement.value
-  if (!video || !props.preview || videoSessionExhausted.value) return false
+  if (!video || !props.preview || node.value.visible === false || videoSessionExhausted.value) return false
   applyVideoSettings({ preserveMuted })
   try {
     await video.play()
@@ -618,7 +621,7 @@ function initializeVideoPlayback() {
     const video = videoElement.value
     if (!video) return
     video.currentTime = 0
-    if (props.preview && props.node.videoAutoplay) playVideo({ allowMutedFallback: true })
+    if (props.preview && props.node.videoAutoplay && node.value.visible !== false) playVideo({ allowMutedFallback: true })
     else {
       applyVideoSettings()
       video.pause()
@@ -644,6 +647,16 @@ function handleVideoPlay() {
   resetVideoSession()
 }
 
+function syncVideoVisibility(visible) {
+  const video = videoElement.value
+  if (!video) return
+  if (visible === false) {
+    video.pause()
+    return
+  }
+  if (props.preview && props.node.videoAutoplay) playVideo({ allowMutedFallback: true })
+}
+
 function toggleVideoPlayback(event) {
   const video = videoElement.value
   if (!video || !props.preview || props.node.videoControls !== false) return
@@ -662,6 +675,7 @@ function toggleVideoPlayback(event) {
 if (props.node.type === 'video') {
   watch(() => [props.node.videoUrl, props.node.videoPlayCount, props.node.videoAutoplay], initializeVideoPlayback)
   watch([videoElement, () => props.node.videoMuted, () => props.node.videoPlaybackRate], syncVideoSettings, { flush: 'post' })
+  watch(() => node.value.visible, syncVideoVisibility, { flush: 'post' })
 }
 
 function updateChecked(event) {
@@ -678,7 +692,6 @@ function updateValue(event) {
 }
 
 function displayedTime(node) {
-  if (hasEnabledRuntimeBinding(node, 'value')) return String(node.value ?? '')
   let currentTime = Date.now()
   if (node.timeRunning) {
     currentTime = Number(props.timeContext?.tick?.value) || currentTime
@@ -781,7 +794,7 @@ function setupSignalMotionPreference() {
 }
 
 function syncProgressClock() {
-  if (!node.value.progressFluctuationEnabled) {
+  if (node.value.visible === false || !node.value.progressFluctuationEnabled) {
     if (progressClock) releaseVisualClock(PROGRESS_CLOCK_FPS)
     progressClock = null
     return
@@ -813,7 +826,6 @@ const chartProgressPercent = computed(() => {
     : runtimeValue.value ?? source.progressValue ?? 68
   return Math.max(0, Math.min(100, Number(value) || 0))
 })
-const chartBarPercentages = computed(() => runtimeChartPercentages(node.value))
 const boundProgressText = computed(() => Math.round((Number(node.value.progressValue) || 0) * 100) / 100)
 const waterTankPercent = computed(() => Math.max(0, Math.min(100, Number(node.value.progressValue) || 0)))
 const waterTankText = computed(() => Math.round(waterTankPercent.value * 100) / 100)
@@ -836,6 +848,7 @@ function syncSignalClock() {
   const source = node.value
   const colors = signalPalette(source)
   const candidate = source.animation === 'blink'
+    && source.visible !== false
     && colors.length > 1
   const externalTimestamp = props.signalAnimationTimestamp != null
     && Number.isFinite(Number(props.signalAnimationTimestamp))
@@ -920,13 +933,13 @@ if (props.node.type === 'signalLight') {
       : source.signalColor || ''
     const externalTimestamp = props.signalAnimationTimestamp != null
       && Number.isFinite(Number(props.signalAnimationTimestamp))
-    return `${source.animation}|${source.animationPaused === true}|${source.animationDuration}|${source.animationDirection}|${source.signalColorCount}|${colors}|${externalTimestamp}|${signalReducedMotion.value}`
+    return `${source.visible !== false}|${source.animation}|${source.animationPaused === true}|${source.animationDuration}|${source.animationDirection}|${source.signalColorCount}|${colors}|${externalTimestamp}|${signalReducedMotion.value}`
   }, syncSignalClock, { immediate: true })
 }
 if (['progress', 'formProgress'].includes(props.node.type)) {
   watch(() => {
     const source = node.value
-    return [source.progressFluctuationEnabled, source.progressFluctuationMin, source.progressFluctuationMax, source.progressFluctuationDuration]
+    return [source.visible !== false, source.progressFluctuationEnabled, source.progressFluctuationMin, source.progressFluctuationMax, source.progressFluctuationDuration]
   }, syncProgressClock, { immediate: true })
 }
 onUnmounted(() => {
@@ -956,12 +969,12 @@ function colorWithOpacity(color, opacity = 1) {
 </script>
 
 <template>
-  <div class="node-visual-scale-frame" :style="visualScaleFrameStyle">
+  <div v-show="node.visible !== false" class="node-visual-scale-frame" :class="{ 'runtime-hidden': node.visible === false }" :style="visualScaleFrameStyle">
   <div
     class="node-body"
     @pointerdown="stopInteractivePointer"
     @dblclick="stopInteractiveDoubleClick"
-    :class="[node.type, `animation-${node.animation || 'none'}`, node.type.startsWith('custom') && `custom-effect-${node.customEffect || 'bounce'}`, { 'border-hidden': node.borderVisible === false, 'motion-paused': node.animationPaused === true, disabled: node.disabled }]"
+    :class="[node.type, animationComponentActive ? `animation-${node.animation || 'none'}` : 'animation-none', animationComponentActive && node.type.startsWith('custom') && `custom-effect-${node.customEffect || 'bounce'}`, { 'border-hidden': node.borderVisible === false, 'motion-paused': animationComponentActive && node.animationPaused === true, disabled: node.disabled }]"
     :style="{
       '--shape-fill': colorWithOpacity(node.fill, node.backgroundOpacity ?? 1),
       '--shape-stroke': node.stroke,
@@ -1030,16 +1043,16 @@ function colorWithOpacity(color, opacity = 1) {
         <path :data-testid="node.type === 'flowDirection' ? 'flow-direction-path' : 'polyline-node-path'" :class="{ 'flow-direction-path': node.type === 'flowDirection' }" :style="node.type === 'flowDirection' ? { '--flow-dash-cycle': `${polylineDashCycle(node)}px` } : undefined" :d="polylinePath(visualNode)" fill="none" :stroke="colorWithOpacity(node.polylineColor || '#485563', polylineLineOpacity(node))" :stroke-width="polylineLineWidth(node)" :stroke-dasharray="polylineDashArray(node)" :stroke-linecap="polylineStrokeLineCap(node)" :stroke-linejoin="node.polylineLineJoin || 'round'" :marker-start="polylineStartArrowVisible(node) ? `url(#${polylineStartMarkerId})` : undefined" :marker-end="polylineEndArrowVisible(node) ? `url(#${polylineEndMarkerId})` : undefined" vector-effect="non-scaling-stroke" />
       </svg>
     </template>
-    <template v-else-if="node.type === 'chart'">
-      <div class="bars"><i v-for="(height, index) in chartBarPercentages" :key="index" :style="{ '--bar-height': `${height}%` }"></i></div>
+    <template v-else-if="['chart', 'lineChart', 'barChart', 'pieChart', 'scatterChart', 'radarChart', 'echartsCode'].includes(node.type)">
+      <EChartsVisual :node="visualNode" :interactive="preview" />
     </template>
     <template v-else-if="node.type === 'gauge'">
       <div class="gauge-face"><i class="gauge-needle"></i><output v-if="hasEnabledRuntimeBinding(node, 'progressValue')">{{ boundProgressText }}</output><RuntimeValueText v-else :key="node.dataKey" :data-key="node.dataKey" :runtime-store="runtimeStore" tag="output" :fallback="node.progressValue ?? 68" class-name="" /><small>%</small></div>
     </template>
     <template v-else-if="node.type === 'table'">
-      <div ref="tableWrapperElement" class="form-table-wrapper" :data-table-virtualized="tableVirtualized ? 'true' : undefined" :style="{ borderColor: node.tableBorderColor || node.tableGridColor, borderWidth: `${Math.max(0, Number(node.tableBorderWidth) || 0)}px`, borderStyle: node.tableBorderStyle || 'solid', backgroundColor: node.tableRowFill, overflowX: node.tableScrollX === false ? 'hidden' : 'auto', overflowY: node.tableScrollY === false ? 'hidden' : 'auto' }" @wheel.passive="releaseTableBottomPin" @pointerdown.capture="releaseTableBottomPin" @scroll.passive="handleTableScroll" @dblclick.stop.prevent>
+      <div ref="tableWrapperElement" class="form-table-wrapper" :data-table-virtualized="tableVirtualized ? 'true' : undefined" :style="{ borderColor: node.tableBorderColor || node.tableGridColor, borderWidth: `${Math.max(0, Number(node.tableBorderWidth) || 0)}px`, borderStyle: node.tableBorderStyle || 'solid', backgroundColor: colorWithOpacity(node.tableRowFill, node.backgroundOpacity ?? 1), overflowX: node.tableScrollX === false ? 'hidden' : 'auto', overflowY: node.tableScrollY === false ? 'hidden' : 'auto' }" @wheel.passive="releaseTableBottomPin" @pointerdown.capture="releaseTableBottomPin" @scroll.passive="handleTableScroll" @dblclick.stop.prevent>
         <div class="form-table-content" :style="{ width: `${tableMinWidth(visualNode)}px` }">
-          <div v-if="node.showTableTitle !== false" class="form-table-title" :style="tableTitleStyle(visualNode)">{{ node.tableTitle || node.text }}</div>
+          <div v-if="node.showTableTitle !== false" class="form-table-title" :style="tableTitleStyle(visualNode)">{{ node.tableTitle ?? node.text }}</div>
           <div ref="tableGridElement" class="form-table-visual" :class="{ 'content-wrap': node.tableContentDisplay === 'wrap', 'content-ellipsis': node.tableContentDisplay !== 'wrap' }" :style="{ gridTemplateColumns: tableColumnsStyle(visualNode), gridTemplateRows: tableRowsStyle(visualNode), borderColor: node.tableGridColor }" role="table" :aria-rowcount="Math.max(1, Math.min(50, Number(node.tableRows) || node.tableCells?.length || 3)) + (node.showHeader === false ? 0 : 1)" :aria-colcount="Math.max(1, Math.min(12, Number(node.tableColumns) || node.tableHeaders?.length || 3))">
             <span v-for="cell in visibleTableCells" :key="cell.key" :class="{ header: cell.header, merged: cell.rowSpan > 1 || cell.columnSpan > 1, 'cell-expandable': tableCellCanOpen(cell) }" :style="tableCellStyle(visualNode, cell)" :data-table-cell-key="cell.key" :data-table-row="cell.row" :data-table-column="cell.column" :role="tableCellCanOpen(cell) ? 'button' : (cell.header ? 'columnheader' : 'cell')" :tabindex="tableCellCanOpen(cell) ? 0 : undefined" :title="tableCellCanOpen(cell) ? '查看完整内容' : undefined" @click="handleTableCellClick($event, cell)" @keydown="handleTableCellKey($event, cell)">{{ cell.text }}</span>
           </div>
@@ -1077,7 +1090,7 @@ function colorWithOpacity(color, opacity = 1) {
       <div class="animated-pipe"><i></i></div>
     </template>
     <template v-else-if="node.type === 'rotatingFan'">
-      <div class="fan-visual">
+      <div class="fan-visual" :style="{ backgroundColor: colorWithOpacity('#edf3f2', node.backgroundOpacity ?? 1) }">
         <svg class="fan-rotor" viewBox="0 0 64 64" aria-hidden="true">
           <rect v-for="index in 4" :key="index" class="fan-blade" x="28" y="2" width="8" height="32" rx="4" :transform="`rotate(${(index - 1) * 90} 32 32)`" />
           <circle class="fan-hub" cx="32" cy="32" r="4.5" />
@@ -1120,7 +1133,7 @@ function colorWithOpacity(color, opacity = 1) {
       <Image v-if="!node.imageUrl || imageLoadFailed" :size="28" />
     </template>
     <template v-else-if="node.type === 'video'">
-      <video v-if="node.videoUrl" ref="videoElement" class="node-video" :class="{ 'manual-toggle': preview && node.videoControls === false, 'is-media-failed': videoLoadFailed }" :data-preview-media-state="videoLoadFailed ? 'error' : undefined" :src="node.videoUrl" :style="{ objectFit: node.videoFit || 'contain' }" :muted="node.videoMuted !== false" :autoplay="preview && node.videoAutoplay" :controls="preview && node.videoControls !== false" :tabindex="preview && node.videoControls === false ? 0 : undefined" :role="preview && node.videoControls === false ? 'button' : undefined" :aria-label="preview && node.videoControls === false ? '播放或暂停视频' : undefined" playsinline :preload="preview ? 'auto' : 'metadata'" @loadedmetadata="initializeVideoPlayback" @loadeddata="handleVideoLoadedData" @error="handleVideoLoadError" @play="handleVideoPlay" @ended="handleVideoEnded" @click="toggleVideoPlayback" @keydown.enter.prevent="toggleVideoPlayback" @keydown.space.prevent="toggleVideoPlayback"></video>
+      <video v-if="node.videoUrl" ref="videoElement" class="node-video" :class="{ 'manual-toggle': preview && node.videoControls === false, 'is-media-failed': videoLoadFailed }" :data-preview-media-state="videoLoadFailed ? 'error' : undefined" :src="node.videoUrl" :style="{ objectFit: node.videoFit || 'contain' }" :muted="node.videoMuted !== false" :autoplay="preview && node.videoAutoplay && node.visible !== false" :controls="preview && node.videoControls !== false" :tabindex="preview && node.videoControls === false ? 0 : undefined" :role="preview && node.videoControls === false ? 'button' : undefined" :aria-label="preview && node.videoControls === false ? '播放或暂停视频' : undefined" playsinline :preload="preview ? 'auto' : 'metadata'" @loadedmetadata="initializeVideoPlayback" @loadeddata="handleVideoLoadedData" @error="handleVideoLoadError" @play="handleVideoPlay" @ended="handleVideoEnded" @click="toggleVideoPlayback" @keydown.enter.prevent="toggleVideoPlayback" @keydown.space.prevent="toggleVideoPlayback"></video>
       <Video v-if="!node.videoUrl || videoLoadFailed" :size="30" />
     </template>
     <Cloud v-else-if="node.type === 'cloud'" :size="34" />
@@ -1128,8 +1141,14 @@ function colorWithOpacity(color, opacity = 1) {
     <Database v-else-if="node.type === 'database'" :size="30" />
     <HardDrive v-else-if="node.type === 'disk'" :size="30" />
     <Router v-else-if="node.type === 'router'" :size="30" />
-    <span v-if="!formVisualTypes.has(node.type) && !['progress','pencil','polyline','flowDirection'].includes(node.type) && !node.type.startsWith('custom') && !visualOnlyTypes.has(node.type) && !(node.type === 'image' && node.imageUrl) && !(node.type === 'video' && node.videoUrl)" class="node-text-content" :class="{ 'text-layout-vertical': node.type === 'text' && node.textLayout === 'vertical' }">{{ node.text }}</span>
-    <RuntimeValueText v-if="node.dataKey && !hasEnabledRuntimeBinding(node, 'text') && !formVisualTypes.has(node.type) && !['gauge','progress','polyline','flowDirection'].includes(node.type)" :key="node.dataKey" :data-key="node.dataKey" :runtime-store="runtimeStore" />
+    <span v-if="!formVisualTypes.has(node.type) && !chartVisualTypes.has(node.type) && !['progress','pencil','polyline','flowDirection'].includes(node.type) && !node.type.startsWith('custom') && !visualOnlyTypes.has(node.type) && !(node.type === 'image' && node.imageUrl) && !(node.type === 'video' && node.videoUrl)" class="node-text-content" :class="{ 'text-layout-vertical': node.type === 'text' && node.textLayout === 'vertical' }">{{ node.text }}</span>
+    <RuntimeValueText v-if="node.dataKey && !hasEnabledRuntimeBinding(node, 'text') && !formVisualTypes.has(node.type) && !chartVisualTypes.has(node.type) && !['gauge','progress','polyline','flowDirection'].includes(node.type)" :key="node.dataKey" :data-key="node.dataKey" :runtime-store="runtimeStore" />
   </div>
   </div>
 </template>
+
+<style scoped>
+.node-body.text {
+  background: var(--shape-fill) !important;
+}
+</style>

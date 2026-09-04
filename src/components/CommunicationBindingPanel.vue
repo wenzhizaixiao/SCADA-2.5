@@ -89,6 +89,7 @@ const SECTION_LABELS = Object.freeze({
   animation: '内容与动效',
   content: '内容与动效',
   data: '数据参数',
+  series: '数据系列',
   signal: '信号灯属性'
 })
 
@@ -102,6 +103,12 @@ const VALUE_TYPE_ICONS = Object.freeze({
   'table-rows': Rows3,
   percent: Percent,
   duration: Timer
+})
+
+const CHART_SERIES_FIELD_LABELS = Object.freeze({
+  name: '名称',
+  color: '颜色',
+  data: '数据'
 })
 
 const JSON_VALUE_TYPE_LABELS = Object.freeze({
@@ -126,6 +133,10 @@ function parameterTarget(parameter) {
 
 function parameterLabel(parameter) {
   return text(parameter?.label || parameter?.title || parameter?.name || parameterTarget(parameter)) || '未命名参数'
+}
+
+function parameterDisplayLabel(parameter) {
+  return CHART_SERIES_FIELD_LABELS[parameter?.chartSeriesField] || parameterLabel(parameter)
 }
 
 function parameterSection(parameter) {
@@ -177,6 +188,9 @@ function tableHeaderText(header) {
 function parameterValueSummary(parameter) {
   const target = parameterTarget(parameter)
   const value = rawParameterValue(parameter)
+  if (target === 'visible') return value === false ? '隐藏' : '显示'
+  if (target === 'animationPlaying') return value === false ? '已暂停' : '播放中'
+  if (target === 'animationDuration') return `${displayValue(value, 32)} 秒`
   if (target === 'tableHeaders') {
     const count = boundedArrayLength(value, 12)
     const labels = []
@@ -198,6 +212,12 @@ function parameterValueSummary(parameter) {
     const columns = boundedArrayLength(value?.columns, 12)
     return `${rows} 行 × ${columns} 列`
   }
+  if (parameter?.chartSeriesField === 'data') {
+    const count = Array.isArray(value?.rows)
+      ? boundedArrayLength(value.rows, 2000)
+      : boundedArrayLength(value, 2000)
+    return `${count} 项数据`
+  }
   return displayValue(value, 48)
 }
 
@@ -218,18 +238,25 @@ const normalizedParameters = computed(() => {
   const usedTargets = new Set()
   const result = []
   let previousSection = ''
+  let previousSeriesIndex = null
   for (const parameter of props.parameters || []) {
     const target = parameterTarget(parameter)
     if (!target || usedTargets.has(target)) continue
     usedTargets.add(target)
     const section = parameterSection(parameter)
+    const seriesIndex = Number.isInteger(parameter?.chartSeriesIndex)
+      ? parameter.chartSeriesIndex
+      : null
     result.push({
       source: parameter,
       target,
       section,
-      showSection: section !== previousSection
+      seriesIndex,
+      showSection: section !== previousSection,
+      showSeriesHeader: seriesIndex !== null && seriesIndex !== previousSeriesIndex
     })
     previousSection = section
+    previousSeriesIndex = seriesIndex
   }
   return result
 })
@@ -316,6 +343,39 @@ const canConfirmBinding = computed(() => (
 
 function bindingRecord(target) {
   return bindingsByTarget.value.get(target) || null
+}
+
+function chartSeriesValue(index, field) {
+  if (index === 0) {
+    if (field === 'name' && props.node?.chartSeriesName !== undefined) return props.node.chartSeriesName
+    if (field === 'color' && props.node?.chartColor !== undefined) return props.node.chartColor
+    if (field === 'data' && props.node?.chartData !== undefined) return props.node.chartData
+  }
+  const series = Array.isArray(props.node?.chartSeries) ? props.node.chartSeries[index] : null
+  return series && typeof series === 'object' && !Array.isArray(series) ? series[field] : undefined
+}
+
+function chartSeriesName(index) {
+  return text(chartSeriesValue(index, 'name')) || `系列 ${index + 1}`
+}
+
+function chartSeriesColor(index) {
+  const color = text(chartSeriesValue(index, 'color'))
+  return /^#[0-9a-f]{3,8}$/i.test(color) ? color : '#aab7bc'
+}
+
+function chartSeriesDataCount(index) {
+  const data = chartSeriesValue(index, 'data')
+  return Array.isArray(data?.rows)
+    ? boundedArrayLength(data.rows, 2000)
+    : boundedArrayLength(data, 2000)
+}
+
+function chartSeriesBoundCount(index) {
+  return Object.keys(CHART_SERIES_FIELD_LABELS).reduce(
+    (count, field) => count + (bindingsByTarget.value.has(`chartSeries.${index}.${field}`) ? 1 : 0),
+    0
+  )
 }
 
 function sourceName(sourceId) {
@@ -665,12 +725,24 @@ onUnmounted(() => {
           <div v-if="parameter.showSection" class="section-title">
             <span>{{ parameter.section }}</span>
           </div>
-          <article class="parameter-row" :data-testid="`communication-parameter-${parameter.target}`">
+          <div
+            v-if="parameter.showSeriesHeader"
+            class="chart-series-binding-head"
+            :data-testid="`communication-series-${parameter.seriesIndex}`"
+          >
+            <i class="chart-series-binding-swatch" :style="{ backgroundColor: chartSeriesColor(parameter.seriesIndex) }"></i>
+            <span class="chart-series-binding-copy">
+              <b>系列 {{ parameter.seriesIndex + 1 }}</b>
+              <small :title="chartSeriesName(parameter.seriesIndex)">{{ chartSeriesName(parameter.seriesIndex) }} · {{ chartSeriesDataCount(parameter.seriesIndex) }} 项数据</small>
+            </span>
+            <span class="chart-series-binding-count">{{ chartSeriesBoundCount(parameter.seriesIndex) }}/3 已连接</span>
+          </div>
+          <article class="parameter-row" :class="{ 'chart-series-parameter-row': parameter.seriesIndex !== null }" :data-testid="`communication-parameter-${parameter.target}`">
             <button type="button" class="parameter-main" :disabled="locked" @click="openBindingPage(parameter.target)">
               <span class="parameter-icon"><component :is="parameterIcon(parameter.source)" /></span>
               <span class="parameter-copy">
                 <span class="parameter-title">
-                  <b>{{ parameterLabel(parameter.source) }}</b>
+                  <b>{{ parameterDisplayLabel(parameter.source) }}</b>
                   <em>{{ parameterBadge(parameter.source) }}</em>
                 </span>
                 <small>
@@ -690,7 +762,7 @@ onUnmounted(() => {
 
             <div v-if="bindingRecord(parameter.target)?.kind === 'json'" class="bound-details">
               <div class="bound-relation">
-                <b>{{ sourceName(bindingRecord(parameter.target).binding.sourceId) }}</b><span>→</span><b>{{ parameterLabel(parameter.source) }}</b>
+                <b>{{ sourceName(bindingRecord(parameter.target).binding.sourceId) }}</b><span>→</span><b>{{ parameterDisplayLabel(parameter.source) }}</b>
               </div>
               <div class="bound-meta">
                 <code :title="bindingRecord(parameter.target).binding.jsonPath">{{ bindingRecord(parameter.target).binding.jsonPath }}</code>
@@ -1056,6 +1128,56 @@ select:disabled {
   color: #526771;
   font-size: 11px;
   font-weight: 600;
+}
+
+.chart-series-binding-head {
+  display: grid;
+  grid-template-columns: 12px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 43px;
+  padding: 7px 10px;
+  border-top: 1px solid #dfe7e8;
+  border-bottom: 1px solid #e7ebed;
+  background: #f4f8f7;
+}
+
+.chart-series-binding-swatch {
+  width: 12px;
+  height: 12px;
+  border: 1px solid #c8d2d5;
+}
+
+.chart-series-binding-copy,
+.chart-series-binding-copy b,
+.chart-series-binding-copy small {
+  display: block;
+  min-width: 0;
+}
+
+.chart-series-binding-copy b {
+  color: #344b55;
+  font-size: 11px;
+}
+
+.chart-series-binding-copy small {
+  margin-top: 2px;
+  overflow: hidden;
+  color: #7b8b92;
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chart-series-binding-count {
+  color: #168264;
+  font-size: 9px;
+  white-space: nowrap;
+}
+
+.chart-series-parameter-row .parameter-main {
+  min-height: 52px;
+  padding-left: 18px;
 }
 
 .parameter-row {

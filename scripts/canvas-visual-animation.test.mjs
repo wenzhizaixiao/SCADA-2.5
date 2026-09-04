@@ -275,6 +275,7 @@ test('only supported running visual effects enter the Canvas animation set', () 
     signalColors: ['#00ff00', '#ff0000']
   })), true)
   assert.equal(isCanvasVisualAnimationNode(animatedNode('flowPipe', { animationPaused: true })), false)
+  assert.equal(isCanvasVisualAnimationNode(animatedNode('flowPipe', { visible: false })), false)
   assert.equal(isCanvasVisualAnimationNode(animatedNode('rotatingFan', { animation: 'none' })), false)
   assert.equal(isCanvasVisualAnimationNode(animatedNode('waterTank', { animation: 'pulse' })), false)
   assert.equal(isCanvasVisualAnimationNode(animatedNode('heartbeat')), false)
@@ -304,6 +305,7 @@ test('Canvas animation candidates remain trackable while playback is paused', ()
     assert.equal(isCanvasVisualAnimationCandidate(node), true)
     assert.equal(isCanvasVisualAnimationNode(node), false)
   }
+  assert.equal(isCanvasVisualAnimationCandidate(animatedNode('rotatingFan', { visible: false })), false)
   assert.equal(isCanvasVisualAnimationCandidate(animatedNode('flowPipe', { animation: 'none' })), false)
   assert.equal(isCanvasVisualAnimationCandidate(animatedNode('waterTank', { animation: 'none' })), false)
   assert.equal(isCanvasVisualAnimationCandidate(animatedNode('heartbeat', { animation: 'flow' })), false)
@@ -332,15 +334,16 @@ test('built-in animation controls feed both DOM and Canvas preview paths', () =>
   assert.match(controls, /v-model\.number="selected\.animationDuration"/)
   assert.match(controls, /@change="normalizeBuiltInAnimationDuration\(selected\)"/)
   assert.match(controls, /v-model="selected\.animationDirection"/)
-  assert.match(controls, /v-model="selected\.animationPaused"/)
+  assert.match(controls, /:checked="selected\.animationPaused !== true"/)
   assert.match(controls, /v-model="selected\.animation" @change="refreshBuiltInAnimation\(selected\)"/)
   assert.match(controls, /v-model\.number="selected\.animationDuration"[^>]*@input="refreshBuiltInAnimation\(selected\)"/)
   assert.match(controls, /v-model="selected\.animationDirection" @change="refreshBuiltInAnimation\(selected\)"/)
-  assert.match(controls, /v-model="selected\.animationPaused" @change="refreshBuiltInAnimation\(selected\)"/)
+  assert.match(controls, /@change="setAnimationPlaying\(selected, \$event\.target\.checked\)"/)
+  assert.match(appSource, /function setAnimationPlaying\(node, playing\)[\s\S]*?node\.animationPaused = !Boolean\(playing\)[\s\S]*?refreshBuiltInAnimation\(node\)/)
 
   assert.match(nodeVisualSource, /'--motion-speed':\s*`\$\{node\.animationDuration \|\| 1\.5\}s`/)
   assert.match(nodeVisualSource, /'--motion-direction':\s*node\.animationDirection \|\| 'normal'/)
-  assert.match(nodeVisualSource, /'motion-paused':\s*node\.animationPaused/)
+  assert.match(nodeVisualSource, /'motion-paused':\s*animationComponentActive\s*&&\s*node\.animationPaused/)
   assert.match(
     nodeVisualSource,
     /builtInAnimationActive\.value\s*&&\s*node\.value\.animationPaused\s*!==\s*true/,

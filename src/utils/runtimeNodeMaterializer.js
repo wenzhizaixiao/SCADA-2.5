@@ -10,6 +10,7 @@ import {
   resolveNodeDataBindings
 } from '../models/dataBindingModel.js'
 import { MAX_SIGNAL_COLORS } from '../config/componentBindingSchema.js'
+import { MAX_EDITABLE_CHART_SERIES, chartSeriesFromNode } from './chartOptions.js'
 import { formatRuntimeValue } from './runtimeValueFormat.js'
 
 export const MAX_RUNTIME_CHART_BARS = 12
@@ -38,13 +39,26 @@ const DIRECT_TARGETS = new Set([
   'signalOpacity',
   'text',
   'checked',
+  'visible',
   'value',
   'progressValue',
+  'chartTitle',
+  'chartSeriesName',
+  'chartLabels',
   'chartData',
+  'chartShowLegend',
+  'chartShowTooltip',
+  'chartShowGrid',
+  'chartSmooth',
+  'chartAreaFill',
+  'chartSymbolSize',
+  'chartRadarMax',
   'animationDuration'
 ])
 const SIGNAL_COLOR_TARGET_PATTERN = /^signalColors\.(\d+)$/
+const CHART_SERIES_TARGET_PATTERN = /^chartSeries\.(\d+)\.(name|color|data)$/
 const TABLE_BINDING_TARGETS = new Set(['tableData', 'tableTitle', 'tableHeaders', 'tableCells'])
+const TABLE_CONTENT_BINDING_TARGETS = new Set([...TABLE_BINDING_TARGETS, 'text'])
 
 const RUNTIME_TABLE_CELL_FORMAT_LIMITS = Object.freeze({
   maxLength: MAX_RUNTIME_TABLE_CELL_TEXT_LENGTH,
@@ -72,6 +86,31 @@ function normalizedColor(value) {
  */
 export function runtimeColor(value, fallback) {
   return normalizedColor(value) ?? fallback
+}
+
+function tableContentBindingRuntimeKey(binding) {
+  const target = String(binding?.target ?? '').trim()
+  if (binding?.enabled === false || !TABLE_CONTENT_BINDING_TARGETS.has(target)) return ''
+  return bindingRuntimeKey(binding)
+}
+
+export function hasConfiguredTableContentBinding(node) {
+  if (node?.type !== 'table' || !Array.isArray(node.dataBindings)) return false
+  return node.dataBindings.some(binding => Boolean(tableContentBindingRuntimeKey(binding)))
+}
+
+export function hasResolvedTableContentBinding(node, getPointValue) {
+  if (node?.type !== 'table' || typeof getPointValue !== 'function') return false
+  const bindings = Array.isArray(node.dataBindings) ? node.dataBindings : []
+  for (const binding of bindings) {
+    const runtimeKey = tableContentBindingRuntimeKey(binding)
+    if (!runtimeKey) continue
+    try {
+      const value = getPointValue(runtimeKey)
+      if (value !== undefined && value !== null) return true
+    } catch {}
+  }
+  return false
 }
 
 function tableCellText(value) {
@@ -242,6 +281,7 @@ export function materializeRuntimeNode(node, getPointValue) {
 
   let effective = { ...node }
   let signalColors = null
+  let chartSeries = null
   if (Object.prototype.hasOwnProperty.call(overrides, 'tableData')) {
     effective = materializeTableData(effective, overrides.tableData)
   }
@@ -263,12 +303,29 @@ export function materializeRuntimeNode(node, getPointValue) {
   }
   for (const target of targets) {
     if (TABLE_BINDING_TARGETS.has(target) || (node.type === 'table' && target === 'text')) continue
-    if (target === 'fill' || target === 'stroke' || target === 'visualPrimaryColor' || target === 'polylineColor') {
+    if (target === 'tableRowFill' || (node.type === 'table' && target === 'fill')) {
+      const color = runtimeColor(overrides[target], node.tableRowFill ?? node.fill)
+      effective.tableRowFill = color
+      effective.tableAltRowFill = color
+      continue
+    }
+    if (target === 'tableBorderColor' || (node.type === 'table' && target === 'stroke')) {
+      effective.tableBorderColor = runtimeColor(overrides[target], node.tableBorderColor ?? node.stroke)
+      continue
+    }
+    if (target === 'fill' || target === 'stroke' || target === 'visualPrimaryColor' || target === 'polylineColor' || target === 'chartColor') {
       effective[target] = runtimeColor(overrides[target], node[target])
       continue
     }
     if (target === 'animationPlaying') {
       effective.animationPaused = !Boolean(overrides.animationPlaying)
+      continue
+    }
+    if (target === 'value' && node.type === 'time') {
+      effective.value = overrides.value
+      effective.defaultValue = overrides.value
+      effective.timeUseServer = false
+      effective.timeRunning = false
       continue
     }
     const signalColorMatch = SIGNAL_COLOR_TARGET_PATTERN.exec(target)
@@ -281,6 +338,28 @@ export function materializeRuntimeNode(node, getPointValue) {
       }
       const index = Number(signalColorMatch[1])
       signalColors[index] = runtimeColor(overrides[target], signalColors[index])
+      continue
+    }
+    const chartSeriesMatch = CHART_SERIES_TARGET_PATTERN.exec(target)
+    if (chartSeriesMatch) {
+      const index = Number(chartSeriesMatch[1])
+      const field = chartSeriesMatch[2]
+      if (index >= MAX_EDITABLE_CHART_SERIES) continue
+      if (!chartSeries) {
+        chartSeries = chartSeriesFromNode(effective).map(series => ({ ...series, data: series.data }))
+        effective.chartSeries = chartSeries
+      }
+      if (!chartSeries[index]) continue
+      const fallback = chartSeries[index][field]
+      const value = field === 'color'
+        ? runtimeColor(overrides[target], fallback)
+        : overrides[target]
+      chartSeries[index] = { ...chartSeries[index], [field]: value }
+      if (index === 0) {
+        if (field === 'name') effective.chartSeriesName = value
+        else if (field === 'color') effective.chartColor = value
+        else effective.chartData = value
+      }
       continue
     }
     if (DIRECT_TARGETS.has(target)) effective[target] = overrides[target]

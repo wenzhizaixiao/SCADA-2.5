@@ -16,6 +16,11 @@ import { PROJECT_CAPACITY_LIMITS, validateProjectForFrontend } from './projectVa
 
 export const DEFAULT_PROJECT_STAGE_WIDTH = 6000
 export const DEFAULT_PROJECT_STAGE_HEIGHT = 4000
+export const CANVAS_SIZE_MODES = new Set(['fixed', 'screen'])
+
+export function normalizeCanvasSizeMode(value) {
+  return CANVAS_SIZE_MODES.has(value) ? value : 'fixed'
+}
 
 export function createEntityId(prefix) {
   const value = globalThis.crypto?.randomUUID?.() || `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
@@ -191,6 +196,7 @@ export function prepareProject(data, fallbackName = '未命名图纸') {
     fileName: String(data.fileName || fallbackName),
     stageWidth: preparedStageWidth,
     stageHeight: preparedStageHeight,
+    canvasSizeMode: normalizeCanvasSizeMode(data.canvasSizeMode),
     canvasBorderColor: data.canvasBorderColor || '#cbd3d9',
     canvasBorderWidth: data.canvasBorderWidth == null ? 1 : Math.max(0, Math.min(10, Number(data.canvasBorderWidth) || 0)),
     gridColor: data.gridColor || '#dde3e7',

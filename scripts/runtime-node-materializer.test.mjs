@@ -5,6 +5,8 @@ import test from 'node:test'
 import {
   MAX_RUNTIME_CHART_BARS,
   hasEnabledRuntimeBinding,
+  hasConfiguredTableContentBinding,
+  hasResolvedTableContentBinding,
   materializeRuntimeNode,
   runtimeChartPercentages,
   runtimeColor
@@ -23,15 +25,13 @@ test('materializes common runtime parameters without mutating the document node'
     stroke: '#111111',
     opacity: 1,
     text: '静态文字',
-    animationPaused: false,
-    animationDuration: 1.5,
+    visible: true,
     dataBindings: [
       { target: 'fill', pointId: 'state', enabled: true },
       { target: 'stroke', pointId: 'invalid-color', enabled: true },
       { target: 'opacity', pointId: 'opacity', enabled: true },
       { target: 'text', pointId: 'label', enabled: true },
-      { target: 'animationPlaying', pointId: 'playing', enabled: true },
-      { target: 'animationDuration', pointId: 'duration', enabled: true }
+      { target: 'visible', pointId: 'visible', enabled: true }
     ]
   }
   const before = structuredClone(node)
@@ -40,8 +40,7 @@ test('materializes common runtime parameters without mutating the document node'
     ['invalid-color', 'not-a-css-color'],
     ['opacity', 0.35],
     ['label', '动态文字'],
-    ['playing', false],
-    ['duration', 2.5]
+    ['visible', false]
   ])))
 
   assert.notStrictEqual(effective, node)
@@ -49,8 +48,78 @@ test('materializes common runtime parameters without mutating the document node'
   assert.equal(effective.stroke, '#111111')
   assert.equal(effective.opacity, 0.35)
   assert.equal(effective.text, '动态文字')
-  assert.equal(effective.animationPaused, true)
-  assert.equal(effective.animationDuration, 2.5)
+  assert.equal(effective.visible, false)
+  assert.deepEqual(node, before)
+})
+
+test('materializes animation controls only for animation components', () => {
+  const fan = {
+    type: 'rotatingFan',
+    animation: 'flow',
+    animationPaused: false,
+    animationDuration: 1.5,
+    dataBindings: [
+      { target: 'animationPlaying', pointId: 'playing', enabled: true },
+      { target: 'animationDuration', pointId: 'duration', enabled: true }
+    ]
+  }
+  const effectiveFan = materializeRuntimeNode(fan, pointGetter(new Map([
+    ['playing', false],
+    ['duration', 2.5]
+  ])))
+  assert.equal(effectiveFan.animationPaused, true)
+  assert.equal(effectiveFan.animationDuration, 2.5)
+
+  const rectangle = {
+    type: 'rect',
+    animation: 'float',
+    animationPaused: false,
+    animationDuration: 1.5,
+    dataBindings: [
+      { target: 'animationPlaying', pointId: 'playing', enabled: true },
+      { target: 'animationDuration', pointId: 'duration', enabled: true }
+    ]
+  }
+  assert.strictEqual(materializeRuntimeNode(rectangle, () => false), rectangle)
+})
+
+test('visibility binding falls back to the static component state when data is unavailable', () => {
+  const legacyNode = {
+    type: 'rect',
+    dataBindings: [{ target: 'visible', pointId: 'missing' }]
+  }
+  const hiddenNode = {
+    type: 'rect',
+    visible: false,
+    dataBindings: [{ target: 'visible', pointId: 'missing' }]
+  }
+
+  assert.equal(materializeRuntimeNode(legacyNode, () => undefined).visible, true)
+  assert.equal(materializeRuntimeNode(hiddenNode, () => undefined).visible, false)
+})
+
+test('time value binding overrides every renderer while missing data restores the editable static time', () => {
+  const node = {
+    type: 'time',
+    value: '10:00:00',
+    defaultValue: '09:30:00',
+    timeUseServer: true,
+    timeRunning: true,
+    dataBindings: [{ target: 'value', pointId: 'clock.value', enabled: true }]
+  }
+  const before = structuredClone(node)
+  const effective = materializeRuntimeNode(node, pointGetter(new Map([['clock.value', '12:45:30']])))
+
+  assert.equal(effective.value, '12:45:30')
+  assert.equal(effective.defaultValue, '12:45:30')
+  assert.equal(effective.timeUseServer, false)
+  assert.equal(effective.timeRunning, false)
+  assert.deepEqual(node, before)
+  const fallback = materializeRuntimeNode(node, () => undefined)
+  assert.equal(fallback.value, '09:30:00')
+  assert.equal(fallback.defaultValue, '09:30:00')
+  assert.equal(fallback.timeUseServer, false)
+  assert.equal(fallback.timeRunning, false)
   assert.deepEqual(node, before)
 })
 
@@ -107,7 +176,7 @@ test('adapts a runtime dataset to the existing table renderer shape', () => {
     tableCells: [['旧值']],
     tableRows: 1,
     tableColumns: 1,
-    tableMerges: [{ row: 0, column: 0, rowSpan: 1, columnSpan: 1 }],
+    tableMerges: [{ row: 0, column: 0, rowSpan: 2, columnSpan: 1 }],
     tableColumnWidths: [1],
     tableColumnWidthsPx: [160],
     tableRowHeights: [32],
@@ -123,8 +192,96 @@ test('adapts a runtime dataset to the existing table renderer shape', () => {
   assert.deepEqual(effective.tableCells, [['风机 A', '运行'], ['风机 B', '{"text":"停止"}']])
   assert.equal(effective.tableRows, 2)
   assert.equal(effective.tableColumns, 2)
+  assert.strictEqual(effective.tableMerges, node.tableMerges)
   assert.deepEqual(node.tableHeaders, ['旧列'])
   assert.deepEqual(source.rows[1].state, { text: '停止' })
+})
+
+test('detects resolved table content even when the interface value equals the static value', () => {
+  const titleNode = {
+    type: 'table',
+    tableTitle: '相同标题',
+    dataBindings: [{ target: 'tableTitle', pointId: 'table.title', enabled: true }]
+  }
+  assert.equal(hasConfiguredTableContentBinding(titleNode), true)
+  assert.equal(hasResolvedTableContentBinding(titleNode, () => '相同标题'), true)
+  assert.equal(hasResolvedTableContentBinding(titleNode, () => undefined), false)
+
+  const styleOnlyNode = {
+    type: 'table',
+    tableRowFill: '#ffffff',
+    dataBindings: [{ target: 'tableRowFill', pointId: 'table.fill', enabled: true }]
+  }
+  assert.equal(hasConfiguredTableContentBinding(styleOnlyNode), false)
+  assert.equal(hasResolvedTableContentBinding(styleOnlyNode, () => '#ffffff'), false)
+})
+
+test('maps current and legacy table color bindings to renderer fields and restores static colors', () => {
+  const currentNode = {
+    type: 'table',
+    tableRowFill: '#f8fafc',
+    tableAltRowFill: '#f8fafc',
+    tableBorderColor: '#94a3b8',
+    dataBindings: [
+      { target: 'tableRowFill', pointId: 'table.rows', enabled: true },
+      { target: 'tableBorderColor', pointId: 'table.border', enabled: true }
+    ]
+  }
+  const currentBefore = structuredClone(currentNode)
+  const currentEffective = materializeRuntimeNode(currentNode, pointGetter(new Map([
+    ['table.rows', 'warning'],
+    ['table.border', '#123abc']
+  ])))
+
+  assert.equal(currentEffective.tableRowFill, '#f59e0b')
+  assert.equal(currentEffective.tableAltRowFill, '#f59e0b')
+  assert.equal(currentEffective.tableBorderColor, '#123abc')
+  assert.deepEqual(currentNode, currentBefore)
+  const restoredCurrent = materializeRuntimeNode(currentNode, () => undefined)
+  assert.equal(restoredCurrent.tableRowFill, '#f8fafc')
+  assert.equal(restoredCurrent.tableAltRowFill, '#f8fafc')
+  assert.equal(restoredCurrent.tableBorderColor, '#94a3b8')
+
+  const disabledCurrentNode = structuredClone(currentNode)
+  disabledCurrentNode.dataBindings.forEach(binding => { binding.enabled = false })
+  assert.strictEqual(materializeRuntimeNode(disabledCurrentNode, () => 'alarm'), disabledCurrentNode)
+  assert.equal(disabledCurrentNode.tableRowFill, '#f8fafc')
+  assert.equal(disabledCurrentNode.tableAltRowFill, '#f8fafc')
+  assert.equal(disabledCurrentNode.tableBorderColor, '#94a3b8')
+
+  const legacyNode = {
+    type: 'table',
+    fill: '#ffffff',
+    stroke: '#475569',
+    tableRowFill: '#f1f5f9',
+    tableAltRowFill: '#f1f5f9',
+    tableBorderColor: '#64748b',
+    dataBindings: [
+      { target: 'fill', pointId: 'legacy.fill', enabled: true },
+      { target: 'stroke', pointId: 'legacy.stroke', enabled: true }
+    ]
+  }
+  const legacyBefore = structuredClone(legacyNode)
+  const legacyEffective = materializeRuntimeNode(legacyNode, pointGetter(new Map([
+    ['legacy.fill', 'alarm'],
+    ['legacy.stroke', '#abcdef']
+  ])))
+
+  assert.equal(legacyEffective.tableRowFill, '#ef4444')
+  assert.equal(legacyEffective.tableAltRowFill, '#ef4444')
+  assert.equal(legacyEffective.tableBorderColor, '#abcdef')
+  assert.equal(legacyEffective.fill, '#ffffff')
+  assert.equal(legacyEffective.stroke, '#475569')
+  assert.deepEqual(legacyNode, legacyBefore)
+
+  const restoredLegacy = materializeRuntimeNode(legacyNode, () => undefined)
+  assert.equal(restoredLegacy.tableRowFill, '#f1f5f9')
+  assert.equal(restoredLegacy.tableAltRowFill, '#f1f5f9')
+  assert.equal(restoredLegacy.tableBorderColor, '#64748b')
+
+  const disabledLegacyNode = structuredClone(legacyNode)
+  disabledLegacyNode.dataBindings.forEach(binding => { binding.enabled = false })
+  assert.strictEqual(materializeRuntimeNode(disabledLegacyNode, () => 'warning'), disabledLegacyNode)
 })
 
 test('formats table cells with fixed structural and text budgets without JSON.stringify', () => {
@@ -186,15 +343,92 @@ test('materializes component-specific values and chart percentages', () => {
     dataBindings: [{ target: 'progressValue', pointId: 'progress' }]
   }, () => 73.5)
   const chart = materializeRuntimeNode({
-    type: 'chart',
+    type: 'barChart',
+    chartTitle: '静态标题',
+    chartSeriesName: '静态系列',
+    chartLabels: ['旧标签'],
     chartData: [],
-    dataBindings: [{ target: 'chartData', pointId: 'series' }]
-  }, () => [10, 20, 5])
+    chartColor: '#16b89a',
+    chartShowLegend: true,
+    chartShowTooltip: true,
+    chartShowGrid: true,
+    dataBindings: [
+      { target: 'chartTitle', pointId: 'title' },
+      { target: 'chartSeriesName', pointId: 'seriesName' },
+      { target: 'chartLabels', pointId: 'labels' },
+      { target: 'chartData', pointId: 'series' },
+      { target: 'chartColor', pointId: 'color' },
+      { target: 'chartShowLegend', pointId: 'legend' },
+      { target: 'chartShowTooltip', pointId: 'tooltip' },
+      { target: 'chartShowGrid', pointId: 'grid' }
+    ]
+  }, pointId => ({
+    title: '运行标题',
+    seriesName: '运行系列',
+    labels: ['A', 'B', 'C'],
+    series: [10, 20, 5],
+    color: 'warning',
+    legend: false,
+    tooltip: false,
+    grid: false
+  })[pointId])
 
   assert.equal(checkbox.checked, true)
   assert.equal(input.value, '42')
   assert.equal(progress.progressValue, 73.5)
+  assert.equal(chart.chartTitle, '运行标题')
+  assert.equal(chart.chartSeriesName, '运行系列')
+  assert.deepEqual(chart.chartLabels, ['A', 'B', 'C'])
+  assert.equal(chart.chartColor, '#f59e0b')
+  assert.equal(chart.chartShowLegend, false)
+  assert.equal(chart.chartShowTooltip, false)
+  assert.equal(chart.chartShowGrid, false)
   assert.deepEqual(runtimeChartPercentages(chart), [50, 100, 25])
+})
+
+test('materializes each chart series binding independently without mutating static series', () => {
+  const node = {
+    type: 'lineChart',
+    chartSeriesName: '系列 1',
+    chartColor: '#16b89a',
+    chartData: [10, 20],
+    chartSeries: [
+      { name: '系列 1', color: '#16b89a', data: [10, 20] },
+      { name: '系列 2', color: '#168eea', data: [30, 40] }
+    ],
+    dataBindings: [
+      { target: 'chartSeries.0.name', pointId: 'series0-name' },
+      { target: 'chartSeries.0.data', pointId: 'series0-data' },
+      { target: 'chartSeries.1.name', pointId: 'series1-name' },
+      { target: 'chartSeries.1.color', pointId: 'series1-color' },
+      { target: 'chartSeries.1.data', pointId: 'series1-data' }
+    ]
+  }
+  const before = structuredClone(node)
+  const effective = materializeRuntimeNode(node, pointId => ({
+    'series0-name': '运行系列 1',
+    'series0-data': [11, 22],
+    'series1-name': '运行系列 2',
+    'series1-color': 'warning',
+    'series1-data': [33, 44]
+  })[pointId])
+
+  assert.deepEqual(node, before)
+  assert.equal(effective.chartSeriesName, '运行系列 1')
+  assert.deepEqual(effective.chartData, {
+    columns: [{ key: 'value', title: '值' }],
+    rows: [{ value: 11 }, { value: 22 }]
+  })
+  assert.equal(effective.chartSeries[0].name, '运行系列 1')
+  assert.deepEqual(effective.chartSeries[0].data, effective.chartData)
+  assert.equal(effective.chartSeries[1].name, '运行系列 2')
+  assert.equal(effective.chartSeries[1].color, '#f59e0b')
+  assert.deepEqual(effective.chartSeries[1].data, {
+    columns: [{ key: 'value', title: '值' }],
+    rows: [{ value: 33 }, { value: 44 }]
+  })
+  assert.notStrictEqual(effective.chartSeries, node.chartSeries)
+  assert.notStrictEqual(effective.chartSeries[1], node.chartSeries[1])
 })
 
 test('materializes signal colors and lamp opacity without mutating the document palette', () => {

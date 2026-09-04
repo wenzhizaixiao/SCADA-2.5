@@ -13,6 +13,10 @@ import {
 import { filterPaperEntries } from '../src/utils/librarySearch.js'
 import { isImeCompositionEvent } from '../src/utils/keyboard.js'
 import { createPreviewViewportScheduler } from '../src/utils/previewViewportScheduler.js'
+import {
+  fullscreenPreviewScrollAxes,
+  resolveFullscreenViewportSize
+} from '../src/utils/fullscreenViewportSize.js'
 
 const appSource = readFileSync(new URL('../src/App.vue', import.meta.url), 'utf8')
 const editorModelSource = readFileSync(new URL('../src/models/editorModel.js', import.meta.url), 'utf8')
@@ -69,6 +73,150 @@ test('labels text components generically in the structure and property heading',
   assert.match(appSource, /name:\s*uniqueCustomComponentName\(suggestedName\)/)
 })
 
+test('makes a pending table merge the clear primary action', () => {
+  assert.match(appSource, /const tableSelectionMergeReady = computed\(\(\) => \{[\s\S]*?selection\.cellCount < 2[\s\S]*?tableSelectionMergeConflict\.value/)
+  assert.match(appSource, /class="table-data-merge-actions" :class="\{ 'is-ready': tableSelectionMergeReady \}" aria-live="polite"/)
+  assert.match(appSource, /class="table-data-merge-primary" :disabled="!tableSelectionMergeReady"[\s\S]*?合并 \{\{ activeTableSelection\.rowSpan \}\} × \{\{ activeTableSelection\.columnSpan \}\} 选区/)
+  assert.match(appSource, /v-else-if="tableSelectionMergeConflict">先拆分冲突区域<\/template>/)
+  assert.match(appSource, /function mergeSelectedTableCellsAndClose\(\)\s*\{\s*if \(mergeSelectedTableCells\(\)\) closeTableDataEditor\(\)\s*\}/)
+  assert.match(appSource, /v-if="tableDataEditor\.tab === 'data' && tableDataEditor\.mode === 'merge' && tableSelectionMergeReady" class="table-data-finish-merge"[\s\S]*?mergeSelectedTableCellsAndClose[\s\S]*?合并并完成/)
+
+  assert.match(cssRule('.table-data-merge-actions.is-ready'), /background:\s*#e7f7f3/)
+  assert.match(cssRule('.table-data-toolbar button.table-data-merge-primary'), /background:\s*#16b89a/)
+  assert.match(cssRule('.table-data-toolbar button.table-data-merge-primary'), /color:\s*#fff/)
+})
+
+test('keeps table data and style editing responsibilities independent', () => {
+  const dataPanel = sourceBetween(
+    appSource,
+    '<template v-if="tableDataEditor.tab === \'data\'">',
+    '<div v-else class="table-style-editor"'
+  )
+  const stylePanel = sourceBetween(
+    appSource,
+    '<div v-else class="table-style-editor"',
+    '<footer>'
+  )
+
+  assert.match(dataPanel, /data-testid="table-data-panel"/)
+  assert.match(dataPanel, /activeTableEditorNode\.tableTitle/)
+  assert.match(dataPanel, /activeTableEditorNode\.tableHeaders/)
+  assert.match(dataPanel, /activeTableEditorNode\.tableCells/)
+  assert.match(dataPanel, /activeTableUsesRuntimeData/)
+  assert.match(dataPanel, /v-if="!tableEditorShowsRuntimeData" class="table-runtime-data-state"[\s\S]*?静态后备数据（可编辑）/)
+  assert.match(dataPanel, /v-else-if="activeTableUsesRuntimeData" class="table-runtime-data-state"[\s\S]*?当前接口数据（内容只读）/)
+  assert.match(dataPanel, /addTableRow/)
+  assert.match(dataPanel, /addTableColumn/)
+  for (const styleField of ['showTableTitle', 'showHeader', 'tableColumnWidthsPx', 'tableRowHeights']) {
+    assert.doesNotMatch(dataPanel, new RegExp(`v-model(?:\\.number)?="activeTableDataNode\\.${styleField}`))
+  }
+
+  assert.match(stylePanel, /data-testid="table-style-panel"/)
+  for (const styleField of [
+    'showTableTitle', 'showHeader', 'tableScrollX', 'tableScrollY',
+    'tableTitleFill', 'tableTitleColor', 'tableTitleSize', 'tableTitleWeight', 'tableTitleAlign',
+    'tableHeaderFill', 'tableHeaderColor', 'tableHeaderSize', 'tableHeaderWeight', 'tableHeaderAlign', 'tableHeaderHeight',
+    'tableRowFill', 'tableAltRowFill', 'tableCellColor', 'tableCellSize', 'tableCellWeight', 'tableTextAlign', 'tableContentDisplay',
+    'tableBorderColor', 'tableBorderWidth', 'tableBorderStyle', 'tableGridColor', 'tableGridWidth', 'tableGridStyle'
+  ]) {
+    assert.match(stylePanel, new RegExp(`v-model(?:\\.number)?="activeTableDataNode\\.${styleField}`), `missing ${styleField} from style panel`)
+  }
+  assert.match(stylePanel, /v-for="\(width, columnIndex\) in activeTableDataNode\.tableColumnWidthsPx"/)
+  assert.match(stylePanel, /v-for="\(height, rowIndex\) in activeTableDataNode\.tableRowHeights"/)
+})
+
+test('uses the shared appearance section for tables and keeps only table content in the property panel', () => {
+  const propertyAppearance = sourceBetween(
+    appSource,
+    '<h3 data-property-section="appearance">外观与样式</h3>',
+    '<template v-if="selectedCategory === \'功能组件\'">'
+  )
+  const tableContent = sourceBetween(
+    appSource,
+    '<template v-if="selectedCategory === \'功能组件\'">',
+    '<template v-else-if="selected.type === \'checkbox\'">'
+  )
+
+  assert.doesNotMatch(propertyAppearance, /表格样式/)
+  assert.doesNotMatch(propertyAppearance, /table-style-group/)
+  assert.match(propertyAppearance, /selected\.type === 'table'/)
+  assert.match(propertyAppearance, /填充颜色/)
+  assert.match(propertyAppearance, /边框颜色/)
+  assert.match(propertyAppearance, /圆角/)
+  assert.match(tableContent, /<h3>表格内容<\/h3>/)
+  assert.match(tableContent, /openTableDataEditor\(selected\)/)
+})
+
+test('gives every single component the same base and appearance section contract', () => {
+  const singleComponentStart = appSource.indexOf('<h3 data-property-section="base">基础属性</h3>')
+  const singleComponentEnd = appSource.indexOf('<template v-if="selectedCategory === \'功能组件\'">', singleComponentStart)
+  assert.ok(singleComponentStart >= 0, 'expected the shared single-component base section')
+  assert.ok(singleComponentEnd > singleComponentStart, 'expected the type-specific property sections')
+  const singleComponentEditor = appSource.slice(singleComponentStart, singleComponentEnd)
+  const baseHeading = singleComponentEditor.indexOf('<h3 data-property-section="base">基础属性</h3>')
+  const visibilityControl = singleComponentEditor.indexOf('data-property-target="visible"')
+  const appearanceHeading = singleComponentEditor.indexOf('<h3 data-property-section="appearance">外观与样式</h3>')
+
+  assert.ok(baseHeading >= 0, 'single components must expose the shared base section')
+  assert.ok(appearanceHeading > baseHeading, 'the shared appearance section must follow the base section')
+  assert.ok(visibilityControl > appearanceHeading, 'component visibility must be part of the appearance section')
+  assert.doesNotMatch(singleComponentEditor, /<h3>组件状态<\/h3>/)
+  assert.doesNotMatch(singleComponentEditor, /线条尺寸|线段尺寸|流向尺寸/)
+  for (const specialtyHeading of ['铅笔属性', '线段属性', '流向属性', '文字编辑', '图像编辑', '视频设置']) {
+    const specialtyIndex = singleComponentEditor.indexOf(`<h3>${specialtyHeading}</h3>`)
+    if (specialtyIndex >= 0) assert.ok(specialtyIndex > appearanceHeading, `${specialtyHeading} must follow shared appearance`)
+  }
+})
+
+test('keeps static and runtime table views mergeable while runtime cell data stays read-only', () => {
+  assert.match(appSource, /import \{[^}]*hasConfiguredTableContentBinding[^}]*hasResolvedTableContentBinding[^}]*materializeRuntimeNode[^}]*\} from '\.\/utils\/runtimeNodeMaterializer'/)
+  assert.match(appSource, /const activeTableDisplayNode = computed\(\(\) => \{[\s\S]*?materializeRuntimeNode\(node, pointId => runtimeData\.getValue\(pointId\)\)/)
+  assert.match(appSource, /const activeTableHasRuntimeConfiguration = computed\(\(\) => hasConfiguredTableContentBinding\(activeTableDataNode\.value\)\)/)
+  assert.match(appSource, /const activeTableUsesRuntimeData = computed\(\(\) => \{[\s\S]*?hasResolvedTableContentBinding\(node, pointId => runtimeData\.getValue\(pointId\)\)/)
+  assert.match(appSource, /const tableEditorShowsRuntimeData = computed\(\(\) => tableDataEditor\.value\.view === 'runtime'\)/)
+  assert.match(appSource, /function setTableDataEditorView\(view\)[\s\S]*?view === 'runtime' \? 'runtime' : 'static'[\s\S]*?view: nextView/)
+  assert.doesNotMatch(appSource, /function setTableDataEditorView\(view\)[\s\S]*?activeTableUsesRuntimeData\.value[\s\S]*?function setTableDataEditorMode/)
+  assert.match(appSource, /function startTableEditorRuntimeSubscriptions\(node\)[\s\S]*?bindingPointIds\(node, \{ includeLegacy: true \}\)[\s\S]*?runtimeData\.subscribe/)
+  assert.match(appSource, /function closeTableDataEditor\(\)[\s\S]*?stopTableEditorRuntimeSubscriptions\(\)/)
+
+  const dataPanel = sourceBetween(
+    appSource,
+    '<template v-if="tableDataEditor.tab === \'data\'">',
+    '<div v-else class="table-style-editor"'
+  )
+  assert.match(dataPanel, /静态配置[\s\S]*?当前接口数据/)
+  assert.match(dataPanel, /<div class="table-data-view-switch" role="group" aria-label="表格数据视图">/)
+  assert.doesNotMatch(dataPanel, /v-if="activeTableUsesRuntimeData" class="table-data-view-switch"/)
+  assert.match(dataPanel, /v-if="tableEditorShowsRuntimeData && !activeTableUsesRuntimeData" class="table-runtime-empty"/)
+  assert.match(dataPanel, /尚未配置接口数据[\s\S]*?请先配置表格接口数据[\s\S]*?配置接口/)
+  assert.match(dataPanel, /暂未获取到接口数据[\s\S]*?检查接口配置/)
+  assert.match(appSource, /function openTableCommunicationSettings\(\)[\s\S]*?closeTableDataEditor\(\)[\s\S]*?rightTab\.value = '通信'/)
+  assert.match(dataPanel, /:readonly="tableEditorShowsRuntimeData"/)
+  assert.match(dataPanel, /class="table-data-toolbar"/)
+  assert.match(dataPanel, /v-if="!tableEditorShowsRuntimeData && tableDataEditor\.mode === 'edit'" class="table-data-structure-actions"/)
+  assert.match(dataPanel, /:class="\{ 'merge-mode': tableDataEditor\.mode === 'merge' \}"/)
+  assert.match(dataPanel, /@pointermove="extendTableDataSelectionFromPointer\(\$event\)"/)
+  assert.match(dataPanel, /:class="\{ selected: tableDataCellSelected\(rowIndex, columnIndex\), merged: tableDataMergeAt\(rowIndex, columnIndex\) \}"/)
+  assert.match(dataPanel, /@pointerdown="startTableDataSelectionDrag\(\$event, rowIndex, columnIndex\)"/)
+  assert.match(dataPanel, /v-if="tableDataMergeAt\(rowIndex, columnIndex\)" class="table-data-merge-label"/)
+  assert.doesNotMatch(appSource, /function setTableDataEditorMode\(mode\) \{\s*if \(tableEditorShowsRuntimeData\.value\) return/)
+  assert.doesNotMatch(appSource, /function tableDataMergeAt\(row, column\) \{\s*if \(tableEditorShowsRuntimeData\.value\) return null/)
+  assert.match(appSource, /const activeTableSelection = computed\(\(\) => \{[\s\S]*?const viewNode = activeTableEditorNode\.value[\s\S]*?rowEnd >= viewNode\.tableRows[\s\S]*?columnEnd >= viewNode\.tableColumns/)
+  assert.match(appSource, /const activeTableViewMerges = computed\(\(\) => \{[\s\S]*?normalizeTableMerges\(node\.tableMerges, viewNode\.tableRows, viewNode\.tableColumns\)/)
+  assert.match(appSource, /const selectedTableViewMerges = computed\(\(\) => tableMergesIntersectingSelection\(activeTableViewMerges\.value, activeTableSelection\.value\)\)/)
+  assert.match(appSource, /const selectedTableMerges = computed\(\(\) => tableMergesIntersectingSelection\(activeTableDataNode\.value\?\.tableMerges, activeTableSelection\.value\)\)/)
+  assert.match(appSource, /const tableSelectionMergeConflict = computed\(\(\) => hasTableMergeSelectionConflict\(activeTableDataNode\.value\?\.tableMerges, activeTableSelection\.value\)\)/)
+  assert.match(appSource, /const tableSelectionMergeReady = computed\(\(\) => \{[\s\S]*?tableSelectionMergeConflict\.value[\s\S]*?selectedTableViewMerges\.value\.some/)
+  assert.doesNotMatch(appSource, /function startTableEditorRuntimeSubscriptions\(node\)[\s\S]*?tableDataEditor\.value = \{ \.\.\.tableDataEditor\.value, mode: 'edit' \}/)
+  assert.match(dataPanel, /tableDataEditorUpdateTitle/)
+  assert.match(dataPanel, /tableDataEditorUpdateHeader/)
+  assert.match(dataPanel, /tableDataEditorUpdateCell/)
+
+  const stylePanel = sourceBetween(appSource, '<div v-else class="table-style-editor"', '<footer>')
+  assert.match(stylePanel, /activeTableDataNode\.tableTitleFill/)
+  assert.doesNotMatch(stylePanel, /activeTableEditorNode/)
+})
+
 test('preserves repeated spaces and supports horizontal or vertical text layout', () => {
   assert.match(editorModelSource, /textLayout:\s*'horizontal'/)
   assert.match(editorModelSource, /normalized\.textLayout = normalizeTextLayout\(source\.textLayout\)/)
@@ -99,7 +247,7 @@ test('keeps drag selection shells and the table node body transparent', () => {
   const formBodyRule = cssRule('.node-body:is(.table, .checkbox, .radio, .switch, .formProgress, .button, .input, .select, .time)')
   assert.match(formBodyRule, /background:\s*transparent\s*!important/)
   assert.match(formBodyRule, /box-shadow:\s*none/)
-  assert.match(nodeVisualSource, /class="form-table-wrapper"[^>]*backgroundColor:\s*node\.tableRowFill/)
+  assert.match(nodeVisualSource, /class="form-table-wrapper"[^>]*backgroundColor:\s*colorWithOpacity\(node\.tableRowFill, node\.backgroundOpacity \?\? 1\)/)
   assert.doesNotMatch(nodeVisualSource.match(/class="node-body"[\s\S]*?>/)?.[0] || '', /tableRowFill/)
 })
 
@@ -393,7 +541,13 @@ test('requires native double-click for text while preserving the table pointer f
   assert.match(appSource, /function beginPointerOperation\(e, nextOperation\)[\s\S]*?if \(!nextOperation\.deferPointerCapture\) capturePointer\(e\)/)
   assert.match(appSource, /if \(operation\.value\?\.deferPointerCapture\)[\s\S]*?Math\.hypot\(e\.clientX - operation\.value\.sx, e\.clientY - operation\.value\.sy\) < NODE_DRAG_START_DISTANCE[\s\S]*?capturePointer\(e\)/)
   assert.match(appSource, /@dblclick="handleNodeDoubleClick\(\$event, n\)"/)
-  assert.match(appSource, /class="inline-text-editor" @pointerdown\.stop @dblclick\.stop/)
+  assert.match(appSource, /class="inline-text-editor"[^>]*@pointerdown\.stop @dblclick\.stop/)
+})
+
+test('chart components never open the generic inline name editor', () => {
+  const textEditGuard = sourceBetween(appSource, 'function canStartNodeTextEdit(node) {', 'function consumeTableDoublePointerDown')
+  assert.match(textEditGuard, /!ECHARTS_COMPONENT_TYPES\.has\(node\.type\)/)
+  assert.match(appSource, /v-if="editingText\?\.id === n\.id && !n\.locked && !ECHARTS_COMPONENT_TYPES\.has\(n\.type\)"[^>]*data-testid="inline-text-editor"/)
 })
 
 test('exposes time font size and weight controls through the inherited form text style', () => {
@@ -466,6 +620,21 @@ test('keeps text entry shortcuts inactive during IME composition', () => {
   assert.doesNotMatch(selectedTextInput, /@keydown/)
 })
 
+test('keeps the inline text editor faithful when a component is scaled small', () => {
+  assert.match(appSource, /function inlineTextEditorStyle\(node\)[\s\S]*?normalizedVisualScale\(node\.visualScaleX, node\.w\)[\s\S]*?normalizedVisualScale\(node\.visualScaleY, node\.h\)/)
+  assert.match(appSource, /function inlineTextEditorStyle\(node\)[\s\S]*?width:\s*`\$\{100 \/ scaleX\}%`[\s\S]*?height:\s*`\$\{100 \/ scaleY\}%`[\s\S]*?transform:\s*`scale\(\$\{scaleX\}, \$\{scaleY\}\)`/)
+  assert.match(appSource, /'text-editing': editingText\?\.id === n\.id/)
+  assert.match(appSource, /data-testid="inline-text-editor"[^>]*:style="inlineTextEditorStyle\(n\)"/)
+
+  const editorRule = cssRule('.inline-text-editor')
+  assert.match(editorRule, /inset:\s*0/)
+  assert.match(editorRule, /background:\s*transparent/)
+  assert.match(editorRule, /padding:\s*0/)
+  assert.match(editorRule, /border:\s*0/)
+  assert.doesNotMatch(editorRule, /height:\s*30px/)
+  assert.match(cssRule('.node-shell.text-editing .node-body > .node-text-content'), /visibility:\s*hidden/)
+})
+
 test('keeps locked components read-only until an explicit unlock action', () => {
   const doubleClickHandler = appSource.slice(
     appSource.indexOf('function handleNodeDoubleClick'),
@@ -488,15 +657,12 @@ test('keeps locked components read-only until an explicit unlock action', () => 
   assert.match(appSource, /data-testid="locked-property-state"/)
   assert.match(appSource, /'form-interacting': editingFormId === n\.id && !n\.locked/)
   assert.match(appSource, /:interactive="editingFormId === n\.id && !n\.locked"/)
-  assert.match(appSource, /v-if="editingText\?\.id === n\.id && !n\.locked"/)
+  assert.match(appSource, /v-if="editingText\?\.id === n\.id && !n\.locked[^\"]*"/)
   assert.match(nodeVisualSource, /const canInteract = \(\) => props\.preview \|\| \(props\.interactive && !props\.node\.locked\)/)
 
   assert.match(appSource, /movingNodes\.some\(node => node\.locked\)/)
   assert.match(appSource, /function startResize\(e, n, direction\)[\s\S]*?if \(n\.locked \|\| operation\.value\) return/)
   assert.match(appSource, /selected && selectedNodeCount === 1 && !selected\.locked/)
-  assert.match(appSource, /const lockedGroupIds = new Set\(nodes\.value\.filter\(node => node\.locked && node\.groupId\)/)
-  assert.match(appSource, /const editableNodes = nodes\.value\.filter\(node => !node\.locked && \(!node\.groupId \|\| !lockedGroupIds\.has\(node\.groupId\)\)\)/)
-  assert.match(appSource, /if \(drawing\.locked \|\| !drawing\.points\.length\) return/)
   assert.match(appSource, /function deleteSelected\(\) \{\s*if \(rejectLockedSelection\('删除'\)\) return/)
   assert.match(enhancementCss, /\.selection-property-editor\s*\{[^}]*border:\s*0;/s)
 })
@@ -529,7 +695,7 @@ test('keeps grouped visual scaling through move, rotate, preview, and reload', (
   assert.match(appSource, /const geometry = computed\(\(\) => \[node\.x, node\.y, node\.w, node\.h, node\.rotate, node\.visualScaleX, node\.visualScaleY, node\.layer\]\)/)
   assert.equal((appSource.match(/v-memo="\[nodeRenderMemo\(n\)/g) || []).length, 1)
   assert.match(previewNodeBatchSource, /<NodeVisual[\s\S]*?:node="node"[\s\S]*?preview/)
-  assert.match(nodeVisualSource, /class="node-visual-scale-frame" :style="visualScaleFrameStyle"/)
+  assert.match(nodeVisualSource, /class="node-visual-scale-frame"[^>]*:style="visualScaleFrameStyle"/)
   assert.match(nodeVisualSource, /w: Math\.max\(\.1, Number\(props\.node\.w\) \|\| 1\) \/ scaleX/)
   assert.match(enhancementCss, /\.node-visual-scale-frame\s*\{[^}]*transform-origin:\s*0 0;/s)
 })
@@ -775,6 +941,7 @@ test('keeps embedded video data out of the URL input and commits once by node id
 })
 
 test('renders fullscreen preview at actual pixels without the ordinary preview header', () => {
+  const keydownHandler = sourceBetween(appSource, 'function keydown(e) {', '\n// 其他响应式数据')
   const fullscreenChange = sourceBetween(appSource, 'function handleFullscreenChange', 'async function togglePreviewAutoFit')
   const fullscreenReconcile = sourceBetween(appSource, 'function reconcilePreviewFullscreenState', 'async function togglePreviewAutoFit')
   const invalidateViewport = sourceBetween(appSource, 'function invalidatePreviewViewportSchedule', 'function updatePreviewViewport')
@@ -784,8 +951,10 @@ test('renders fullscreen preview at actual pixels without the ordinary preview h
   const commitViewport = sourceBetween(appSource, 'function commitPreviewViewport', 'function previewCanvasHasFrame')
   const enterFullscreen = sourceBetween(appSource, 'async function enterPreviewFullscreen', 'async function exitPreviewFullscreen')
   const exitFullscreen = sourceBetween(appSource, 'async function exitPreviewFullscreen', 'function togglePreviewFullscreen')
+  const useScreenSize = sourceBetween(appSource, 'async function useCurrentScreenSize', 'const edgeAdjacency')
+  const canvasPreset = sourceBetween(appSource, 'const canvasSizePreset = computed', 'const layerEntries')
 
-  assert.match(appSource, /const previewRenderScale = computed\(\(\) => previewFittedVisible\.value \? previewFitPresentationScale\.value : 1\)/)
+  assert.match(appSource, /const previewRenderScale = computed\(\(\) => previewFullscreen\.value\s*\? 1\s*: \(previewFittedVisible\.value \? previewFitPresentationScale\.value : 1\)/)
   assert.match(appSource, /function previewFullscreenTarget\(\) \{\s*return document\.documentElement\s*\}/)
   assert.match(enterFullscreen, /const target = previewFullscreenTarget\(\)[\s\S]*?requestFullscreen/)
   assert.doesNotMatch(enterFullscreen, /navigationUI/)
@@ -793,7 +962,10 @@ test('renders fullscreen preview at actual pixels without the ordinary preview h
   assert.match(exitFullscreen, /document\.exitFullscreen \|\| document\.webkitExitFullscreen/)
   assert.match(fullscreenChange, /fullscreenElement\(\) === previewFullscreenTarget\(\)/)
   assert.match(fullscreenChange, /invalidatePreviewViewportSchedule\(\)/)
-  assert.match(fullscreenChange, /if \(isFullscreen\) \{[\s\S]*?previewScale\.value = 1[\s\S]*?previewFullscreen\.value = true[\s\S]*?ensurePreviewDomHandoff\(\)[\s\S]*?updatePreviewViewport\(\{ scroll: \{ left: 0, top: 0 \}, waitForContentRect: true \}\)/)
+  assert.match(fullscreenChange, /if \(isFullscreen\) \{[\s\S]*?previewFullscreen\.value = true[\s\S]*?ensurePreviewDomHandoff\(\)[\s\S]*?updatePreviewViewport\(\{ scroll: \{ left: 0, top: 0 \}, waitForContentRect: true \}\)/)
+  assert.doesNotMatch(fullscreenChange, /stageWidth\.value\s*=|stageHeight\.value\s*=|normalizeCanvasSize\(|markDocumentInput\(/)
+  assert.doesNotMatch(flushViewport, /stageWidth\.value\s*=|stageHeight\.value\s*=|syncScreenCanvasSizeFromFullscreen|markDocumentInput\(/)
+  assert.doesNotMatch(appSource, /function syncScreenCanvasSizeFromFullscreen|resolveScreenCanvasSizeForFullscreen/)
   assert.doesNotMatch(fullscreenChange, /resetPreviewDomHandoff\(\)/)
   const exitFitTarget = fullscreenChange.indexOf("previewRenderTarget.value = 'fit'")
   const exitFullscreenState = fullscreenChange.indexOf('previewFullscreen.value = isFullscreen')
@@ -803,6 +975,7 @@ test('renders fullscreen preview at actual pixels without the ordinary preview h
   assert.equal((fullscreenChange.match(/waitForContentRect: true/g) || []).length, 4)
   assert.doesNotMatch(fullscreenChange, /commitPreviewViewport|\.scrollTo\(|clientWidth|clientHeight|getComputedStyle|fittedPreviewScale/)
   assert.match(fullscreenReconcile, /previewFullscreenPending\.value[\s\S]*?fullscreenElement\(\) === previewFullscreenTarget\(\)[\s\S]*?handleFullscreenChange\(\)/)
+  assert.match(keydownHandler, /if \(showPreview\.value\) \{\s*const fullscreenActive = fullscreenElement\(\) === previewFullscreenTarget\(\)\s*if \(previewFullscreen\.value && !fullscreenActive\) \{\s*e\.preventDefault\(\)\s*handleFullscreenChange\(\)\s*return\s*\}\s*if \(previewFullscreenPending\.value \|\| fullscreenActive\) return/)
   assert.match(fullscreenReconcile, /function handlePreviewWindowResize\(event\)[\s\S]*?reconcilePreviewFullscreenState\(\)[\s\S]*?updatePreviewViewport\(event\)/)
   assert.match(appSource, /window\.addEventListener\('resize', handlePreviewWindowResize\)[\s\S]*?window\.addEventListener\('focus', reconcilePreviewFullscreenState\)/)
   assert.match(appSource, /document\.addEventListener\('visibilitychange', reconcilePreviewFullscreenState\)/)
@@ -815,6 +988,7 @@ test('renders fullscreen preview at actual pixels without the ordinary preview h
   assert.match(updateViewport, /schedulePreviewViewport\(\{[\s\S]*?contentRect,[\s\S]*?scroll: source\?\.scroll,[\s\S]*?refreshFit: source\?\.refreshFit,[\s\S]*?waitForContentRect: source\?\.waitForContentRect/)
   assert.match(scheduleViewport, /createPreviewViewportScheduler\(\{[\s\S]*?requestFrame: callback => requestAnimationFrame\(callback\)[\s\S]*?cancelFrame: frame => cancelAnimationFrame\(frame\)[\s\S]*?flush: flushPreviewViewport/)
   assert.match(flushViewport, /commitPreviewViewport\(scroll\.left, scroll\.top, target, contentRect\)/)
+  assert.doesNotMatch(flushViewport, /FullscreenPreviewScale|previewScale/)
   assert.match(flushViewport, /syncPreviewFitCommittedOffset\(target, contentRect\)/)
   assert.match(flushViewport, /\}\s*if \(previewFittedVisible\.value && previewFitFrameAvailable\.value\) \{\s*syncPreviewFitCommittedOffset\(target, contentRect\)/)
   assert.equal((flushViewport.match(/syncPreviewFitCommittedOffset\(target, contentRect\)/g) || []).length, 1)
@@ -827,21 +1001,117 @@ test('renders fullscreen preview at actual pixels without the ordinary preview h
   assert.match(appSource, /class="preview-overlay"[^>]*:class="\{[^}]*'is-fullscreen': previewFullscreen[^}]*'is-preparing': !previewPresentationReady[^}]*\}"/)
   assert.match(appSource, /:aria-busy="!previewPresentationReady"/)
   assert.match(appSource, /<\/div>\s*<header v-if="showPreview && !previewFullscreen" class="preview-header"/)
-  assert.match(appSource, /stageWidth \* previewRenderScale[\s\S]*?stageHeight \* previewRenderScale/)
+  assert.match(appSource, /width: stageWidth \* previewRenderScale[\s\S]*?height: stageHeight \* previewRenderScale/)
+  assert.doesNotMatch(appSource, /previewStageWidth|previewStageHeight|fills-screen-viewport/)
+  assert.doesNotMatch(enhancementCss, /fills-screen-viewport/)
+  assert.match(appSource, /canvasSizeMode: canvasSizeMode\.value/)
   assert.match(appSource, /transform: `scale\(\$\{previewRenderScale\}\)`/)
-  assert.match(appSource, /marginLeft: previewFittedVisible \? previewFitPresentationOffset\.left/)
-  assert.match(appSource, /marginTop: previewFittedVisible \? previewFitPresentationOffset\.top/)
+  assert.match(appSource, /marginLeft: previewFittedVisible && !previewFullscreen \? previewFitPresentationOffset\.left/)
+  assert.match(appSource, /marginTop: previewFittedVisible && !previewFullscreen \? previewFitPresentationOffset\.top/)
   assert.match(enhancementCss, /\.preview-canvas\.preview-fit \{[^}]*align-items:\s*flex-start;[^}]*justify-content:\s*flex-start;/)
+  assert.match(appSource, /'preview-fit': previewFittedVisible && !previewFullscreen/)
+  assert.doesNotMatch(appSource, /previewScreenFillActive|screenCanvasFullscreenScale|syncFullscreenPreviewScale/)
+  assert.doesNotMatch(enhancementCss, /preview-screen-fill/)
+  assert.match(useScreenSize, /resolveFullscreenViewportSize\(\{[\s\S]*?screenWidth: globalThis\.screen\?\.width,[\s\S]*?screenHeight: globalThis\.screen\?\.height,[\s\S]*?innerWidth: globalThis\.innerWidth,[\s\S]*?outerWidth: globalThis\.outerWidth/)
+  assert.match(useScreenSize, /stageWidth\.value = clampCanvasDimension\(width/)
+  assert.match(useScreenSize, /stageHeight\.value = clampCanvasDimension\(height/)
+  assert.match(useScreenSize, /canvasSizeMode\.value = 'screen'/)
+  assert.match(useScreenSize, /await normalizeCanvasSize\(\)[\s\S]*?markDocumentInput\(\)/)
+  assert.match(canvasPreset, /canvasSizeMode\.value !== 'fixed'[\s\S]*?return 'custom'/)
+  assert.match(appSource, /data-testid="canvas-width"[^>]*step="1"/)
+  assert.match(appSource, /data-testid="canvas-height"[^>]*step="1"/)
+  assert.match(appSource, /data-testid="canvas-width"[^>]*@input="canvasSizeMode = 'fixed'"/)
+  assert.match(appSource, /data-testid="canvas-height"[^>]*@input="canvasSizeMode = 'fixed'"/)
+  assert.match(appSource, /canvasSizeMode === 'screen' \? `全屏分辨率 \$\{stageWidth\} × \$\{stageHeight\} px`/)
   assert.doesNotMatch(appSource, /fullscreen-preview-exit/)
 
   assert.match(enhancementCss, /\.preview-header\s*\{[^}]*position:\s*fixed[^}]*z-index:\s*51/)
   assert.doesNotMatch(enhancementCss, /\.preview-overlay\.is-fullscreen > header/)
   assert.match(enhancementCss, /\.preview-overlay\.is-fullscreen > \.preview-viewport-clip,[\s\S]*?:fullscreen \.preview-overlay > \.preview-viewport-clip,[\s\S]*?inset:\s*auto;/)
-  assert.match(enhancementCss, /\.preview-overlay\.is-fullscreen > \.preview-viewport-clip > \.preview-canvas,[\s\S]*?width:\s*100%;[\s\S]*?height:\s*100%;[\s\S]*?overflow:\s*auto;/)
+  assert.match(enhancementCss, /\.preview-overlay\.is-fullscreen > \.preview-viewport-clip > \.preview-canvas,[\s\S]*?width:\s*100%;[\s\S]*?height:\s*100%;[\s\S]*?overflow:\s*hidden;/)
+  assert.match(enhancementCss, /\.preview-overlay\.is-fullscreen\.scroll-x[^}]*overflow-x:\s*auto;/)
+  assert.match(enhancementCss, /\.preview-overlay\.is-fullscreen\.scroll-y[^}]*overflow-y:\s*auto;/)
+  assert.match(appSource, /'scroll-x': previewFullscreen && previewFullscreenScrollAxes\.x/)
+  assert.match(appSource, /'scroll-y': previewFullscreen && previewFullscreenScrollAxes\.y/)
   assert.match(enhancementCss, /:fullscreen \.preview-overlay/)
-  assert.match(enhancementCss, /:fullscreen \.preview-header[\s\S]*?display:\s*none/)
+  assert.doesNotMatch(enhancementCss, /:fullscreen \.preview-header[\s\S]*?display:\s*none/)
   assert.doesNotMatch(enhancementCss, /\.preview-overlay:fullscreen|\.preview-canvas:fullscreen/)
   assert.doesNotMatch(enhancementCss, /\.fullscreen-preview-exit/)
+})
+
+test('resolves the fullscreen viewport before the user opens preview', () => {
+  assert.deepEqual(resolveFullscreenViewportSize({
+    screenWidth: 1707,
+    screenHeight: 1067,
+    innerWidth: 1897,
+    outerWidth: 1707
+  }), { width: 1896, height: 1185 })
+
+  assert.deepEqual(resolveFullscreenViewportSize({
+    screenWidth: 1920,
+    screenHeight: 1080,
+    innerWidth: 1918,
+    outerWidth: 1920
+  }), { width: 1920, height: 1080 })
+
+  assert.deepEqual(resolveFullscreenViewportSize({
+    screenWidth: 0,
+    screenHeight: 0,
+    innerWidth: 1366,
+    innerHeight: 768,
+    outerWidth: 0
+  }), { width: 1366, height: 768 })
+
+  assert.deepEqual(resolveFullscreenViewportSize({
+    screenWidth: 1920,
+    screenHeight: 1080,
+    innerWidth: 360,
+    innerHeight: 720,
+    outerWidth: 1280
+  }), { width: 1920, height: 1080 })
+})
+
+test('shows fullscreen scrollbars only on axes that exceed the fullscreen viewport', () => {
+  assert.deepEqual(fullscreenPreviewScrollAxes({
+    stageWidth: 1996,
+    stageHeight: 1185,
+    viewportWidth: 1896,
+    viewportHeight: 1185
+  }), { x: true, y: false })
+
+  assert.deepEqual(fullscreenPreviewScrollAxes({
+    stageWidth: 1896,
+    stageHeight: 1285,
+    viewportWidth: 1896,
+    viewportHeight: 1185
+  }), { x: false, y: true })
+
+  assert.deepEqual(fullscreenPreviewScrollAxes({
+    stageWidth: 1996,
+    stageHeight: 1285,
+    viewportWidth: 1896,
+    viewportHeight: 1185
+  }), { x: true, y: true })
+})
+
+test('edits canvas width and height independently', () => {
+  const normalizeCanvas = sourceBetween(appSource, 'async function normalizeCanvasSize', 'async function setCanvasPreset')
+  const normalizeFixedCanvas = sourceBetween(appSource, 'async function normalizeFixedCanvasSize', 'const edgeAdjacency')
+
+  assert.match(normalizeCanvas, /dimension = null/)
+  assert.match(normalizeCanvas, /if \(!dimension \|\| dimension === 'width'\)\s*stageWidth\.value = clampCanvasDimension/)
+  assert.match(normalizeCanvas, /if \(!dimension \|\| dimension === 'height'\)\s*stageHeight\.value = clampCanvasDimension/)
+  assert.match(normalizeFixedCanvas, /normalizeCanvasSize\(dimension\)/)
+  assert.match(appSource, /data-testid="canvas-width"[^>]*@change="normalizeFixedCanvasSize\('width'\)"/)
+  assert.match(appSource, /data-testid="canvas-height"[^>]*@change="normalizeFixedCanvasSize\('height'\)"/)
+})
+
+test('preserves existing component positions when the canvas becomes smaller', () => {
+  const normalizeCanvas = sourceBetween(appSource, 'async function normalizeCanvasSize', 'async function setCanvasPreset')
+
+  assert.doesNotMatch(normalizeCanvas, /normalizeNodesTogether/)
+  assert.doesNotMatch(normalizeCanvas, /drawings\.value/)
+  assert.doesNotMatch(normalizeCanvas, /rebuildNodeSpatialIndex/)
 })
 
 test('coalesces fullscreen intent and ResizeObserver dimensions into one preview frame', () => {

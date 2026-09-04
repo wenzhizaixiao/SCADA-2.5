@@ -1,12 +1,10 @@
 import assert from 'node:assert/strict'
-import { existsSync, readFileSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
-const drawingUrl = new URL('../图纸库/接口测试.json', import.meta.url)
+const drawingUrl = new URL('./fixtures/interface-test-drawing.json', import.meta.url)
 
-test('interface test drawing keeps one canonical component set', {
-  skip: existsSync(drawingUrl) ? false : 'optional interface-test drawing is not present'
-}, () => {
+test('interface test drawing fixture keeps one canonical component set', () => {
   const drawing = JSON.parse(readFileSync(drawingUrl, 'utf8'))
   const expectedTypes = [
     'rect',

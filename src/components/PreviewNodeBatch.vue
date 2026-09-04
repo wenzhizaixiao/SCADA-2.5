@@ -28,7 +28,7 @@ const emit = defineEmits(['form-change', 'table-cell-view'])
   <div
     v-for="node in nodes"
     :key="node.id"
-    v-memo="[node,node.x,node.y,node.w,node.h,node.rotate,node.layer,node.dataKey,node.dataBindings,node.animation,node.animationDuration,node.animationDirection,node.animationPaused,node.visualPrimaryColor,node.signalColorCount,node.signalColors,node.signalOpacity,runtimeStore,timeContext]"
+    v-memo="[node,node.x,node.y,node.w,node.h,node.rotate,node.layer,node.visible,node.dataKey,node.dataBindings,node.animation,node.animationDuration,node.animationDirection,node.animationPaused,node.visualPrimaryColor,node.signalColorCount,node.signalColors,node.signalOpacity,runtimeStore,timeContext]"
     class="node-shell preview-node"
     :style="{ left: `${node.x}px`, top: `${node.y}px`, width: `${node.w}px`, height: `${node.h}px`, zIndex: Number(node.layer) || 0, transform: `rotate(${node.rotate || 0}deg)` }"
   >

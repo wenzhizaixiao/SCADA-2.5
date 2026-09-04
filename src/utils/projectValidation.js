@@ -1,7 +1,7 @@
 import { allocateLegacyDrawingNodeIds } from './legacyDrawingIds.js'
 import { migrateLegacyLineShapeNode } from './projectMigration.js'
 import { MAX_POLYLINE_NODE_POINTS, isPolylineNodeType } from './polylineGeometry.js'
-import { getBindableParameter } from '../config/componentBindingSchema.js'
+import { getBindableParameter, getLegacyBindableParameter } from '../config/componentBindingSchema.js'
 import {
   MAX_BINDING_JSON_PATH_LENGTH,
   MAX_BINDING_POINT_ID_LENGTH,
@@ -104,6 +104,7 @@ function validateNodeDataBindings(nodes, label) {
       if (typeof binding.target !== 'string') invalid('INVALID_DATA_BINDINGS', `${label}数据绑定参数无效`)
       const target = binding.target.trim()
       const definition = getBindableParameter(node?.type, target)
+        || getLegacyBindableParameter(node?.type, target)
       if (!target || target.length > 128 || !definition) {
         invalid('INVALID_DATA_BINDINGS', `${label}包含不支持的数据绑定参数`)
       }

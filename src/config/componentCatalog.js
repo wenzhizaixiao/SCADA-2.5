@@ -1,8 +1,8 @@
 import {
   Activity, ArrowRight, BarChart3, Box, ChartNoAxesColumnIncreasing, Circle, CircleDot, Clock3, Cloud, Code2,
   Database, DatabaseZap, Diamond, Droplets, Fan, Gauge, GitBranch, HardDrive, Hexagon, Image, ListFilter,
-  Map as MapIcon, Minus, MousePointer2, MousePointerClick, MoveRight, Network, Pencil, RadioTower, Router, Server,
-  Sparkles, Square, SquareCheckBig, Star, TableProperties, TextCursorInput, ToggleLeft, Triangle, Type,
+  LineChart, Map as MapIcon, Minus, MousePointer2, MousePointerClick, MoveRight, Network, Pencil, PieChart, Radar,
+  RadioTower, Router, ScatterChart, Server, Sparkles, Square, SquareCheckBig, Star, TableProperties, TextCursorInput, ToggleLeft, Triangle, Type,
   TriangleAlert, Video, Waves
 } from 'lucide-vue-next'
 
@@ -28,30 +28,20 @@ const COMPONENT_GROUPS = [
     { type: 'text', name: '文本', icon: Type }, { type: 'image', name: '图片', icon: Image },
     { type: 'video', name: '视频播放', icon: Video }
   ]},
-  { name: '线段', open: true, items: [
+  { name: '线段组件', open: true, items: [
     { type: 'polyline', name: '线段', icon: GitBranch }
   ]},
-  { name: '表单', open: false, items: [
+  { name: '功能组件', open: false, items: [
     { type: 'table', name: '表格', icon: TableProperties }, { type: 'checkbox', name: '复选框', icon: SquareCheckBig },
     { type: 'radio', name: '单选框', icon: CircleDot }, { type: 'switch', name: '开关', icon: ToggleLeft },
     { type: 'formProgress', name: '进度条', icon: ChartNoAxesColumnIncreasing }, { type: 'button', name: '按钮', icon: MousePointerClick },
     { type: 'input', name: '输入框', icon: TextCursorInput }, { type: 'select', name: '选择器', icon: ListFilter },
     { type: 'time', name: '时间', icon: Clock3 }
   ]},
-  { name: '流程图', open: false, items: [
-    { type: 'process', name: '流程', icon: Box }, { type: 'decision', name: '判断', icon: GitBranch },
-    { type: 'terminal', name: '开始/结束', icon: Minus }, { type: 'database', name: '数据库', icon: Database }
-  ]},
-  { name: '工业设备', open: false, items: [
-    { type: 'gauge', name: '仪表盘', icon: Gauge }, { type: 'server', name: '服务器', icon: Server },
-    { type: 'disk', name: '存储器', icon: HardDrive }, { type: 'router', name: '路由器', icon: Router }
-  ]},
   { name: '图表组件', open: false, items: [
-    { type: 'chart', name: '柱状图', icon: BarChart3 }, { type: 'progress', name: '进度条', icon: Activity },
-    { type: 'code', name: '代码块', icon: Code2 }
-  ]},
-  { name: '网络与云', open: false, items: [
-    { type: 'cloud', name: '云服务', icon: Cloud }, { type: 'network', name: '网络节点', icon: Network }
+    { type: 'lineChart', name: '折线图', icon: LineChart }, { type: 'barChart', name: '柱状图', icon: BarChart3 },
+    { type: 'pieChart', name: '饼图', icon: PieChart }, { type: 'scatterChart', name: '散点图', icon: ScatterChart },
+    { type: 'radarChart', name: '雷达图', icon: Radar }, { type: 'echartsCode', name: 'ECharts 代码', icon: Code2 }
   ]},
   { name: '动效组件', open: true, items: [
     { type: 'flowDirection', name: '流向', icon: MoveRight }, { type: 'flowPipe', name: '流动管道', icon: MoveRight }, { type: 'rotatingFan', name: '旋转风机', icon: Fan },
@@ -61,6 +51,17 @@ const COMPONENT_GROUPS = [
   { name: '自定义动效', open: true, items: [
     { type: 'customMotion', name: '自定义图形', icon: Sparkles }, { type: 'customTextMotion', name: '动态文字', icon: Type },
     { type: 'customImageMotion', name: '动态图片', icon: Image }, { type: 'customIndicator', name: '自定义指示器', icon: Activity }
+  ]},
+  { name: '网络与云', open: false, items: [
+    { type: 'cloud', name: '云服务', icon: Cloud }, { type: 'network', name: '网络节点', icon: Network }
+  ]},
+  { name: '工业设备', open: false, items: [
+    { type: 'gauge', name: '仪表盘', icon: Gauge }, { type: 'server', name: '服务器', icon: Server },
+    { type: 'disk', name: '存储器', icon: HardDrive }, { type: 'router', name: '路由器', icon: Router }
+  ]},
+  { name: '流程图组件', open: false, items: [
+    { type: 'process', name: '流程', icon: Box }, { type: 'decision', name: '判断', icon: GitBranch },
+    { type: 'terminal', name: '开始/结束', icon: Minus }, { type: 'database', name: '数据库', icon: Database }
   ]}
 ]
 
@@ -78,7 +79,24 @@ for (const group of COMPONENT_GROUPS) {
   }
 }
 
+// 旧图纸仍需名称和属性分类，但兼容类型不再出现在组件目录中。
+const HIDDEN_COMPATIBILITY_COMPONENTS = Object.freeze([
+  Object.freeze({ type: 'chart', name: '柱状图（旧版）', category: '图表组件' }),
+  Object.freeze({ type: 'progress', name: '进度条（旧版）', category: '图表组件' }),
+  Object.freeze({ type: 'code', name: '代码块（旧版）', category: '图表组件' })
+])
+for (const item of HIDDEN_COMPATIBILITY_COMPONENTS) {
+  COMPONENT_CATEGORY_BY_TYPE.set(item.type, item.category)
+  COMPONENT_NAME_BY_TYPE.set(item.type, item.name)
+}
+
 export const FORM_TYPE_IDS = new Set(['table', 'checkbox', 'radio', 'switch', 'formProgress', 'button', 'input', 'select', 'time'])
+
+export const DEFAULT_RUNTIME_DATA_TYPES = new Set([
+  'chart', 'lineChart', 'barChart', 'pieChart', 'scatterChart', 'radarChart',
+  'gauge', 'cloud', 'network', 'server', 'router',
+  'flowDirection', 'flowPipe', 'rotatingFan', 'signalLight', 'waterTank', 'heartbeat', 'particles'
+])
 
 // 元组依次为默认文字、宽度和高度；新增组件类型时必须同时加入上方目录。
 export const SHAPE_DEFAULTS = {
@@ -88,8 +106,11 @@ export const SHAPE_DEFAULTS = {
   radio: ['单选框', 130, 38], switch: ['开关', 130, 40], formProgress: ['进度条', 190, 44], button: ['按钮', 120, 42],
   input: ['输入框', 190, 42], select: ['选择器', 190, 42], time: ['时间', 160, 42], process: ['处理流程', 150, 72], decision: ['条件判断', 118, 90],
   terminal: ['开始 / 结束', 150, 64], database: ['数据库', 115, 95], gauge: ['仪表盘', 120, 120], server: ['服务器', 120, 90],
-  disk: ['存储器', 120, 85], router: ['路由器', 130, 80], chart: ['数据图表', 180, 110], progress: ['68%', 180, 45],
-  code: ['function main() {}', 190, 90], cloud: ['云服务', 140, 80], network: ['网络节点', 140, 74],
+  disk: ['存储器', 120, 85], router: ['路由器', 130, 80],
+  lineChart: ['折线图', 320, 220], barChart: ['柱状图', 320, 220], pieChart: ['饼图', 320, 220],
+  scatterChart: ['散点图', 320, 220], radarChart: ['雷达图', 320, 220], echartsCode: ['ECharts 代码', 400, 300],
+  chart: ['数据图表', 180, 110], progress: ['68%', 180, 45], code: ['function main() {}', 190, 90],
+  cloud: ['云服务', 140, 80], network: ['网络节点', 140, 74],
   flowDirection: ['流向', 220, 130], flowPipe: ['介质流动', 190, 48], rotatingFan: ['风机', 110, 110], signalLight: ['运行状态', 90, 130],
   waterTank: ['液位', 120, 150], heartbeat: ['告警', 110, 100], particles: ['粒子流', 180, 90],
   customMotion: ['自定义图形', 150, 100], customTextMotion: ['动态文字', 180, 70],
@@ -124,6 +145,5 @@ export const FORM_NODE_DEFAULTS = {
 }
 
 export const ANIMATION_DEFAULTS = {
-  chart: 'flow', gauge: 'flow', progress: 'none', cloud: 'float', network: 'pulse', server: 'blink', router: 'pulse',
   flowDirection: 'flow', flowPipe: 'flow', rotatingFan: 'flow', signalLight: 'blink', waterTank: 'flow', heartbeat: 'pulse', particles: 'flow'
 }

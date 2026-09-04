@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { prepareProject } from '../src/utils/projectPreparation.js'
+import { normalizeCanvasSizeMode, prepareProject } from '../src/utils/projectPreparation.js'
 import { PROJECT_VERSION } from '../src/utils/projectMigration.js'
 
 function legacyProject() {
@@ -98,4 +98,13 @@ test('does not mutate the source project while preparing it', () => {
   const snapshot = structuredClone(source)
   prepareProject(source, 'fallback-name')
   assert.deepEqual(source, snapshot)
+})
+
+test('preserves explicit screen canvas sizing and defaults legacy projects to fixed sizing', () => {
+  assert.equal(normalizeCanvasSizeMode('screen'), 'screen')
+  assert.equal(normalizeCanvasSizeMode('fixed'), 'fixed')
+  assert.equal(normalizeCanvasSizeMode('unknown'), 'fixed')
+
+  assert.equal(prepareProject({ ...legacyProject(), canvasSizeMode: 'screen' }).canvasSizeMode, 'screen')
+  assert.equal(prepareProject(legacyProject()).canvasSizeMode, 'fixed')
 })
